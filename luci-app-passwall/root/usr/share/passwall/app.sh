@@ -36,7 +36,7 @@ UTIL_SS=$LUA_UTIL_PATH/util_shadowsocks.lua
 UTIL_XRAY=$LUA_UTIL_PATH/util_xray.lua
 UTIL_TROJAN=$LUA_UTIL_PATH/util_trojan.lua
 UTIL_NAIVE=$LUA_UTIL_PATH/util_naiveproxy.lua
-UTIL_HYSTERIA2=$LUA_UTIL_PATH/util_hysteria2.lua
+UTIL_HYSTERIA=$LUA_UTIL_PATH/util_hysteria.lua
 UTIL_TUIC=$LUA_UTIL_PATH/util_tuic.lua
 
 echolog() {
@@ -703,13 +703,13 @@ run_socks() {
 		lua $UTIL_SS gen_config -node $node -local_socks_address $bind -local_socks_port $socks_port -server_host $server_host -server_port $port ${_extra_param} > $config_file
 		ln_run "$(first_type sslocal)" "sslocal" $log_file -c "$config_file" -v
 	;;
-	hysteria2)
+	hysteria)
 		[ "$http_port" != "0" ] && {
 			http_flag=1
 			config_file=$(echo $config_file | sed "s/SOCKS/HTTP_SOCKS/g")
 			local _extra_param="-local_http_address $bind -local_http_port $http_port"
 		}
-		lua $UTIL_HYSTERIA2 gen_config -node $node -local_socks_address $bind -local_socks_port $socks_port -server_host $server_host -server_port $port ${_extra_param} > $config_file
+		lua $UTIL_HYSTERIA gen_config -node $node -local_socks_address $bind -local_socks_port $socks_port -server_host $server_host -server_port $port ${_extra_param} > $config_file
 		ln_run "$(first_type $(config_t_get global_app hysteria_file))" "hysteria" $log_file -c "$config_file" client
 	;;
 	tuic)
@@ -802,8 +802,8 @@ run_redir() {
 			lua $UTIL_SS gen_config -node $node -local_udp_redir_port $local_port > $config_file
 			ln_run "$(first_type sslocal)" "sslocal" $log_file -c "$config_file" -v
 		;;
-		hysteria2)
-			lua $UTIL_HYSTERIA2 gen_config -node $node -local_udp_redir_port $local_port > $config_file
+		hysteria)
+			lua $UTIL_HYSTERIA gen_config -node $node -local_udp_redir_port $local_port > $config_file
 			ln_run "$(first_type $(config_t_get global_app hysteria_file))" "hysteria" $log_file -c "$config_file" client
 		;;
 		tuic)
@@ -999,7 +999,7 @@ run_redir() {
 			lua $UTIL_SS gen_config -node $node ${_extra_param} > $config_file
 			ln_run "$(first_type sslocal)" "sslocal" $log_file -c "$config_file" -v
 		;;
-		hysteria2)
+		hysteria)
 			local _extra_param="-local_tcp_redir_port $local_port"
 			[ "$tcp_node_socks" = "1" ] && {
 				tcp_node_socks_flag=1
@@ -1018,7 +1018,7 @@ run_redir() {
 				_extra_param="${_extra_param} -local_udp_redir_port $local_port"
 			}
 			_extra_param="${_extra_param} -tcp_proxy_way $tcp_proxy_way"
-			lua $UTIL_HYSTERIA2 gen_config -node $node ${_extra_param} > $config_file
+			lua $UTIL_HYSTERIA gen_config -node $node ${_extra_param} > $config_file
 			ln_run "$(first_type $(config_t_get global_app hysteria_file))" "hysteria" $log_file -c "$config_file" client
 		;;
 		esac
@@ -1811,8 +1811,8 @@ USE_DEFAULT_DNS=$(config_t_get global use_default_dns direct)
 FILTER_PROXY_IPV6=$(config_t_get global filter_proxy_ipv6 0)
 dns_listen_port=${DNS_PORT}
 
-REDIRECT_LIST="socks ss ss-rust ssr sing-box xray trojan-plus naiveproxy hysteria2"
-TPROXY_LIST="socks ss ss-rust ssr sing-box xray trojan-plus hysteria2"
+REDIRECT_LIST="socks ss ss-rust ssr sing-box xray trojan-plus naiveproxy hysteria"
+TPROXY_LIST="socks ss ss-rust ssr sing-box xray trojan-plus hysteria"
 RESOLVFILE=/tmp/resolv.conf.d/resolv.conf.auto
 [ -f "${RESOLVFILE}" ] && [ -s "${RESOLVFILE}" ] || RESOLVFILE=/tmp/resolv.conf.auto
 

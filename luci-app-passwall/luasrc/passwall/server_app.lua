@@ -194,7 +194,7 @@ local function start()
 				else
 					config = require(require_dir .. "util_hysteria2").gen_config_server(user)
 				end
-				bin = ln_run(api.get_app_path("hysteria"), "hysteria", "-c " .. config_file .. " server", log_path)
+				bin = ln_run(api.get_app_path("hysteria2"), "hysteria2", "-c " .. config_file .. " server", log_path)
 			elseif type == "Trojan" then
 				config = require(require_dir .. "util_trojan").gen_config_server(user)
 				bin = ln_run("/usr/sbin/trojan", "trojan", "-c " .. config_file, log_path)

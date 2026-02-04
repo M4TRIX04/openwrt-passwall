@@ -36,7 +36,7 @@ _M.hysteria = {
 	}
 }
 
-_M.hysteria = {
+_M.hysteria2 = {
 	name = "Hysteria2",
 	repo = "HyNetwork/hysteria",
 	get_url = gh_release_url,

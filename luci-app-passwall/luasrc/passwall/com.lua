@@ -16,28 +16,11 @@ _M.order = {
 	"chinadns-ng",
 	"xray",
 	"sing-box",
-	"hysteria",
 	"hysteria2"
 }
 
-_M.hysteria = {
-	name = "Hysteria",
-	repo = "HyNetwork/hysteria",
-	get_url = gh_release_url,
-	cmd_version = "version | awk '/^Version:/ {print $2}'",
-	remote_version_str_replace = "app/",
-	zipped = false,
-	default_path = "/usr/bin/hysteria",
-	match_fmt_str = "linux%%-%s$",
-	file_tree = {
-		armv6 = "arm",
-		armv7 = "arm",
-		mipsel = "mipsle"
-	}
-}
-
 _M.hysteria2 = {
-	name = "Hysteria2",
+	name = "Hysteria",
 	repo = "HyNetwork/hysteria",
 	get_url = gh_release_url,
 	cmd_version = "version | awk '/^Version:/ {print $2}'",

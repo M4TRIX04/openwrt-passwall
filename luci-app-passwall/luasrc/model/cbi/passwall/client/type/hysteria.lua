@@ -1,12 +1,19 @@
 local m, s = ...
 
-local api = require "luci.passwall.api"
+-- local api = require "luci.passwall.api"
 
 if not api.finded_com("hysteria") then
 	return
 end
 
-local type_name = "Hysteria"
+-- local type_name = "Hysteria"
+type_name = "Hysteria"
+
+s.fields["type"]:value(type_name, translate("Hysteria"))
+
+if s.val["type"] ~= type_name then
+	return
+end
 
 local option_prefix = "hysteria_"
 
@@ -16,7 +23,6 @@ end
 
 -- [[ Hysteria ]]
 
-s.fields["type"]:value(type_name, translate("Hysteria"))
 
 o = s:option(ListValue, option_name("protocol"), translate("Protocol"))
 o:value("udp", "UDP")
@@ -87,3 +93,4 @@ o = s:option(Flag, option_name("lazy_start"), translate("Lazy Start"))
 o.rewrite_option = o.option
 
 api.luci_types(arg[1], m, s, type_name, option_prefix)
+

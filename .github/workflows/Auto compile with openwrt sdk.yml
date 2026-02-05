@@ -15,7 +15,7 @@ on:
 env:
   TZ: Asia/Shanghai
   passwall: ${{ github.repository }}
-  packages: Openwrt-Passwall/openwrt-passwall-packages
+  packages: M4TRIX04/openwrt-passwall-packages
 
 permissions:
   contents: write

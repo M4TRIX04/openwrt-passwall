@@ -1,16 +1,12 @@
 local m, s = ...
 
-local api = require "luci.passwall.api"
-
 local singbox_bin = api.finded_com("sing-box")
 
 if not singbox_bin then
 	return
 end
 
-local appname = "passwall"
-
-local type_name = "sing-box"
+type_name = "sing-box"
 
 -- [[ sing-box ]]
 
@@ -46,9 +42,6 @@ local ss_method_old_list = {
 
 local security_list = { "none", "auto", "aes-128-gcm", "chacha20-poly1305", "zero" }
 
-local local_version = api.get_app_version("sing-box")
-local version_ge_1_12_0 = api.compare_versions(local_version:match("[^v]+"), ">=", "1.12.0")
-
 local singbox_tags = luci.sys.exec(singbox_bin .. " version  | grep 'Tags:' | awk '{print $2}'")
 
 o = s:option(ListValue, _n("protocol"), translate("Protocol"))
@@ -70,10 +63,11 @@ end
 if singbox_tags:find("with_quic") then
 	o:value("hysteria2", "Hysteria2")
 end
-if version_ge_1_12_0 then
-	o:value("anytls", "AnyTLS")
-end
+o:value("anytls", "AnyTLS")
 o:value("ssh", "SSH")
+if singbox_tags:find("with_naive_outbound") then
+	o:value("naive", "NaïveProxy")
+end
 o:value("_urltest", translate("URLTest"))
 o:value("_shunt", translate("Shunt"))
 o:value("_iface", translate("Custom Interface"))
@@ -96,60 +90,27 @@ if not arg_select_proto:find("_") then
 	load_normal_options = true
 end
 
-local nodes_list = {}
-local iface_list = {}
-local urltest_list = {}
-for k, e in ipairs(api.get_valid_nodes()) do
-	if e.node_type == "normal" then
-		nodes_list[#nodes_list + 1] = {
-			id = e[".name"],
-			remark = e["remark"],
-			type = e["type"],
-			address = e["address"],
-			chain_proxy = e["chain_proxy"],
-			group = e["group"]
-		}
-	end
-	if e.protocol == "_iface" then
-		iface_list[#iface_list + 1] = {
-			id = e[".name"],
-			remark = e["remark"],
-			group = e["group"]
-		}
-	end
-	if e.protocol == "_urltest" then
-		urltest_list[#urltest_list + 1] = {
-			id = e[".name"],
-			remark = e["remark"],
-			group = e["group"]
-		}
-	end
-end
-
-local socks_list = {}
-m.uci:foreach(appname, "socks", function(s)
-	if s.enabled == "1" and s.node then
-		socks_list[#socks_list + 1] = {
-			id = "Socks_" .. s[".name"],
-			remark = translate("Socks Config") .. " " .. string.format("[%s %s]", s.port, translate("Port")),
-			group = "Socks"
-		}
-	end
-end)
+local node_list = api.get_node_list()
 
 if load_urltest_options then -- [[ URLTest Start ]]
-	o = s:option(MultiValue, _n("urltest_node"), translate("URLTest node list"), translate("List of nodes to test, <a target='_blank' href='https://sing-box.sagernet.org/configuration/outbound/urltest'>document</a>"))
+	o = s:option(ListValue, _n("node_add_mode"), translate("Node Addition Method"))
 	o:depends({ [_n("protocol")] = "_urltest" })
+	o.default = "manual"
+	o:value("manual", translate("Manual"))
+	o:value("batch", translate("Batch"))
+
+	o = s:option(MultiValue, _n("urltest_node"), translate("URLTest node list"), translate("List of nodes to test, <a target='_blank' href='https://sing-box.sagernet.org/configuration/outbound/urltest'>document</a>"))
+	o:depends({ [_n("node_add_mode")] = "manual" })
 	o.widget = "checkbox"
 	o.template = appname .. "/cbi/nodes_multivalue"
 	o.group = {}
-	for k, v in pairs(socks_list) do
-		o:value(v.id, v.remark)
-		o.group[#o.group+1] = v.group or ""
-	end
-	for i, v in pairs(nodes_list) do
-		o:value(v.id, v.remark)
-		o.group[#o.group+1] = v.group or ""
+	for k1, v1 in pairs(node_list) do
+		if k1 == "socks_list" or k1 == "normal_list" then
+			for i, v in ipairs(v1) do
+				o:value(v.id, v.remark)
+				o.group[#o.group+1] = v.group or ""
+			end
+		end
 	end
 	-- 读取旧 DynamicList
 	function o.cfgvalue(self, section)
@@ -175,6 +136,22 @@ if load_urltest_options then -- [[ URLTest Start ]]
 			return
 		end
 	end
+
+	o = s:option(MultiValue, _n("node_group"), translate("Select Group"))
+	o:depends({ [_n("node_add_mode")] = "batch" })
+	o.widget = "checkbox"
+	o:value("default", translate("default"))
+	for k, v in pairs(groups) do
+		o:value(api.UrlEncode(k), k)
+	end
+
+	o = s:option(Value, _n("node_match_rule"), translate("Node Matching Rules"))
+	o:depends({ [_n("node_add_mode")] = "batch" })
+	local descrStr = "Example: <code>^A && B && !C && D$</code><br>"
+	descrStr = descrStr .. "This means the node remark must start with A (^), include B, exclude C (!), and end with D ($).<br>"
+	descrStr = descrStr .. "Conditions are joined by <code>&&</code>, and their order does not affect the result."
+	o.description = translate(descrStr) .. string.format("<br><font color='red'>%s</font>",
+			translate("Keep the match scope small. Too many nodes can impact router performance."))
 
 	o = s:option(Value, _n("urltest_url"), translate("Probe URL"))
 	o:depends({ [_n("protocol")] = "_urltest" })
@@ -233,17 +210,24 @@ o.datatype = "port"
 local protocols = s.fields[_n("protocol")].keylist
 if #protocols > 0 then
 	for index, value in ipairs(protocols) do
-		if not value:find("_") then
+		if not value:find("^_") then
 			s.fields[_n("address")]:depends({ [_n("protocol")] = value })
 			s.fields[_n("port")]:depends({ [_n("protocol")] = value })
 		end
 	end
 end
 
+o = s:option(Value, _n("uuid"), translate("ID"))
+o.password = true
+o:depends({ [_n("protocol")] = "vmess" })
+o:depends({ [_n("protocol")] = "vless" })
+o:depends({ [_n("protocol")] = "tuic" })
+
 o = s:option(Value, _n("username"), translate("Username"))
 o:depends({ [_n("protocol")] = "http" })
 o:depends({ [_n("protocol")] = "socks" })
 o:depends({ [_n("protocol")] = "ssh" })
+o:depends({ [_n("protocol")] = "naive" })
 
 o = s:option(Value, _n("password"), translate("Password"))
 o.password = true
@@ -254,6 +238,7 @@ o:depends({ [_n("protocol")] = "trojan" })
 o:depends({ [_n("protocol")] = "tuic" })
 o:depends({ [_n("protocol")] = "anytls" })
 o:depends({ [_n("protocol")] = "ssh" })
+o:depends({ [_n("protocol")] = "naive" })
 
 o = s:option(ListValue, _n("security"), translate("Encrypt Method"))
 for a, t in ipairs(security_list) do o:value(t) end
@@ -268,12 +253,7 @@ o:depends({ [_n("protocol")] = "shadowsocks" })
 o = s:option(Flag, _n("uot"), translate("UDP over TCP"))
 o:depends({ [_n("protocol")] = "socks" })
 o:depends({ [_n("protocol")] = "shadowsocks" })
-
-o = s:option(Value, _n("uuid"), translate("ID"))
-o.password = true
-o:depends({ [_n("protocol")] = "vmess" })
-o:depends({ [_n("protocol")] = "vless" })
-o:depends({ [_n("protocol")] = "tuic" })
+o:depends({ [_n("protocol")] = "naive" })
 
 o = s:option(Value, _n("alter_id"), "Alter ID")
 o.datatype = "uinteger"
@@ -334,9 +314,6 @@ if singbox_tags:find("with_quic") then
 
 	o = s:option(Flag, _n("hysteria_disable_mtu_discovery"), translate("Disable MTU detection"))
 	o:depends({ [_n("protocol")] = "hysteria" })
-
-	o = s:option(Value, _n("hysteria_alpn"), translate("QUIC TLS ALPN"))
-	o:depends({ [_n("protocol")] = "hysteria" })
 end
 
 if singbox_tags:find("with_quic") then
@@ -376,6 +353,8 @@ if singbox_tags:find("with_quic") then
 	o:value("http/1.1")
 	o:value("h2,http/1.1")
 	o:value("h3,h2,http/1.1")
+	o:value("spdy/3.1")
+	o:value("h3,spdy/3.1")
 	o:depends({ [_n("protocol")] = "tuic" })
 end
 
@@ -401,7 +380,7 @@ if singbox_tags:find("with_quic") then
 	o:depends({ [_n("protocol")] = "hysteria2" })
 
 	o = s:option(Value, _n("hysteria2_obfs_password"), translate("Obfs Password"))
-	o:depends({ [_n("protocol")] = "hysteria2" })
+	o:depends({ [_n("hysteria2_obfs_type")] = "salamander" })
 
 	o = s:option(Value, _n("hysteria2_auth_password"), translate("Auth Password"))
 	o.password = true
@@ -426,6 +405,26 @@ o = s:option(Value, _n("ssh_client_version"), translate("Client Version"), trans
 o:depends({ [_n("protocol")] = "ssh" })
 -- [[ SSH config end ]] --
 
+-- [[ naive start ]] --
+o = s:option(Value, _n("naive_insecure_concurrency"), translate("Concurrent Tunnels"))
+o.datatype = "uinteger"
+o.placeholder = "0"
+o.default = "0"
+o:depends({ [_n("protocol")] = "naive" })
+
+o = s:option(Flag, _n("naive_quic"), translate("QUIC"))
+o.default = 0
+o:depends({ [_n("protocol")] = "naive" })
+
+o = s:option(ListValue, _n("naive_congestion_control"), translate("Congestion control algorithm"))
+o.default = "bbr"
+o:value("bbr", translate("BBR"))
+o:value("bbr2", translate("BBRv2"))
+o:value("cubic", translate("CUBIC"))
+o:value("reno", translate("New Reno"))
+o:depends({ [_n("naive_quic")] = "1" })
+-- [[ naive end ]] --
+
 o = s:option(Flag, _n("tls"), translate("TLS"))
 o.default = 0
 o:depends({ [_n("protocol")] = "vmess" })
@@ -435,7 +434,7 @@ o:depends({ [_n("protocol")] = "trojan" })
 o:depends({ [_n("protocol")] = "shadowsocks" })
 o:depends({ [_n("protocol")] = "anytls" })
 
-o = s:option(ListValue, _n("alpn"), translate("alpn"))
+o = s:option(ListValue, _n("alpn"), translate("ALPN"))
 o.default = "default"
 o:value("default", translate("Default"))
 o:value("h3")
@@ -445,6 +444,7 @@ o:value("http/1.1")
 o:value("h2,http/1.1")
 o:value("h3,h2,http/1.1")
 o:depends({ [_n("tls")] = true })
+o:depends({ [_n("protocol")] = "hysteria" })
 
 o = s:option(Flag, _n("tls_disable_sni"), translate("Disable SNI"), translate("Do not send server name in ClientHello."))
 o.default = "0"
@@ -452,14 +452,13 @@ o:depends({ [_n("tls")] = true })
 o:depends({ [_n("protocol")] = "hysteria"})
 o:depends({ [_n("protocol")] = "tuic" })
 o:depends({ [_n("protocol")] = "hysteria2" })
-o:depends({ [_n("protocol")] = "shadowsocks" })
 
-o = s:option(Value, _n("tls_serverName"), translate("Domain"))
+o = s:option(Value, _n("tls_serverName"), "SNI " .. translate("Domain"))
 o:depends({ [_n("tls")] = true })
 o:depends({ [_n("protocol")] = "hysteria"})
 o:depends({ [_n("protocol")] = "tuic" })
 o:depends({ [_n("protocol")] = "hysteria2" })
-o:depends({ [_n("protocol")] = "shadowsocks" })
+o:depends({ [_n("protocol")] = "naive" })
 
 o = s:option(Flag, _n("tls_allowInsecure"), translate("allowInsecure"), translate("Whether unsafe connections are allowed. When checked, Certificate validation will be skipped."))
 o.default = "0"
@@ -467,7 +466,6 @@ o:depends({ [_n("tls")] = true })
 o:depends({ [_n("protocol")] = "hysteria"})
 o:depends({ [_n("protocol")] = "tuic" })
 o:depends({ [_n("protocol")] = "hysteria2" })
-o:depends({ [_n("protocol")] = "shadowsocks" })
 
 o = s:option(Flag, _n("ech"), translate("ECH"))
 o.default = "0"
@@ -475,6 +473,7 @@ o:depends({ [_n("tls")] = true, [_n("flow")] = "", [_n("reality")] = false })
 o:depends({ [_n("protocol")] = "tuic" })
 o:depends({ [_n("protocol")] = "hysteria" })
 o:depends({ [_n("protocol")] = "hysteria2" })
+o:depends({ [_n("protocol")] = "naive" })
 
 o = s:option(TextValue, _n("ech_config"), translate("ECH Config"))
 o.default = ""
@@ -489,6 +488,9 @@ o.validate = function(self, value)
 	end
 	return value
 end
+
+o = s:option(Value, _n("ech_query_server_name"), translate("ECH Query Domain"), translate("Overrides the domain name used for ECH HTTPS record queries."))
+o:depends({ [_n("ech")] = true })
 
 if singbox_tags:find("with_utls") then
 	o = s:option(Flag, _n("utls"), translate("uTLS"))
@@ -648,6 +650,7 @@ o:depends({ [_n("tcp_guise")] = "http" })
 o:depends({ [_n("transport")] = "http" })
 o:depends({ [_n("transport")] = "ws" })
 o:depends({ [_n("transport")] = "httpupgrade" })
+o:depends({ [_n("protocol")] = "naive" })
 
 -- [[ Mux ]]--
 o = s:option(Flag, _n("mux"), translate("Mux"))
@@ -756,38 +759,44 @@ o:depends({ [_n("protocol")] = "vless" })
 o:depends({ [_n("protocol")] = "tuic" })
 o:depends({ [_n("protocol")] = "hysteria2" })
 o:depends({ [_n("protocol")] = "anytls" })
-
-o = s:option(ListValue, _n("chain_proxy"), translate("Chain Proxy"))
-o:value("", translate("Close(Not use)"))
-o:value("1", translate("Preproxy Node"))
-o:value("2", translate("Landing Node"))
-for i, v in ipairs(s.fields[_n("protocol")].keylist) do
-	if not v:find("_") then
-		o:depends({ [_n("protocol")] = v })
-	end
-end
-
-o1 = s:option(ListValue, _n("preproxy_node"), translate("Preproxy Node"), translate("Only support a layer of proxy."))
-o1:depends({ [_n("chain_proxy")] = "1" })
-o1.template = appname .. "/cbi/nodes_listvalue"
-o1.group = {}
-
-o2 = s:option(ListValue, _n("to_node"), translate("Landing Node"), translate("Only support a layer of proxy."))
-o2:depends({ [_n("chain_proxy")] = "2" })
-o2.template = appname .. "/cbi/nodes_listvalue"
-o2.group = {}
-
-for k, v in pairs(nodes_list) do
-	if v.type == "sing-box" and v.id ~= arg[1] and (not v.chain_proxy or v.chain_proxy == "") then
-		o1:value(v.id, v.remark)
-		o1.group[#o1.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-		o2:value(v.id, v.remark)
-		o2.group[#o2.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-	end
-end
-
 end
 -- [[ Normal single node End ]]
+
+if not load_shunt_options then
+	o = s:option(ListValue, _n("chain_proxy"), translate("Chain Proxy"))
+	o:value("", translate("Close(Not use)"))
+	if not (load_iface_options or load_urltest_options) then
+		-- Special node cannot be use pre-proxy.
+		o:value("1", translate("Preproxy Node"))
+	end
+	o:value("2", translate("Landing Node"))
+
+	o1 = s:option(ListValue, _n("preproxy_node"), translate("Preproxy Node"), translate("Only support a layer of proxy."))
+	o1:depends({ [_n("chain_proxy")] = "1" })
+	o1.template = appname .. "/cbi/nodes_listvalue"
+	o1.group = {}
+
+	o2 = s:option(ListValue, _n("to_node"), translate("Landing Node"), translate("Only support a layer of proxy."))
+	o2:depends({ [_n("chain_proxy")] = "2" })
+	o2.template = appname .. "/cbi/nodes_listvalue"
+	o2.group = {}
+
+	for k1, v1 in pairs(node_list) do
+		if k1 ~= "shunt_list" and k1 ~= "iface_list" then
+			for i, v in ipairs(v1) do
+				if v.id ~= arg[1] then
+					o1:value(v.id, v.remark)
+					o1.group[#o1.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
+					if k1 == "normal_list" then
+						-- Landing Node not support use special node.
+						o2:value(v.id, v.remark)
+						o2.group[#o2.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
+					end
+				end
+			end
+		end
+	end
+end
 
 api.luci_types(arg[1], m, s, type_name, option_prefix)
 
@@ -797,9 +806,6 @@ if load_shunt_options then
 	setfenv(shunt_lua, getfenv(1))(m, s, {
 		node_id = arg[1],
 		node = current_node,
-		socks_list = socks_list,
-		urltest_list = urltest_list,
-		iface_list = iface_list,
-		normal_list = nodes_list
+		node_list = node_list,
 	})
 end

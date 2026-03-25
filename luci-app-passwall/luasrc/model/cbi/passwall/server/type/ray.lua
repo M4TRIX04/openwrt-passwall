@@ -37,6 +37,7 @@ o:value("http", "HTTP")
 o:value("socks", "Socks")
 o:value("shadowsocks", "Shadowsocks")
 o:value("trojan", "Trojan")
+o:value("hysteria2", translate("Hysteria2"))
 o:value("dokodemo-door", "dokodemo-door")
 o:depends({ [_n("custom")] = false })
 
@@ -122,6 +123,30 @@ o:value("", translate("Disable"))
 o:value("xtls-rprx-vision")
 o:depends({ [_n("protocol")] = "vless" })
 
+---- [[ hysteria2 ]]
+o = s:option(Value, _n("hysteria2_auth_password"), translate("Auth Password"))
+o.password = true
+o:depends({ [_n("protocol")] = "hysteria2"})
+
+o = s:option(Flag, _n("hysteria2_ignore_client_bandwidth"), translate("Client BBR Flow Control"))
+o.default = 0
+o:depends({ [_n("protocol")] = "hysteria2" })
+
+o = s:option(Value, _n("hysteria2_up_mbps"), translate("Max upload Mbps"))
+o:depends({ [_n("protocol")] = "hysteria2", [_n("hysteria2_ignore_client_bandwidth")] = false })
+
+o = s:option(Value, _n("hysteria2_down_mbps"), translate("Max download Mbps"))
+o:depends({ [_n("protocol")] = "hysteria2", [_n("hysteria2_ignore_client_bandwidth")] = false })
+
+o = s:option(ListValue, _n("hysteria2_obfs_type"), translate("Obfs Type"))
+o:value("", translate("Disable"))
+o:value("salamander")
+o:depends({ [_n("protocol")] = "hysteria2" })
+
+o = s:option(Value, _n("hysteria2_obfs_password"), translate("Obfs Password"))
+o:depends({ [_n("hysteria2_obfs_type")] = "salamander" })
+
+---- [[ TLS ]]
 o = s:option(Flag, _n("tls"), translate("TLS"))
 o.default = 0
 o.validate = function(self, value, t)
@@ -190,6 +215,7 @@ o:value("http/1.1")
 o:value("h2,http/1.1")
 o:value("h3,h2,http/1.1")
 o:depends({ [_n("tls")] = true, [_n("reality")] = false })
+o:depends({ [_n("protocol")] = "hysteria2"})
 
 o = s:option(Flag, _n("use_mldsa65Seed"), translate("ML-DSA-65"))
 o.default = "0"
@@ -215,6 +241,7 @@ o = s:option(FileUpload, _n("tls_certificateFile"), translate("Public key absolu
 o.default = m:get(s.section, "tls_certificateFile") or "/etc/config/ssl/" .. arg[1] .. ".pem"
 if o and o:formvalue(arg[1]) then o.default = o:formvalue(arg[1]) end
 o:depends({ [_n("tls")] = true, [_n("reality")] = false })
+o:depends({ [_n("protocol")] = "hysteria2"})
 o.validate = function(self, value, t)
 	if value and value ~= "" then
 		if not fs.access(value) then
@@ -230,6 +257,7 @@ o = s:option(FileUpload, _n("tls_keyFile"), translate("Private key absolute path
 o.default = m:get(s.section, "tls_keyFile") or "/etc/config/ssl/" .. arg[1] .. ".key"
 if o and o:formvalue(arg[1]) then o.default = o:formvalue(arg[1]) end
 o:depends({ [_n("tls")] = true, [_n("reality")] = false })
+o:depends({ [_n("protocol")] = "hysteria2"})
 o.validate = function(self, value, t)
 	if value and value ~= "" then
 		if not fs.access(value) then
@@ -358,9 +386,50 @@ o:depends({ [_n("transport")] = "mkcp" })
 o = s:option(Value, _n("grpc_serviceName"), "ServiceName")
 o:depends({ [_n("transport")] = "grpc" })
 
+--[[FinalMask]]
+o = s:option(Flag, _n("use_finalmask"), "FinalMask")
+o.default = "0"
+o:depends({ [_n("custom")] = false, [_n("protocol")] = "vmess" })
+o:depends({ [_n("custom")] = false, [_n("protocol")] = "vless" })
+o:depends({ [_n("custom")] = false, [_n("protocol")] = "trojan" })
+o:depends({ [_n("custom")] = false, [_n("protocol")] = "shadowsocks" })
+o:depends({ [_n("custom")] = false, [_n("protocol")] = "wireguard" })
+o:depends({ [_n("custom")] = false, [_n("protocol")] = "hysteria2" })
+
+o = s:option(TextValue, _n("finalmask"), "FinalMask JSON")
+o:depends({ [_n("use_finalmask")] = true })
+o.rows = 10
+o.wrap = "off"
+o.custom_cfgvalue = function(self, section, value)
+	local raw = m:get(section, "finalmask")
+	if raw then
+		return api.base64Decode(raw)
+	end
+end
+o.custom_write = function(self, section, value)
+	m:set(section, "finalmask", api.base64Encode(value) or "")
+end
+o.validate = function(self, value)
+	value = api.trim(value):gsub("\r\n", "\n"):gsub("^[ \t]*\n", ""):gsub("\n[ \t]*$", ""):gsub("\n[ \t]*\n", "\n")
+	if api.jsonc.parse(value) then
+		return value
+	else
+		return nil, "FinalMask " .. translate("Must be JSON text!")
+	end
+end
+
+--[[acceptProxyProtocol]]
 o = s:option(Flag, _n("acceptProxyProtocol"), translate("acceptProxyProtocol"), translate("Whether to receive PROXY protocol, when this node want to be fallback or forwarded by proxy, it must be enable, otherwise it cannot be used."))
 o.default = "0"
 o:depends({ [_n("custom")] = false })
+
+--[[Fast Open]]
+o = s:option(Flag, _n("tcp_fast_open"), "TCP " .. translate("Fast Open"))
+o.default = "0"
+o:depends({ [_n("protocol")] = "vmess", [_n("custom")] = false })
+o:depends({ [_n("protocol")] = "vless", [_n("custom")] = false })
+o:depends({ [_n("protocol")] = "shadowsocks", [_n("custom")] = false })
+o:depends({ [_n("protocol")] = "trojan", [_n("custom")] = false })
 
 -- [[ Fallback部分 ]]--
 o = s:option(Flag, _n("fallback"), translate("Fallback"))
@@ -447,7 +516,7 @@ o.validate = function(self, value, t)
 	if value and api.jsonc.parse(value) then
 		return value
 	else
-		return nil, translate("Must be JSON text!")
+		return nil, translate("Custom Config") .. " " .. translate("Must be JSON text!")
 	end
 end
 o.custom_cfgvalue = function(self, section, value)
@@ -457,7 +526,7 @@ o.custom_cfgvalue = function(self, section, value)
 	end
 end
 o.custom_write = function(self, section, value)
-	m:set(section, "config_str", api.base64Encode(value))
+	m:set(section, "config_str", api.base64Encode(value) or "")
 end
 
 o = s:option(Flag, _n("log"), translate("Log"))

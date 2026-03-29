@@ -29,7 +29,7 @@ local has_ssr = api.is_finded("ssr-local") and api.is_finded("ssr-redir")
 local has_trojan_plus = api.is_finded("trojan-plus")
 local has_singbox = api.finded_com("sing-box")
 local has_xray = api.finded_com("xray")
-local has_hysteria2 = api.finded_com("hysteria")
+local has_hysteria2 = api.finded_com("hysteria2")
 local allowInsecure_default = nil
 -- 取节点使用core类型（节点订阅页面未设置时，自动取默认）
 local ss_type_default = api.get_core("ss_type", {{has_ss,"shadowsocks-libev"},{has_ss_rust,"shadowsocks-rust"},{has_singbox,"sing-box"},{has_xray,"xray"}})

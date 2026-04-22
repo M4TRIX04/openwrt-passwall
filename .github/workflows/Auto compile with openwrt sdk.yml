@@ -115,14 +115,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - url_sdk: https://archive.openwrt.org/releases/21.02.7/targets/x86/64/openwrt-sdk-21.02.7-x86-64_gcc-8.4.0_musl.Linux-x86_64.tar.xz
-            ver: "22.03-"
-
           - url_sdk: https://downloads.openwrt.org/releases/24.10.5/targets/x86/64/openwrt-sdk-24.10.5-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
             ver: "23.05-24.10"
-
-          - url_sdk: https://downloads.openwrt.org/snapshots/targets/x86/64/openwrt-sdk-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-            ver: "25.12+"
     steps:
       - name: Install packages
         run: |

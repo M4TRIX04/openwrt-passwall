@@ -503,35 +503,35 @@ end
 -- 处理数据
 local function processData(szType, content, add_mode, group, sub_cfg)
 	--log(2, content, add_mode, group)
-	local default_allowinsecure = DEFAULT_ALLOWINSECURE
-	local default_ss_type = DEFAULT_SS_TYPE
-	local default_trojan_type = DEFAULT_TROJAN_TYPE
-	local default_vmess_type = DEFAULT_VMESS_TYPE
-	local default_vless_type = DEFAULT_VLESS_TYPE
-	local default_hysteria2_type = DEFAULT_HYSTERIA2_TYPE
+	local sub_allowinsecure = DEFAULT_ALLOWINSECURE
+	local sub_ss_type = DEFAULT_SS_TYPE
+	local sub_trojan_type = DEFAULT_TROJAN_TYPE
+	local sub_vmess_type = DEFAULT_VMESS_TYPE
+	local sub_vless_type = DEFAULT_VLESS_TYPE
+	local sub_hysteria2_type = DEFAULT_HYSTERIA2_TYPE
 	if sub_cfg then
 		if sub_cfg.allowInsecure and sub_cfg.allowInsecure ~= "1" then
-			default_allowinsecure = nil
+			sub_allowinsecure = nil
 		end
 		local ss_type = sub_cfg.ss_type or "global"
 		if ss_type ~= "global" and core_has[ss_type] then
-			default_ss_type = ss_type
+			sub_ss_type = ss_type
 		end
 		local trojan_type = sub_cfg.trojan_type or "global"
 		if trojan_type ~= "global" and core_has[trojan_type] then
-			default_trojan_type = trojan_type
+			sub_trojan_type = trojan_type
 		end
 		local vmess_type = sub_cfg.vmess_type or "global"
 		if vmess_type ~= "global" and core_has[vmess_type] then
-			default_vmess_type = vmess_type
+			sub_vmess_type = vmess_type
 		end
 		local vless_type = sub_cfg.vless_type or "global"
 		if vless_type ~= "global" and core_has[vless_type] then
-			default_vless_type = vless_type
+			sub_vless_type = vless_type
 		end
 		local hysteria2_type = sub_cfg.hysteria2_type or "global"
 		if hysteria2_type ~= "global" and core_has[hysteria2_type] then
-			default_hysteria2_type = hysteria2_type
+			sub_hysteria2_type = hysteria2_type
 		end
 	end
 	local result = {
@@ -573,9 +573,9 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		result.remarks = base64Decode(params.remarks)
 	elseif szType == 'vmess' then
 		local info = jsonParse(content)
-		if default_vmess_type == "sing-box" and has_singbox then
+		if sub_vmess_type == "sing-box" and has_singbox then
 			result.type = 'sing-box'
-		elseif default_vmess_type == "xray" and has_xray then
+		elseif sub_vmess_type == "xray" and has_xray then
 			result.type = "Xray"
 		else
 			log("跳过 VMess 节点，因未适配到 VMess 核心程序，或未正确设置节点使用类型。")
@@ -667,10 +667,10 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		if info.tls == "tls" or info.tls == "1" then
 			result.tls = "1"
 			result.tls_serverName = (info.sni and info.sni ~= "") and info.sni or info.host
-			result.tls_CertSha = info.pcs
+			result.tls_pinSHA256 = info.pcs
 			result.tls_CertByName = info.vcn
 			local insecure = info.allowinsecure or info.allowInsecure or info.insecure
-			result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (default_allowinsecure and "1" or "0")
+			result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
 		else
 			result.tls = "0"
 		end
@@ -686,7 +686,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			return nil
 		end
 	elseif szType == "ss" then
-		result = set_ss_implementation(default_ss_type, result)
+		result = set_ss_implementation(sub_ss_type, result)
 		if not result then return nil end
 
 		--SS-URI = "ss://" userinfo "@" hostname ":" port [ "/" ] [ "?" plugin ] [ "#" tag ]
@@ -938,7 +938,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 							result.ech = "1"
 							result.ech_config = params.ech
 						end
-						result.tls_CertSha = params.pcs
+						result.tls_pinSHA256 = params.pcs
 						result.tls_CertByName = params.vcn
 						if params.security == "reality" then
 							result.reality = "1"
@@ -950,7 +950,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 						end
 					end
 					local insecure = params.allowinsecure or params.allowInsecure or params.insecure
-					result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (default_allowinsecure and "1" or "0")
+					result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
 					result.uot = params.udp
 				elseif (params.type ~= "tcp" and params.type ~= "raw") and (params.headerType and params.headerType ~= "none") then
 					result.error_msg = "请更换 Xray 或 Sing-Box 来支持 SS 更多的传输方式。"
@@ -959,7 +959,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 
 			if params["shadow-tls"] then
 				if result.type ~= "sing-box" and result.type ~= "SS-Rust" then
-					result.error_msg =  default_ss_type .. " 不支持 shadow-tls 插件。"
+					result.error_msg =  sub_ss_type .. " 不支持 shadow-tls 插件。"
 				else
 					-- 解析SS Shadow-TLS 插件参数
 					local function parseShadowTLSParams(b64str, out)
@@ -1001,12 +1001,12 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			end
 		end
 	elseif szType == "trojan" then
-		if default_trojan_type == "trojan-plus" and has_trojan_plus then
+		if sub_trojan_type == "trojan-plus" and has_trojan_plus then
 			result.type = "Trojan-Plus"
-		elseif default_trojan_type == "sing-box" and has_singbox then
+		elseif sub_trojan_type == "sing-box" and has_singbox then
 			result.type = 'sing-box'
 			result.protocol = 'trojan'
-		elseif default_trojan_type == "xray" and has_xray then
+		elseif sub_trojan_type == "xray" and has_xray then
 			result.type = 'Xray'
 			result.protocol = 'trojan'
 		else
@@ -1052,10 +1052,10 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 
 			result.tls = '1'
 			result.tls_serverName = params.peer or params.sni or ""
-			result.tls_CertSha = params.pcs
+			result.tls_pinSHA256 = params.pcs
 			result.tls_CertByName = params.vcn
 			local insecure = params.allowinsecure or params.allowInsecure or params.insecure
-			result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (default_allowinsecure and "1" or "0")
+			result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
 
 			if not params.type then params.type = "tcp" end
 			params.type = string.lower(params.type)
@@ -1141,7 +1141,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		end
 
 	elseif szType == "ssd" then
-		result = set_ss_implementation(default_ss_type, result)
+		result = set_ss_implementation(sub_ss_type, result)
 		if not result then return nil end
 		result.address = content.server
 		result.port = content.port
@@ -1152,9 +1152,9 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		result.group = content.airport
 		result.remarks = content.remarks
 	elseif szType == "vless" then
-		if default_vless_type == "sing-box" and has_singbox then
+		if sub_vless_type == "sing-box" and has_singbox then
 			result.type = 'sing-box'
-		elseif default_vless_type == "xray" and has_xray then
+		elseif sub_vless_type == "xray" and has_xray then
 			result.type = "Xray"
 		else
 			log("跳过 VLESS 节点，因未适配到 VLESS 核心程序，或未正确设置节点使用类型。")
@@ -1296,7 +1296,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 					result.ech = "1"
 					result.ech_config = params.ech
 				end
-				result.tls_CertSha = params.pcs
+				result.tls_pinSHA256 = params.pcs
 				result.tls_CertByName = params.vcn
 				if params.security == "reality" then
 					result.reality = "1"
@@ -1307,7 +1307,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 					result.reality_mldsa65Verify = params.pqv or nil
 				end
 				local insecure = params.allowinsecure or params.allowInsecure or params.insecure
-				result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (default_allowinsecure and "1" or "0")
+				result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
 			end
 
 			result.port = port
@@ -1364,7 +1364,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		result.hysteria_auth_password = params.auth
 		result.tls_serverName = params.peer or params.sni or ""
 		local insecure = params.allowinsecure or params.allowInsecure or params.insecure
-		result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (default_allowinsecure and "1" or "0")
+		result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
 		result.alpn = params.alpn
 		result.hysteria_up_mbps = params.upmbps
 		result.hysteria_down_mbps = params.downmbps
@@ -1407,15 +1407,14 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.address = host_port
 		end
 		result.tls_serverName = params.sni
-		result.tls_CertSha = params.pcs
+		result.tls_pinSHA256 = params.pcs or params.pinsha256
 		result.tls_CertByName = params.vcn
 		local insecure = params.allowinsecure or params.insecure
-		result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (default_allowinsecure and "1" or "0")
-		result.hysteria2_tls_pinSHA256 = params.pinSHA256
+		result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
 		result.hysteria2_hop = params.mport
 
-		if (default_hysteria2_type == "sing-box" and has_singbox) or (default_hysteria2_type == "xray" and has_xray) then
-			local is_singbox = default_hysteria2_type == "sing-box" and has_singbox
+		if (sub_hysteria2_type == "sing-box" and has_singbox) or (sub_hysteria2_type == "xray" and has_xray) then
+			local is_singbox = sub_hysteria2_type == "sing-box" and has_singbox
 			result.type = is_singbox and 'sing-box' or 'Xray'
 			result.protocol = "hysteria2"
 			if params["obfs-password"] or params["obfs_password"] then
@@ -1490,7 +1489,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		result.tuic_congestion_control = params.congestion_control or "cubic"
 		result.tuic_udp_relay_mode = params.udp_relay_mode or "native"
 		local insecure = params.allowinsecure or params.insecure or params.allow_insecure
-		result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (default_allowinsecure and "1" or "0")
+		result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
 	elseif szType == "anytls" then
 		if has_singbox then
 			result.type = 'sing-box'
@@ -1554,7 +1553,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			end
 			result.port = port
 			local insecure = params.allowinsecure or params.insecure
-			result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (default_allowinsecure and "1" or "0")
+			result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
 		end
 	elseif szType == 'naive+https' or szType == 'naive+quic' then
 		if has_singbox then
@@ -1633,9 +1632,9 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 end
 
 local function curl(url, file, ua, mode)
-	if not url or url == "" then return 404 end
+	if not url or url == "" then return 22, 404 end
 	local curl_args = {
-		"-skL", "-w %{http_code}", "--retry 3", "--connect-timeout 3", "-H 'Accept-Encoding: identity'"
+		"-fskL", "-w %{http_code}", "--retry 3", "--connect-timeout 3", "-H 'Accept-Encoding: identity'"
 	}
 	if ua and ua ~= "" and ua ~= "curl" then
 		ua = (ua == "passwall") and ("passwall/" .. api.get_version()) or ua
@@ -1650,7 +1649,7 @@ local function curl(url, file, ua, mode)
 	else
 		return_code, result = api.curl_logic(url, file, curl_args)
 	end
-	return tonumber(result)
+	return return_code, tonumber(result)
 end
 
 function get_headers()
@@ -2134,8 +2133,9 @@ local execute = function()
 				local result = (not access_mode) and "自动" or (access_mode == "direct" and "直连" or (access_mode == "proxy" and "代理" or "自动"))
 				log('正在订阅:【' .. remark .. '】' .. url .. ' [' .. result .. ']')
 				tmp_file = "/tmp/" .. cfgid
-				value.http_code = curl(url, tmp_file, ua, access_mode)
-				if value.http_code ~= 200 then
+				local return_code
+				return_code, value.http_code = curl(url, tmp_file, ua, access_mode)
+				if return_code ~= 0 then
 					fail_list[#fail_list + 1] = value
 					luci.sys.call("rm -f " .. tmp_file)
 				end

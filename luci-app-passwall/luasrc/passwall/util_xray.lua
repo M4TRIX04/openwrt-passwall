@@ -149,22 +149,21 @@ function gen_outbound(flag, node, tag, proxy_table)
 				tlsSettings = (node.stream_security == "tls") and {
 					serverName = node.tls_serverName,
 					allowInsecure = (function()
-								if node.tls_CertSha and node.tls_CertSha ~= "" then return nil end
+								if node.tls_pinSHA256 and node.tls_pinSHA256 ~= "" then return nil end
 								if api.compare_versions(os.date("%Y.%m.%d"), "<", "2026.6.1") and node.tls_allowInsecure == "1" then return true end
 							end)(),
 					fingerprint = (node.type == "Xray" and node.utls == "1" and node.fingerprint and node.fingerprint ~= "") and node.fingerprint or nil,
 					pinnedPeerCertSha256 = (function()
 								if api.compare_versions(xray_version, "<", "26.1.31") then return nil end
-								if not node.tls_CertSha then return "" end
-								return node.tls_CertSha
+								if not node.tls_pinSHA256 then return "" end
+								return node.tls_pinSHA256
 							end)(),
 					verifyPeerCertByName = (function()
 								if api.compare_versions(xray_version, "<", "26.1.31") then return nil end
 								if not node.tls_CertByName then return "" end
 								return node.tls_CertByName
 							end)(),
-					echConfigList = (node.ech == "1") and node.ech_config or nil,
-					echForceQuery = (node.ech == "1") and (node.ech_ForceQuery or "full") or nil
+					echConfigList = (node.ech == "1") and node.ech_config or nil
 				} or nil,
 				realitySettings = (node.stream_security == "reality") and {
 					serverName = node.tls_serverName,
@@ -193,7 +192,7 @@ function gen_outbound(flag, node, tag, proxy_table)
 					}
 				} or nil,
 				kcpSettings = (node.transport == "mkcp") and {
-					mtu = 1350,
+					mtu = (node.mkcp_mtu and node.mkcp_mtu ~= "") and tonumber(node.mkcp_mtu) or 1350,
 					tti = 50,
 					uplinkCapacity = 12,
 					downlinkCapacity = 100,
@@ -654,7 +653,7 @@ function gen_config_server(node)
 						}
 					} or nil,
 					kcpSettings = (node.transport == "mkcp") and {
-						mtu = 1350,
+						mtu = (node.mkcp_mtu and node.mkcp_mtu ~= "") and tonumber(node.mkcp_mtu) or 1350,
 						tti = 50,
 						uplinkCapacity = 12,
 						downlinkCapacity = 100,
@@ -860,8 +859,9 @@ function gen_config(var)
 		} or nil
 	end
 
+	local node = node_id and uci:get_all(appname, node_id) or nil
+
 	if node_id then
-		local node = uci:get_all(appname, node_id)
 		local balancers = {}
 		local rules = {}
 		if node then
@@ -1544,7 +1544,7 @@ function gen_config(var)
 			local domain = {}
 			local nodes_domain_text = sys.exec([[uci show passwall | sed -n "s/.*\.\(address\|download_address\)='\([^']*\)'/\2/p" | sort -u]])
 			string.gsub(nodes_domain_text, '[^' .. "\r\n" .. ']+', function(w)
-				if w and w ~= "" and api.datatypes.hostname(w) and not GLOBAL.VPS_EXCLUDE[w] then
+				if not api.vps_domain_exclude(w) and api.datatypes.hostname(w) and not GLOBAL.VPS_EXCLUDE[w] then
 					table.insert(domain, "full:" .. w)
 				end
 			end)
@@ -1663,7 +1663,12 @@ function gen_config(var)
 					address = remote_dns_udp_server or remote_dns_tcp_server,
 					port = tonumber(remote_dns_udp_port) or tonumber(remote_dns_tcp_port),
 					network = remote_dns_udp_server and "udp" or "tcp",
-					nonIPQuery = "reject"
+					nonIPQuery = (api.compare_versions(xray_version, "<", "26.4.25")) and "reject" or nil, -- Todo is to remove it
+					rules = (api.compare_versions(xray_version, ">", "26.4.17")) and {
+						{
+							action = ((node and node.protocol == "_shunt") or remote_dns_fake or dns.clientIP) and "hijack" or "direct"
+						}
+					} or nil
 				}
 			})
 
@@ -1710,6 +1715,7 @@ function gen_config(var)
 							outboundTag = "direct" --dns为本地ip，走直连
 						end
 					end
+					--[[
 					local dns_block_mode = "host"
 					if dns_block_mode == "host" and outboundTag == "blackhole" then
 						for d_i, d_k in ipairs(value.domain) do
@@ -1717,6 +1723,7 @@ function gen_config(var)
 						end
 						dns_server = nil
 					end
+					]]--
 					if dns_server then
 						--dns_server.finalQuery = true
 						dns_server.domains = value.domain

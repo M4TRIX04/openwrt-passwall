@@ -66,11 +66,11 @@ local api = self.api
 				alert("<%:Error%>");
 				return;
 			}
-			if (!res || res.code !== 0 || !res.data) {
+			if (!res || res.code !== 1 || !res.data) {
 				alert(res && res.msg ? res.msg : "<%:Fetch Failed%> !");
 				return;
 			}
-			const inputs = document.querySelectorAll('input[id$=".xray_tls_CertSha"]');
+			const inputs = document.querySelectorAll('input[id$=".xray_tls_pinSHA256"]');
 			inputs.forEach(function(input) {
 				input.value = res.data;
 			});

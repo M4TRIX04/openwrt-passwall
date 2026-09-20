@@ -24,6 +24,7 @@ local uci, uci_get, uci_set, uci_del, uci_foreach, uci_save = api.uci, api.uci_g
 local tinsert = table.insert
 local ssub, slen, schar, sbyte, sformat, sgsub = string.sub, string.len, string.char, string.byte, string.format, string.gsub
 
+local has_ss = api.is_finded("ss-redir")
 local has_ss_rust = api.is_finded("sslocal")
 local has_ssr = api.is_finded("ssr-local") and api.is_finded("ssr-redir")
 local has_singbox = api.finded_com("sing-box")
@@ -505,7 +506,9 @@ end
 
 -- 设置 ss 协议实现类型
 local function set_ss_implementation(ss_type, result)
-	if ss_type == "shadowsocks-rust" and has_ss_rust then
+	if ss_type == "shadowsocks-libev" and has_ss then
+		result.type = 'SS'
+	elseif ss_type == "shadowsocks-rust" and has_ss_rust then
 		result.type = 'SS-Rust'
 	elseif ss_type == "xray" and has_xray then
 		result.type = 'Xray'

@@ -461,6 +461,17 @@ run_socks() {
 		lua $UTIL_NAIVE gen_config "$(json_dump)" > $config_file
 		[ -n "$no_run" ] || ln_run "$(first_type naive)" naive $log_file "$config_file"
 	;;
+	ss)
+		[ -n "$no_run" ] || {
+			local plugin_sh="${config_file%.json}_plugin.sh"
+			json_add_string "plugin_sh" "$plugin_sh"
+		}
+		json_add_string "local_addr" "$bind"
+		json_add_string "local_port" "$socks_port"
+		json_add_string "mode" "tcp_and_udp"
+		lua $UTIL_SS gen_config "$(json_dump)" > $config_file
+		[ -n "$no_run" ] || ln_run "$(first_type ss-local)" "ss-local" $log_file -c "$config_file" -v
+	;;
 	ssr)
 		json_add_string "local_addr" "$bind"
 		json_add_string "local_port" "$socks_port"
@@ -769,6 +780,16 @@ start_global() {
 		lua $UTIL_NAIVE gen_config "$(json_dump)" > $config_file
 		ln_run "$(first_type naive)" naive $log_file "$config_file"
 		echolog "注意：Naiveproxy 不支持 UDP 转发！"
+	;;
+	ss)
+		[ "${TCP_PROXY_WAY}" = "tproxy" ] && json_add_string "tcp_tproxy" "true"
+		local plugin_sh="${config_file%.json}_plugin.sh"
+		json_add_string "plugin_sh" "$plugin_sh"
+		json_add_string "local_addr" "0.0.0.0"
+		json_add_string "local_port" "$REDIR_PORT"
+		json_add_string "mode" "tcp_and_udp"
+		lua $UTIL_SS gen_config "$(json_dump)" > $config_file
+		ln_run "$(first_type ss-redir)" "ss-redir" $log_file -c "$config_file" -v
 	;;
 	ssr)
 		[ "${TCP_PROXY_WAY}" = "tproxy" ] && json_add_string "tcp_tproxy" "true"
@@ -1807,8 +1828,8 @@ get_config() {
 	FILTER_PROXY_IPV6=$(config_n_get @global[0] filter_proxy_ipv6 0)
 	DNS_REDIRECT=$(config_n_get @global[0] dns_redirect 1)
 
-	REDIRECT_LIST="socks ss-rust ssr sing-box xray naiveproxy hysteria2"
-	TPROXY_LIST="socks ss-rust ssr sing-box xray hysteria2"
+	REDIRECT_LIST="socks ss ss-rust ssr sing-box xray naiveproxy hysteria2"
+	TPROXY_LIST="socks ss ss-rust ssr sing-box xray hysteria2"
 
 	NEXT_DNS_LISTEN_PORT=15353
 	TUN_DNS="127.0.0.1#${NEXT_DNS_LISTEN_PORT}"

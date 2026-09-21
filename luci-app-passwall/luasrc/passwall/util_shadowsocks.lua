@@ -21,7 +21,11 @@ function gen_config_server(node)
 		config.server = {"[::0]", "0.0.0.0"}
 	end
 
-	if node.type == "SSR" then
+	if node.type == "SS" then
+		config.plugin = plugin_file or nil
+		config.plugin_opts = (plugin_file) and node.plugin_opts or nil
+		config.mode = mode
+	elseif node.type == "SSR" then
 		config.protocol = node.protocol
 		config.protocol_param = node.protocol_param
 		config.obfs = node.obfs

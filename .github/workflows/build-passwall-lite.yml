@@ -1,0 +1,51 @@
+name: Passwall Lite test IPK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/passwall-lite'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout passwall-lite
+        uses: actions/checkout@v4
+        with:
+          ref: passwall-lite
+          persist-credentials: false
+
+      - name: Generate .config for Language Packs
+        run: |
+          {
+            echo "CONFIG_ALL_NONSHARED=n"
+            echo "CONFIG_ALL_KMODS=n"
+            echo "CONFIG_ALL=n"
+            echo "CONFIG_AUTOREMOVE=n"
+            echo "CONFIG_LUCI_LANG_zh_Hans=y"
+            echo "CONFIG_PACKAGE_luci-app-passwall=m"
+          } > .config
+
+      - name: Compile With OpenWrt SDK
+        uses: openwrt/gh-action-sdk@main
+        env:
+          ARCH: x86_64-24.10.5
+          PACKAGES: luci-app-passwall
+
+      - name: Collect LuCI IPKs
+        run: |
+          mkdir -p upload
+          find bin/packages/ -type f -name 'luci-app-passwall_*.ipk' -exec cp {} upload/ \;
+          find bin/packages/ -type f -name 'luci-i18n-passwall-*.ipk' -exec cp {} upload/ \;
+          compgen -G 'upload/luci-app-passwall_*.ipk' > /dev/null
+
+      - name: Upload test IPKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: passwall-lite-24.10.5-x86_64-${{ github.run_id }}
+          path: upload/*.ipk
+          if-no-files-found: error
+          retention-days: 14

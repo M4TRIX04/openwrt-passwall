@@ -70,11 +70,6 @@ for sid in $(uci show passwall | grep "@acl_rule" | cut -d '.' -sf 2 | cut -d '=
 	uci -q rename passwall.${sid}="${new_id}"
 	unset sid new_id
 done
-for sid in $(uci show passwall | grep "@subscribe_list" | cut -d '.' -sf 2 | cut -d '=' -sf 1); do
-	new_id="sub_$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 5)"
-	uci -q rename passwall.${sid}="${new_id}"
-	unset sid new_id
-done
 
 migrate_option() {
 	local section="$1"
@@ -101,6 +96,9 @@ for sid in $(uci show passwall | grep "=acl_rule" | cut -d '.' -sf 2 | cut -d '=
 	uci -q delete "passwall.${sid}.udp_node"
 done
 
+# Remove retired subscription settings; preserve all existing nodes.
+while uci -q delete "passwall.@subscribe_list[0]"; do :; done
+while uci -q delete "passwall.@global_subscribe[0]"; do :; done
 uci -q commit passwall
 
 sed -i "s#add_from#group#g" /etc/config/passwall 2>/dev/null

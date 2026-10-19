@@ -135,7 +135,7 @@ if (has_singbox or has_xray) and #nodes_table > 0 then
 		local tips = s:taboption("Main", DummyValue, "tips", "　")
 		tips.rawhtml = true
 		tips.cfgvalue = function(t, n)
-			return string.format('<a style="color: red">%s</a>', translate("There are no available nodes, please add or subscribe nodes first."))
+			return string.format('<a style="color: red">%s</a>', translate("There are no available nodes, please add nodes first."))
 		end
 		tips:depends({ node = "", ['!reverse'] = true })
 	end

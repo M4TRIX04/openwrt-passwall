@@ -27,11 +27,6 @@ local s = m:section(NamedSection, arg[1], "nodes", translate("Node Config"))
 s.addremove = false
 s.dynamic = false
 
-o = s:option(DummyValue, "passwall", "　")
-o.rawhtml  = true
-o.template = m:template_path("/node_config/link_share_man")
-o.value = arg[1]
-
 o = s:option(Value, "remarks", translate("Node Remarks"))
 o.default = translate("Remarks")
 o.rmempty = false

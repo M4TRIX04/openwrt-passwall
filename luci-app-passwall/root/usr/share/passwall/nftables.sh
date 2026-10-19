@@ -249,6 +249,7 @@ load_acl() {
 	[ "$ENABLED_ACLS" = 1 ] && {
 		acl_app
 		for sid in $(ls -F ${TMP_ACL_PATH} | grep '/$' | awk -F '/' '{print $1}' | grep -v 'default'); do
+			[ "$(get_cache_var "ACL_${sid}_failed")" = 1 ] && continue
 			eval "$(uci -q show "${CONFIG}.${sid}" | cut -d'.' -sf 3-)"
 
 			mode=${mode:-0}

@@ -2002,21 +2002,6 @@ function get_socks_backup_nodes(id)
 	return table.concat(backup_nodes, " ")
 end
 
-function get_core(field, candidates)
-	local v = uci_get_c("@global_subscribe[0]", field)
-	if v and v ~= "" then
-		for _, c in ipairs(candidates) do
-			if c[2] == v and c[1] then
-				return v
-			end
-		end
-	end
-	for _, c in ipairs(candidates) do
-		if c[1] then return c[2] end
-	end
-	return nil
-end
-
 function cleanEmptyTables(t)
 	if type(t) ~= "table" then return nil end
 	for k, v in pairs(t) do

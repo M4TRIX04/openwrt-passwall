@@ -77,15 +77,6 @@ config global_app
 	option xray_file '/usr/bin/xray'
 	option hysteria_file '/usr/bin/hysteria'
 
-config global_subscribe
-	option filter_keyword_mode '1'
-	list filter_discard_list '距离下次重置剩余'
-	list filter_discard_list '套餐到期'
-	list filter_discard_list '过期时间'
-	list filter_discard_list '剩余流量'
-	list filter_discard_list 'QQ群'
-	list filter_discard_list '官网'
-
 config nodes 'myshunt'
 	option remarks '分流总节点'
 	option type 'Xray'

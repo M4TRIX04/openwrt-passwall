@@ -347,6 +347,49 @@ run_chinadns_ng() {
 	ln_run "$(first_type chinadns-ng)" chinadns-ng "${_LOG_FILE}" -C ${_CONF_FILE}
 }
 
+gen_ss_config() {
+	local output="$2"
+	if ! lua "$UTIL_SS" gen_config "$1" > "$output" 2> "${output}.error"; then
+		echolog "SS configuration rejected: $(cat "${output}.error")"
+		cat "${output}.error" >&2
+		rm -f "$output" "${output}.error"
+		return 1
+	fi
+	rm -f "${output}.error"
+}
+
+check_ss_node() {
+	[ "$(config_n_get "$1" type)" = "SS" ] || return 0
+	local check_file="$TMP_ACL_PATH/check_ss_${1}.json"
+	gen_ss_config "{\"node\":\"$1\"}" "$check_file" || return 1
+	rm -f "$check_file"
+}
+
+fail_ss_acl() {
+	local failed_sid="$1" failed_node="$2" failed_config="$3" key
+	for key in node redir_port dns_port default fakedns; do
+		del_cache_var "ACL_${failed_sid}_${key}"
+	done
+	if [ -z "$failed_config" ]; then
+		local failed_socks=$(get_cache_var "acl_node_${failed_node}_socks_port")
+		for key in socks_port redir_port enable_log; do
+			del_cache_var "acl_node_${failed_node}_${key}"
+		done
+		# Preflight rejected this node before any ACL could start it.
+		[ ! -f "$TMP_PATH/var" ] || sed -i "/^node_${failed_node}_[0-9a-f]*=/d; /^node_${failed_node}_[0-9a-f]*_ipv6=/d" "$TMP_PATH/var"
+		if [ -n "$failed_socks" ]; then
+			local failed_file="${TMP_ACL_PATH:?}/${failed_node}_SOCKS_${failed_socks}"
+			rm -f "${failed_file}.json" "${failed_file}.json.error" "${failed_file}_DNS.json" "${failed_file}_DNS.json.error"
+		fi
+	else
+		# Preserve a successful instance shared by another ACL of the same node.
+		rm -f "$TMP_PATH/$failed_config" "$TMP_PATH/${failed_config}.error"
+	fi
+	set_cache_var "ACL_${failed_sid}_failed" 1
+	rm -rf "${TMP_ACL_PATH:?}/${failed_sid}"
+	echolog "ACL ${failed_sid}: SS node ${failed_node} rejected; skipping this ACL."
+}
+
 run_socks() {
 	local flag node bind socks_port config_file http_port http_config_file relay_port log_file no_run loglevel
 	eval_set_val "$@"
@@ -471,14 +514,10 @@ run_socks() {
 		[ -n "$no_run" ] || ln_run "$(first_type naive)" naive $log_file "$config_file"
 	;;
 	ss)
-		[ -n "$no_run" ] || {
-			local plugin_sh="${config_file%.json}_plugin.sh"
-			json_add_string "plugin_sh" "$plugin_sh"
-		}
 		json_add_string "local_addr" "$bind"
 		json_add_string "local_port" "$socks_port"
 		json_add_string "mode" "tcp_and_udp"
-		lua $UTIL_SS gen_config "$(json_dump)" > $config_file
+		gen_ss_config "$(json_dump)" "$config_file" || return 1
 		[ -n "$no_run" ] || ln_run "$(first_type ss-local)" "ss-local" $log_file -c "$config_file" -v
 	;;
 	ssr)
@@ -801,12 +840,10 @@ start_global() {
 	;;
 	ss)
 		[ "${TCP_PROXY_WAY}" = "tproxy" ] && json_add_string "tcp_tproxy" "true"
-		local plugin_sh="${config_file%.json}_plugin.sh"
-		json_add_string "plugin_sh" "$plugin_sh"
 		json_add_string "local_addr" "0.0.0.0"
 		json_add_string "local_port" "$REDIR_PORT"
 		json_add_string "mode" "tcp_and_udp"
-		lua $UTIL_SS gen_config "$(json_dump)" > $config_file
+		gen_ss_config "$(json_dump)" "$config_file" || return 1
 		ln_run "$(first_type ss-redir)" "ss-redir" $log_file -c "$config_file" -v
 	;;
 	ssr)
@@ -868,7 +905,7 @@ start_global() {
 			[ "$on_node_http" = "1" ] && [ -z "$node_http_flag" ] && {
 				http_port=$GLOBAL_HTTP_port
 			}
-			run_socks flag=TCP node=$NODE bind=$node_socks_bind socks_port=$GLOBAL_SOCKS_port config_file=$config_file http_port=$http_port http_config_file=$http_config_file
+			run_socks flag=TCP node=$NODE bind=$node_socks_bind socks_port=$GLOBAL_SOCKS_port config_file=$config_file http_port=$http_port http_config_file=$http_config_file || { [ "$type" = "ss" ] && return 1; }
 		}
 	}
 
@@ -904,7 +941,7 @@ start_socks() {
 				local enable_autoswitch=$(config_n_get $id enable_autoswitch 0)
 				local no_rec=0
 				[ "$enable_autoswitch" = "1" ] && no_rec=1
-				NO_REC_PROCESS=$no_rec $APP_PATH/app.sh run_socks flag=$id node=$node bind=$bind socks_port=$port config_file=$config_file http_port=$http_port http_config_file=$http_config_file log_file=$log_file
+				NO_REC_PROCESS=$no_rec $APP_PATH/app.sh run_socks flag=$id node=$node bind=$bind socks_port=$port config_file=$config_file http_port=$http_port http_config_file=$http_config_file log_file=$log_file || { [ "$(config_n_get $node type)" = "SS" ] && continue; }
 				set_cache_var "${id}" "$node"
 				#自动切换逻辑
 				[ "$enable_autoswitch" = "1" ] && { $APP_PATH/socks_auto_switch.sh ${id} > /dev/null 2>&1 & }
@@ -944,7 +981,7 @@ socks_node_switch() {
 		local http_port=$(config_n_get $flag http_port 0)
 		local http_config_file="${flag}_http.json"
 		LOG_FILE="/dev/null"
-		run_socks flag=$flag node=$new_node bind=$bind socks_port=$port config_file=$config_file http_port=$http_port http_config_file=$http_config_file log_file=$log_file
+		run_socks flag=$flag node=$new_node bind=$bind socks_port=$port config_file=$config_file http_port=$http_port http_config_file=$http_config_file log_file=$log_file || { [ "$(config_n_get $new_node type)" = "SS" ] && return 1; }
 		sleep 2s
 		[ "$(check_port_exists "$port" tcp)" = "0" ] && return 1
 		set_cache_var "${flag}" "$new_node"
@@ -957,7 +994,8 @@ clean_crontab() {
 	#sed -i "/${CONFIG}/d" /etc/crontabs/root >/dev/null 2>&1
 	sed -i "/$(echo "/etc/init.d/${CONFIG}" | sed 's#\/#\\\/#g')/d" /etc/crontabs/root >/dev/null 2>&1
 	sed -i "/$(echo "lua ${APP_PATH}/rule_update.lua log" | sed 's#\/#\\\/#g')/d" /etc/crontabs/root >/dev/null 2>&1
-	sed -i "/$(echo "lua ${APP_PATH}/subscribe.lua start" | sed 's#\/#\\\/#g')/d" /etc/crontabs/root >/dev/null 2>&1
+	# Remove legacy subscription jobs on upgrade; never schedule them again.
+	sed -i '/lua .*\/passwall\/subscribe\.lua start/d' /etc/crontabs/root >/dev/null 2>&1
 
 	busybox pgrep -af "${CONFIG}/" | awk '/tasks\.sh/{print $1}' | xargs kill -9 >/dev/null 2>&1
 	rm -f ${LOCK_PATH}/${CONFIG}_tasks.lock
@@ -1038,35 +1076,6 @@ start_crontab() {
 			echo "$rule_t ${setsid_cmd}lua $APP_PATH/rule_update.lua log all cron > /dev/null 2>&1 &" >>/etc/crontabs/root
 		fi
 		echolog "配置定时任务：自动更新规则。"
-	fi
-
-	# ===== subscribe =====
-	local TMP_SUB_PATH=$TMP_PATH/sub_crontabs
-	mkdir -p "$TMP_SUB_PATH"
-	local item remark sub_update_week_mode sub_update_time_mode
-	for item in $(uci show ${CONFIG} | grep "=subscribe_list" | cut -d '.' -sf 2 | cut -d '=' -sf 1); do
-		sub_update_week_mode=$(config_n_get $item update_week_mode)
-		if [ -n "$sub_update_week_mode" ]; then
-			remark=$(config_n_get "$item" remark)
-			sub_update_time_mode=$(config_n_get $item update_time_mode)
-			echo "$item" >> "$TMP_SUB_PATH/${sub_update_week_mode}_${sub_update_time_mode}"
-			echolog "配置定时任务：自动更新【$remark】订阅。"
-		fi
-	done
-	if [ -d "$TMP_SUB_PATH" ]; then
-		local name cfgids
-		for name in $(ls "$TMP_SUB_PATH"); do
-			sub_update_week_mode=${name%_*}
-			sub_update_time_mode=${name#*_}
-			cfgids=$(tr '\n' ',' < "$TMP_SUB_PATH/$name" | sed 's/,$//')
-			local sub_t=$(build_time "$sub_update_week_mode" "$sub_update_time_mode")
-			if [ "$sub_update_week_mode" = "8" ]; then
-				update_loop=1
-			else
-				echo "$sub_t ${setsid_cmd}lua $APP_PATH/subscribe.lua start $cfgids cron > /dev/null 2>&1 &" >>/etc/crontabs/root
-			fi
-		done
-		rm -rf "$TMP_SUB_PATH"
 	fi
 
 	# ===== loop =====
@@ -1453,6 +1462,19 @@ acl_app() {
 		chinadns_port=11500
 		for sid in $items; do
 			[ "$(config_n_get $sid enabled)" = "1" ] || continue
+			local check_node=$(config_n_get "$sid" node)
+			if [ "$(config_n_get "$sid" use_global_config 0)" = 1 ] || [ "$check_node" = default ]; then
+				check_node="$NODE"
+			fi
+			if has_1_65535 "$(config_n_get "$sid" tcp_no_redir_ports "$TCP_NO_REDIR_PORTS")" && has_1_65535 "$(config_n_get "$sid" udp_no_redir_ports "$UDP_NO_REDIR_PORTS")"; then
+				check_node=
+			fi
+			if [ -n "$check_node" ] && ! check_ss_node "$check_node"; then
+				fail_ss_acl "$sid" "$check_node"
+				continue
+			fi
+			del_cache_var "ACL_${sid}_failed"
+			local acl_failed=0
 			has_enabled=1
 			eval $(uci -q show "${CONFIG}.${sid}" | cut -d'.' -sf 3-)
 
@@ -1661,14 +1683,14 @@ acl_app() {
 							run_dns ${_dns_port}
 						else
 							socks_port=$(get_new_port $(expr $socks_port + 1))
-							set_cache_var "acl_node_${node}_socks_port" "${socks_port}"
+							[ "$type" = ss ] || set_cache_var "acl_node_${node}_socks_port" "${socks_port}"
 							redir_port=$(get_new_port $(expr $redir_port + 1))
-							set_cache_var "acl_node_${node}_redir_port" "${redir_port}"
+							[ "$type" = ss ] || set_cache_var "acl_node_${node}_redir_port" "${redir_port}"
 							node_port=$redir_port
 							local log_file="/dev/null"
 							[ "${log}" = "1" ] && {
 								log_file="${TMP_ACL_PATH}/${sid}/node.log"
-								set_cache_var "acl_node_${node}_enable_log" "1"
+								[ "$type" = ss ] || set_cache_var "acl_node_${node}_enable_log" "1"
 							}
 
 							if [ "${type}" = "sing-box" ] || [ "${type}" = "xray" ]; then
@@ -1697,18 +1719,30 @@ acl_app() {
 								run_${type} flag=$node node=$node redir_port=$redir_port ${_extra_param} config_file=$config_file log_file=$log_file loglevel=$loglevel
 							else
 								config_file="acl/${node}_SOCKS_${socks_port}.json"
-								run_socks flag=$node node=$node bind=127.0.0.1 socks_port=$socks_port config_file=$config_file log_file=$log_file loglevel=$loglevel
+								if ! run_socks flag=$node node=$node bind=127.0.0.1 socks_port=$socks_port config_file=$config_file log_file=$log_file loglevel=$loglevel; then
+									if [ "$type" = ss ]; then
+										acl_failed=1
+										fail_ss_acl "$sid" "$node" "$config_file"
+									fi
+								fi
 								# log_file=$TMP_ACL_PATH/ipt2socks_${node}_${redir_port}.log
 								log_file="/dev/null"
-								run_ipt2socks flag=acl_${node} tcp_tproxy=${is_tproxy} local_port=$redir_port socks_address=127.0.0.1 socks_port=$socks_port log_file=$log_file
+								[ "$acl_failed" = 1 ] || run_ipt2socks flag=acl_${node} tcp_tproxy=${is_tproxy} local_port=$redir_port socks_address=127.0.0.1 socks_port=$socks_port log_file=$log_file
 							fi
-							run_dns ${_dns_port}
+							if [ "$type" = ss ] && [ "$acl_failed" != 1 ]; then
+								set_cache_var "acl_node_${node}_socks_port" "$socks_port"
+								set_cache_var "acl_node_${node}_redir_port" "$redir_port"
+								[ "$log" != 1 ] || set_cache_var "acl_node_${node}_enable_log" 1
+							fi
+							[ "$acl_failed" = 1 ] || run_dns ${_dns_port}
 						fi
-						set_cache_var "ACL_${sid}_node" "${node}"
-						set_cache_var "ACL_${sid}_redir_port" "${node_port}"
+						if [ "$acl_failed" != 1 ]; then
+							set_cache_var "ACL_${sid}_node" "${node}"
+							set_cache_var "ACL_${sid}_redir_port" "${node_port}"
+						fi
 					}
 				fi
-				[ "${use_fakedns}" = "1" ] && set_cache_var "ACL_${sid}_fakedns" "1"
+				[ "$acl_failed" != 1 ] && [ "${use_fakedns}" = "1" ] && set_cache_var "ACL_${sid}_fakedns" "1"
 			}
 			unset enabled sid remarks sources interface tcp_no_redir_ports udp_no_redir_ports use_global_config node use_direct_list use_proxy_list use_block_list use_gfw_list chn_list tcp_proxy_mode udp_proxy_mode filter_proxy_ipv6 dns_mode remote_dns v2ray_dns_mode remote_dns_doh remote_dns_client_ip
 			unset _ip _mac _iprange _ipset _ip_or_mac source_list node_port config_file _extra_param dns_cache_key log loglevel log_chinadns_ng
@@ -1731,6 +1765,19 @@ start() {
 	mkdir -p /tmp/etc /tmp/log $TMP_PATH $TMP_BIN_PATH $TMP_SCRIPT_FUNC_PATH $TMP_ROUTE_PATH $TMP_ACL_PATH $TMP_PATH2
 	set_cache_var "LOCAL_DNS" "$LOCAL_DNS"
 	get_config
+	del_cache_var ACL_GLOBAL_failed
+	# Reject invalid SS configuration before starting any client processes or DNS.
+	# Keep independent SOCKS services and valid device ACLs available.
+	if [ "$ENABLED_DEFAULT_ACL" = 1 ] && ! check_ss_node "$NODE"; then
+		ENABLED_DEFAULT_ACL=0
+		set_cache_var ENABLED_DEFAULT_ACL 0
+		del_cache_var ACL_GLOBAL_node
+		del_cache_var ACL_GLOBAL_redir_port
+		del_cache_var ACL_default_dns_port
+		del_cache_var GLOBAL_SOCKS_server
+		set_cache_var ACL_GLOBAL_failed 1
+		echolog "Global SS node ${NODE} rejected; global transparent proxy disabled."
+	fi
 	export V2RAY_LOCATION_ASSET=$(config_n_get @global_rules[0] v2ray_location_asset "/usr/share/v2ray/")
 	export XRAY_LOCATION_ASSET=$V2RAY_LOCATION_ASSET
 	export ENABLE_DEPRECATED_GEOSITE=true
@@ -1780,18 +1827,6 @@ start() {
 	start_crontab "$1"
 	echolog "运行完成！\n"
 
-	[ "$ENABLED" = 1 ] && [ "$1" = "boot" ] && {
-		local cfgids item
-		for item in $(uci show ${CONFIG} | grep "=subscribe_list" | cut -d '.' -sf 2 | cut -d '=' -sf 1); do
-			if [ "$(config_n_get "$item" boot_update 0)" = "1" ]; then
-				cfgids="${cfgids:+$cfgids,}$item"
-			fi
-		done
-		[ -n "$cfgids" ] && {
-			sleep 5
-			lua $APP_PATH/subscribe.lua start $cfgids cron > /dev/null 2>&1 &
-		}
-	}
 }
 
 stop() {
@@ -1810,7 +1845,7 @@ stop() {
 	done
 	busybox pgrep -af "${CONFIG}/monitor\.sh" | xargs -r kill -9 >/dev/null 2>&1
 	busybox pgrep -f "sleep.*(6s|9s|58s)" | xargs -r kill -9 >/dev/null 2>&1
-	busybox pgrep -af "${CONFIG}/" | awk '! /app\.sh|subscribe\.lua|rule_update\.lua|tasks\.sh|server_app\.lua|ujail/{print $1}' | xargs -r kill -9 >/dev/null 2>&1
+	busybox pgrep -af "${CONFIG}/" | awk '! /app\.sh|rule_update\.lua|tasks\.sh|server_app\.lua|ujail/{print $1}' | xargs -r kill -9 >/dev/null 2>&1
 	unset V2RAY_LOCATION_ASSET
 	unset XRAY_LOCATION_ASSET
 	unset SS_SYSTEM_DNS_RESOLVER_FORCE_BUILTIN

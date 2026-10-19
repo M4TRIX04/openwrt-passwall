@@ -8,19 +8,19 @@ local fs = api.fs
 local uci, uci_get, uci_set, uci_del, uci_foreach, uci_save = api.uci, api.uci_get_c, api.uci_set_c, api.uci_del_c, api.uci_foreach_c, api.uci_save_c
 
 -- [[ 逻辑锁 Start ]] --
--- Both update scripts use the same lockf lock; the kernel releases it on exit.
+-- The rule updater and service restart share this lock; keep its legacy filename.
 local update_lock = api.nixio.open(api.LOCK_PREFIX .. "_sub_rule.lock", api.nixio.open_flags("rdwr", "creat"))
 if not update_lock then
-	api.log("无法打开订阅/规则更新锁，退出。")
+	api.log("无法打开规则更新锁，退出。")
 	os.exit(1)
 end
 -- Scheduled updates wait for the lock; manual requests may skip a busy lock.
 if not update_lock:lock("tlock") then
 	if arg[3] ~= "cron" then
-		api.log("订阅或规则更新正在运行，本次请求跳过。")
+		api.log("规则更新正在运行，本次请求跳过。")
 		os.exit(0)
 	end
-	local running = ({s = "订阅", r = "规则更新"})[update_lock:read(1)] or "订阅/规则更新"
+	local running = "规则更新"
 	update_lock:seek(0)
 	api.log("[" .. running .. "]实例正在运行，[规则更新]进入队列等待...")
 	if not update_lock:lock("lock") then
@@ -28,7 +28,7 @@ if not update_lock:lock("tlock") then
 		os.exit(1)
 	end
 end
--- Record the running task in the same file: s = subscription, r = rule update.
+-- Record the rule update task in the lock file.
 update_lock:write("r")
 update_lock:seek(0)
 api.uci:revert(api.c_config)

@@ -4,7 +4,7 @@
 APP_FILE=${APP_PATH}/app.sh
 
 check_process() {
-	while busybox pgrep -af "${CONFIG}/" | grep -E 'app\.sh.*(start|stop)|nftables\.sh|iptables\.sh|subscribe\.lua' >/dev/null; do
+	while busybox pgrep -af "${CONFIG}/" | grep -E 'app\.sh.*(start|stop)|nftables\.sh|iptables\.sh' >/dev/null; do
 		sleep 6s 8>&- 9>&-
 	done
 }

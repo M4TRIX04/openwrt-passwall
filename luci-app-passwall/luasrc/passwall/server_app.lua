@@ -101,7 +101,25 @@ local function start()
 				end
 				bin = ln_run("/usr/bin/microsocks", "microsocks_" .. id, string.format("-i :: -p %s %s", port, auth), log_path)
 			elseif type == "SS" or type == "SSR" then
-				if server.custom == "1" and server.config_str then
+				if type == "SS" then
+					local ss = require(require_dir .. "util_shadowsocks")
+					local ok, result = pcall(function()
+						local value
+						if server.custom == "1" and server.config_str then
+							value = jsonc.parse(api.base64Decode(server.config_str))
+							if _G.type(value) ~= "table" then error("Shadowsocks-libev: invalid server JSON", 0) end
+							ss.validate_method(value.method)
+						else
+							value = ss.gen_config_server(server)
+						end
+						return value
+					end)
+					if not ok then
+						log("SS server " .. id .. " rejected: " .. tostring(result))
+						return
+					end
+					config = result
+				elseif server.custom == "1" and server.config_str then
 					config = jsonc.parse(api.base64Decode(server.config_str))
 				else
 					config = require(require_dir .. "util_shadowsocks").gen_config_server(server)
@@ -156,6 +174,12 @@ local function start()
 					config = require(require_dir .. "util_hysteria2").gen_config_server(server)
 				end
 				bin = ln_run(api.get_app_path("hysteria"), "hysteria", "-c " .. config_file .. " server", log_path)
+			end
+
+			-- Ignore legacy SIP003 options, including custom SS server JSON.
+			if server.type == "SS" then
+				config.plugin = nil
+				config.plugin_opts = nil
 			end
 
 			if next(config) then

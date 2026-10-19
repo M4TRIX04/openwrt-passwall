@@ -38,7 +38,6 @@ function index()
 	--[[ Client ]]
 	entry({"admin", "services", appname, "settings"}, cbi(appname .. "/client/global"), _("Basic Settings"), 1).dependent = true
 	entry({"admin", "services", appname, "node_list"}, cbi(appname .. "/client/node_list"), _("Node List"), 2).dependent = true
-	entry({"admin", "services", appname, "node_subscribe"}, cbi(appname .. "/client/node_subscribe"), _("Node Subscribe"), 3).dependent = true
 	entry({"admin", "services", appname, "other"}, cbi(appname .. "/client/other"), _("Other Settings"), 92).leaf = true
 	if api.is_finded("haproxy") then
 		entry({"admin", "services", appname, "haproxy"}, cbi(appname .. "/client/haproxy"), _("Load Balancing"), 93).leaf = true
@@ -46,7 +45,6 @@ function index()
 	entry({"admin", "services", appname, "app_update"}, cbi(appname .. "/client/app_update"), _("App Update"), 95).leaf = true
 	entry({"admin", "services", appname, "rule"}, cbi(appname .. "/client/rule"), _("Rule Manage"), 96).leaf = true
 	entry({"admin", "services", appname, "rule_list"}, cbi(appname .. "/client/rule_list", {autoapply = true}), _("Rule List"), 97).leaf = true
-	entry({"admin", "services", appname, "node_subscribe_config"}, cbi(appname .. "/client/node_subscribe_config")).leaf = true
 	entry({"admin", "services", appname, "node_config"}, cbi(appname .. "/client/node_config")).leaf = true
 	entry({"admin", "services", appname, "shunt_rules"}, cbi(appname .. "/client/shunt_rules")).leaf = true
 	entry({"admin", "services", appname, "socks_config"}, cbi(appname .. "/client/socks_config")).leaf = true
@@ -65,10 +63,8 @@ function index()
 	entry({"admin", "services", appname, "server_log"}, call("server_log")).leaf = true
 	entry({"admin", "services", appname, "server_get_log"}, call("server_get_log")).leaf = true
 	entry({"admin", "services", appname, "server_clear_log"}, call("server_clear_log")).leaf = true
-	entry({"admin", "services", appname, "link_add_node"}, call("link_add_node")).leaf = true
 	entry({"admin", "services", appname, "socks_autoswitch_add_node"}, call("socks_autoswitch_add_node")).leaf = true
 	entry({"admin", "services", appname, "socks_autoswitch_remove_node"}, call("socks_autoswitch_remove_node")).leaf = true
-	entry({"admin", "services", appname, "gen_client_config"}, call("gen_client_config")).leaf = true
 	entry({"admin", "services", appname, "get_now_use_node"}, call("get_now_use_node")).leaf = true
 	entry({"admin", "services", appname, "get_redir_log"}, call("get_redir_log")).leaf = true
 	entry({"admin", "services", appname, "get_socks_log"}, call("get_socks_log")).leaf = true
@@ -93,10 +89,6 @@ function index()
 	entry({"admin", "services", appname, "save_node_list_opt"}, call("save_node_list_opt")).leaf = true
 	entry({"admin", "services", appname, "update_rules"}, call("update_rules")).leaf = true
 	entry({"admin", "services", appname, "rollback_rules"}, call("rollback_rules")).leaf = true
-	entry({"admin", "services", appname, "subscribe_del_node"}, call("subscribe_del_node")).leaf = true
-	entry({"admin", "services", appname, "subscribe_del_all"}, call("subscribe_del_all")).leaf = true
-	entry({"admin", "services", appname, "subscribe_manual"}, call("subscribe_manual")).leaf = true
-	entry({"admin", "services", appname, "subscribe_manual_all"}, call("subscribe_manual_all")).leaf = true
 	entry({"admin", "services", appname, "flush_set"}, call("flush_set")).leaf = true
 	entry({"admin", "services", appname, "get_shunt_rules"}, call("get_shunt_rules")).leaf = true
 	entry({"admin", "services", appname, "add_shunt_rule"}, call("add_shunt_rule")).leaf = true
@@ -157,32 +149,6 @@ function hide_menu()
 	http.redirect(luci.dispatcher.build_url("admin", "status", "overview"))
 end
 
-function link_add_node()
-	-- 分片接收以突破uhttpd的限制
-	local tmp_file = "/tmp/links.conf"
-	local chunk = http.formvalue("chunk")
-	local chunk_index = tonumber(http.formvalue("chunk_index"))
-	local total_chunks = tonumber(http.formvalue("total_chunks"))
-	local group = http.formvalue("group") or "default"
-
-	if chunk and chunk_index ~= nil and total_chunks ~= nil then
-		-- 按顺序拼接到文件
-		local mode = "a"
-		if chunk_index == 0 then
-			mode = "w"
-		end
-		local f = io.open(tmp_file, mode)
-		if f then
-			f:write(chunk)
-			f:close()
-		end
-		-- 如果是最后一片，才执行
-		if chunk_index + 1 == total_chunks then
-			luci.sys.call("lua /usr/share/passwall/subscribe.lua add " .. group)
-		end
-	end
-end
-
 function socks_autoswitch_add_node()
 	local id = http.formvalue("id")
 	local key = http.formvalue("key")
@@ -222,19 +188,6 @@ function socks_autoswitch_remove_node()
 	http.redirect(api.url("socks_config", id))
 end
 
-
-function gen_client_config()
-	local id = http.formvalue("id")
-	local config_file = api.TMP_PATH .. "/config_" .. id
-	luci.sys.call(string.format("/usr/share/passwall/app.sh run_socks flag=config_%s node=%s bind=127.0.0.1 socks_port=1080 config_file=%s no_run=1", id, id, config_file))
-	if nixio.fs.access(config_file) then
-		http.prepare_content("application/json")
-		http.write(luci.sys.exec("cat " .. config_file))
-		api.remove(config_file)
-	else
-		http.redirect(api.url("node_list"))
-	end
-end
 
 function get_now_use_node()
 	local path = api.TMP_PATH .. "/acl/default"
@@ -490,7 +443,9 @@ function add_node()
 		uci_set(uid, "group", group)
 	end
 
-	if api.is_finded("ipt2socks") then
+	if api.is_finded("ss-local") and api.is_finded("ss-redir") then
+		uci_set(uid, "type", "SS")
+	elseif api.is_finded("ipt2socks") then
 		uci_set(uid, "type", "Socks")
 	elseif api.finded_com("sing-box") then
 		uci_set(uid, "type", "sing-box")
@@ -571,12 +526,6 @@ function clear_all_nodes()
 	uci_foreach("nodes", function(node)
 		uci_del(node['.name'])
 	end)
-	uci_foreach("subscribe_list", function(t)
-		uci_del(t[".name"], "md5")
-		uci_del(t[".name"], "chain_proxy")
-		uci_del(t[".name"], "preproxy_node")
-		uci_del(t[".name"], "to_node")
-	end)
 
 	uci_save(true, true)
 end
@@ -652,26 +601,6 @@ function delete_select_nodes()
 				uci_del(t[".name"], "fallback_node")
 			end
 		end)
-		uci_foreach("subscribe_list", function(t)
-			if t["preproxy_node"] == w then
-				uci_del(t[".name"], "preproxy_node")
-				uci_del(t[".name"], "chain_proxy")
-			end
-			if t["to_node"] == w then
-				uci_del(t[".name"], "to_node")
-				uci_del(t[".name"], "chain_proxy")
-			end
-		end)
-		if (uci_get(w, "add_mode") or "0") == "2" then
-			local group = uci_get(w, "group") or ""
-			if group ~= "" then
-				uci_foreach("subscribe_list", function(t)
-					if t["remark"] == group then
-						uci_del(t[".name"], "md5")
-					end
-				end)
-			end
-		end
 		uci_del(w)
 	end)
 	if redirect == "1" then
@@ -1103,67 +1032,6 @@ function geo_view()
 	else
 		http.write(i18n.translate("No results were found!"))
 	end
-end
-
-function subscribe_del_node()
-	local remark = http.formvalue("remark")
-	if remark and remark ~= "" then
-		luci.sys.call("lua /usr/share/" .. appname .. "/subscribe.lua truncate " .. luci.util.shellquote(remark) .. " > /dev/null 2>&1")
-	end
-	http.status(200, "OK")
-end
-
-function subscribe_del_all()
-	luci.sys.call("lua /usr/share/" .. appname .. "/subscribe.lua truncate > /dev/null 2>&1")
-	http.status(200, "OK")
-end
-
-function subscribe_manual()
-	local section = http.formvalue("section") or ""
-	local current_url = http.formvalue("url") or ""
-	if section == "" or current_url == "" then
-		http_write_json({ success = false, msg = "Missing section or URL, skip." })
-		return
-	end
-	local uci_url = api.sh_uci_get(c_config, section, "url")
-	if not uci_url or uci_url == "" then
-		http_write_json({ success = false, msg = i18n.translate("Please save and apply before manually subscribing.") })
-		return
-	end
-	if uci_url ~= current_url then
-		api.sh_uci_set(c_config, section, "url", current_url, true)
-	end
-	luci.sys.call("lua /usr/share/" .. appname .. "/subscribe.lua start " .. section .. " manual >/dev/null 2>&1 &")
-	http_write_json({ success = true, msg = "Subscribe triggered." })
-end
-
-function subscribe_manual_all()
-	local sections = http.formvalue("sections") or ""
-	local urls = http.formvalue("urls") or ""
-	if sections == "" or urls == "" then
-		http_write_json({ success = false, msg = "Missing section or URL, skip." })
-		return
-	end
-	local section_list = util.split(sections, ",")
-	local url_list = util.split(urls, ",")
-	-- 检查是否存在未保存配置
-	for i, section in ipairs(section_list) do
-		local uci_url = api.sh_uci_get(c_config, section, "url")
-		if not uci_url or uci_url == "" then
-			http_write_json({ success = false, msg = i18n.translate("Please save and apply before manually subscribing.") })
-			return
-		end
-	end
-	-- 保存有变动的url
-	for i, section in ipairs(section_list) do
-		local current_url = url_list[i] or ""
-		local uci_url = api.sh_uci_get(c_config, section, "url")
-		if current_url ~= "" and uci_url ~= current_url then
-			api.sh_uci_set(c_config, section, "url", current_url, true)
-		end
-	end
-	luci.sys.call("lua /usr/share/" .. appname .. "/subscribe.lua start all manual >/dev/null 2>&1 &")
-	http_write_json({ success = true, msg = "Subscribe triggered." })
 end
 
 function flush_set()

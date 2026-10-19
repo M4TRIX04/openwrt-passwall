@@ -13,22 +13,6 @@ function isBase64(str) {
 	return base64Regex.test(str);
 }
 
-function decodeIfBase64(str) {
-	try {
-		let s = str.replace(/-/g, '+').replace(/_/g, '/');
-		while (s.length % 4) s += '=';
-		const decoded = decodeURIComponent(
-			atob(s).split('').map(c =>
-				'%' + c.charCodeAt(0).toString(16).padStart(2, '0')
-			).join('')
-		);
-		if (btoa(unescape(encodeURIComponent(decoded))).replace(/=+$/, '') === s.replace(/=+$/, '')) {
-			return decoded;
-		}
-	} catch (e) {}
-	return str;
-}
-
 function isUUID(str) {
 	const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 	return uuidRegex.test(str);

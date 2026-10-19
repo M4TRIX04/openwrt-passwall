@@ -2,7 +2,21 @@ module("luci.passwall.util_shadowsocks", package.seeall)
 local api = require "luci.passwall.api"
 local jsonc = api.jsonc
 
+local ss_methods = {
+	["aes-128-gcm"] = true,
+	["aes-256-gcm"] = true,
+	["chacha20-ietf-poly1305"] = true
+}
+
+function validate_method(method)
+	if type(method) ~= "string" or not ss_methods[method] then
+		error("Shadowsocks-libev: unsupported or missing method: " .. tostring(method), 0)
+	end
+	return true
+end
+
 function gen_config_server(node)
+	if node.type == "SS" then validate_method(node.method) end
 	local user = nil
 	if node.user then
 		user = api.uci_get_s(node.user)
@@ -40,6 +54,7 @@ function gen_config(var)
 		return
 	end
 	local node = api.uci_get_c(node_id)
+	if node.type == "SS" then validate_method(node.method) end
 	local server_host = var["server_host"] or (node.address or ""):lower()
 	local server_port = var["server_port"] or node.port
 	local local_addr = var["local_addr"]
@@ -62,8 +77,9 @@ function gen_config(var)
 	end
 	local server = server_host
 
+	plugin_sh, plugin_bin = nil, nil
 	local plugin_file
-	if node.plugin and node.plugin ~= "" and node.plugin ~= "none" then
+	if node.type == "SS-Rust" and node.plugin and node.plugin ~= "" and node.plugin ~= "none" then
 		plugin_sh = var["plugin_sh"] or ""
 		plugin_file = (plugin_sh ~="") and plugin_sh or node.plugin
 		plugin_bin = node.plugin
@@ -83,8 +99,6 @@ function gen_config(var)
 	}
 
 	if node.type == "SS" then
-		config.plugin = plugin_file or nil
-		config.plugin_opts = plugin_file and node.plugin_opts or nil
 		config.mode = mode
 	elseif node.type == "SSR" then
 		config.protocol = node.protocol

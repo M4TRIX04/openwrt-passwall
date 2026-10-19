@@ -46,17 +46,4 @@ o.default = 300
 o = s:option(Flag, "tcp_fast_open", "TCP " .. translate("Fast Open"), translate("Need node support required"))
 o.default = 0
 
-o = s:option(Flag, "plugin_enabled", translate("Plugin"))
-o.default = 0
-
-o = s:option(ListValue, "plugin", translate("Plugin Type"))
-o:depends("plugin_enabled", "1")
-o:value("none", translate("None"))
-if api.is_finded("xray-plugin") then o:value("xray-plugin", "Xray-plugin") end
-if api.is_finded("v2ray-plugin") then o:value("v2ray-plugin", "V2ray-plugin") end
-if api.is_finded("obfs-local") then o:value("obfs-local", "Simple-obfs") end
-
-o = s:option(Value, "plugin_opts", translate("Plugin Options"))
-o:depends("plugin_enabled", "1")
-
 api.type_cbi_section(s1, s)

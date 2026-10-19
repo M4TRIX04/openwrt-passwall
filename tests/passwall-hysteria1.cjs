@@ -50,10 +50,13 @@ api.fs={access=function(p) return files[p]~=nil or p:match('/fd$')~=nil end,
   local names={};for f in pairs(files) do if f:sub(1,#p+1)==p..'/' and not f:sub(#p+2):find('/') then names[#names+1]=f:sub(#p+2) end end;return iterator(names) end}
 api.sys={call=function(s)
  commands[#commands+1]=s
+ local tool=s:match("^command %-v '([^']+)'")
+ if tool then return probe_error or ((missing_commands or {})[tool] and (missing_status or 127) or 0) end
  local pid=s:match('kill %-TERM (%d+)') or s:match('kill %-KILL (%d+)');if pid then processes[tonumber(pid)].dead=true end
  local family=s:match('^(ip6?tables) ')
+ if family and (missing_commands or {})[family] then return missing_status or 127 end
  local key=s:gsub(' %-C OUTPUT ',' -A OUTPUT '):gsub(' %-D OUTPUT ',' -A OUTPUT '):gsub(' 2>/dev/null$','')
- if s:find(' -C OUTPUT ',1,true) then return query_error and 2 or ((preexisting_rule or (rule_state or {})[key]) and 0 or 1) end
+ if s:find(' -C OUTPUT ',1,true) then return query_error and (query_status or 2) or ((preexisting_rule or (rule_state or {})[key]) and 0 or 1) end
  if s:find(' -D OUTPUT ',1,true) then
   if delete_error == family or delete_error == 'all' then return 2 end
   local present=(rule_state or {})[key];if rule_state then rule_state[key]=nil end
@@ -73,7 +76,7 @@ end,exec=function(s)
  end;return ''
 end}
 modules={['luci.passwall.api']=api,['luci.util']={shellquote=function(s) return "'"..s.."'" end},
- ['nixio']={bin={b64decode=function(s) return ({['c2VjcmV0']='secret',['AA==']=string.char(0),['YQBi']='a'..string.char(0)..'b'})[s] end,b64encode=function(s) return ({secret='c2VjcmV0',[string.char(0)]='AA==',['a'..string.char(0)..'b']='YQBi'})[s] or '' end},nanosleep=function() end,open=function() return {lock=function() if lock_busy then return false end; assert(not lock_owned);lock_owned=true;return true end,close=function() lock_owned=false end} end,getaddrinfo=function(host,family) assert(family=='any');return {{address='203.0.113.1'}} end}}
+ ['nixio']={bin={b64decode=function(s) return ({['c2VjcmV0']='secret',['AA==']=string.char(0),['YQBi']='a'..string.char(0)..'b'})[s] end,b64encode=function(s) return ({secret='c2VjcmV0',[string.char(0)]='AA==',['a'..string.char(0)..'b']='YQBi'})[s] or '' end},nanosleep=function() end,open=function() return {lock=function() if lock_busy then return false end; assert(not lock_owned);lock_owned=true;return true end,close=function() lock_owned=false end} end,getaddrinfo=function(host,family) assert(family=='any');return {{address=resolved_ip or '203.0.113.1'}} end}}
 require=function(n) return assert(modules[n],n) end;module=function() end;arg={}
 files['/cert']='cert';files['/key']='key';files['/ca']='CA'
 ${read('luasrc/passwall/util_hysteria.lua')}
@@ -144,6 +147,93 @@ commands={};preexisting_rule=true
 local external=launch('faketcp','client','client');assert(runtime.start(external));runtime.stop('client')
 for _,cmd in ipairs(commands) do assert(not cmd:find(' -D OUTPUT ',1,true)) end
 preexisting_rule=false
+-- Run the real launcher/release paths with command availability fault injection.
+local registry='/tmp/etc/passwall_hysteria1/'
+local function instance(v) return api.jsonc.parse(files[registry..api.md5_string(v.config)..'.json'] or '') end
+local function owned_rules()
+ local n=0;for p in pairs(files) do if p:sub(1,#registry+5)==registry..'rule_' then n=n+1 end end;return n
+end
+local function count_delete(tool)
+ local n=0;for _,cmd in ipairs(commands) do if cmd:find(tool..' -t filter -D OUTPUT ',1,true)==1 then n=n+1 end end;return n
+end
+local function check_family_probe(tool,other)
+ local found=false
+ for _,cmd in ipairs(commands) do
+  if cmd:find("command -v '"..tool.."'",1,true)==1 then found=true end
+  assert(cmd:find("command -v '"..other.."'",1,true)~=1,'probed unused address family')
+ end
+ assert(found,'missing family availability check')
+end
+for _,family in ipairs({'ipv4','ipv6'}) do
+ resolved_ip=family=='ipv4' and '203.0.113.1' or '2001:db8::1'
+ local tool=family=='ipv4' and 'iptables' or 'ip6tables'
+ local other=family=='ipv4' and 'ip6tables' or 'iptables'
+ for _,status in ipairs({1,127}) do for _,both_missing in ipairs({false,true}) do
+  missing_commands={[tool]=true};if both_missing then missing_commands[other]=true end
+  missing_status=status;commands={}
+  local v=launch('faketcp','client','client');assert(runtime.start(v));local pid=counter
+  assert(not processes[pid].dead and #instance(v).rules==0 and owned_rules()==0)
+  check_family_probe(tool,other)
+  local warned=false
+  for _,cmd in ipairs(commands) do
+   assert(not cmd:match('^ip6?tables '),'managed rule operation without command')
+   if cmd:find('logger -t passwall ',1,true)==1 and cmd:find(tool..' unavailable',1,true) then warned=true end
+  end
+  assert(warned,'missing explicit fallback warning')
+  runtime.stop('client');assert(processes[pid].dead and not instance(v) and owned_rules()==0)
+ end end
+ -- Having the command for the destination family is sufficient for management.
+ missing_commands={[other]=true};commands={}
+ local one=launch('faketcp','client','shared_one');one.scope='client'
+ local two=launch('faketcp','client','shared_two');two.scope='client'
+ assert(runtime.start(one) and runtime.start(two));check_family_probe(tool,other)
+ assert(#instance(one).rules==1 and #instance(two).rules==1 and owned_rules()==1)
+ commands={};runtime.stop('client',one.config);assert(count_delete(tool)==0 and instance(two))
+ runtime.stop('client',two.config);assert(count_delete(tool)==1 and owned_rules()==0)
+ -- Pre-existing external rules remain external, including for IPv6.
+ preexisting_rule=true;commands={}
+ local external=launch('faketcp','client','client');assert(runtime.start(external))
+ assert(owned_rules()==0);runtime.stop('client');assert(count_delete(tool)==0)
+ preexisting_rule=false
+ -- Available command + probe/query/add errors must not become native fallback.
+ for _,fault in ipairs({'probe','query','query127','add'}) do
+  local good=launch('udp','client','client');assert(runtime.start(good));local goodpid=counter
+  local bad=launch('faketcp','client','client');commands={}
+  probe_error=fault=='probe' and 2 or nil;query_error=fault=='query' or fault=='query127';deny_rules=fault=='add'
+  query_status=fault=='query127' and 127 or 2
+  rejected(runtime.start,bad)
+  assert(counter==goodpid and not processes[goodpid].dead and not instance(bad) and owned_rules()==0)
+  for _,cmd in ipairs(commands) do assert(not cmd:find('unavailable for FakeTCP',1,true),'operation error masked as missing command') end
+  probe_error=nil;query_error=nil;query_status=nil;deny_rules=nil;runtime.stop('client')
+ end
+ -- Records from a managed instance must still be cleaned, even if the tool disappears.
+ local old=launch('faketcp','client','client');assert(runtime.start(old));local oldpid=counter
+ local old_rule=instance(old).rules[1];local marker=registry..'rule_'..api.md5_string(old_rule)
+ missing_commands={[tool]=true};missing_status=127;commands={}
+ rejected(runtime.start,old)
+ assert(counter==oldpid and processes[oldpid].dead and instance(old) and files[marker])
+ rejected(runtime.stop,'client',old.config);assert(instance(old) and files[marker])
+ for _,cmd in ipairs(commands) do assert(not cmd:find('command -v ',1,true),'skipped historical cleanup before restart') end
+ missing_commands={};runtime.stop('client',old.config);assert(not instance(old) and not files[marker])
+ -- Version and readiness checks still reject native-fallback instances in isolation.
+ for _,fault in ipairs({'version','exit','listener'}) do
+  local good=launch('udp','client','client');assert(runtime.start(good));local goodpid=counter
+  local bad=launch('faketcp','client','client');missing_commands={[tool]=true}
+  version=fault=='version' and 'hysteria version v2.6.0' or nil
+  immediate_exit=fault=='exit';no_listener=fault=='listener'
+  rejected(runtime.start,bad)
+  version=nil;immediate_exit=false;no_listener=false;missing_commands={}
+  assert(not processes[goodpid].dead and not instance(bad) and owned_rules()==0)
+  if counter~=goodpid then assert(processes[counter].dead) end
+  runtime.stop('client')
+ end
+end
+resolved_ip=nil;missing_commands=nil;missing_status=nil
+-- The new fallback is client-only; do not silently broaden the server policy.
+local server=launch('faketcp','server','server');local before_server=counter
+missing_commands={iptables=true};rejected(runtime.start,server)
+assert(counter==before_server and not instance(server) and owned_rules()==0)
+missing_commands=nil
 -- Fault injection runs the production release loop, including partial IPv6 cleanup.
 local v=launch('faketcp','server','server');assert(runtime.start(v))
 delete_error='all';query_error=nil
@@ -192,6 +282,7 @@ delete_error=nil;query_error=nil;runtime.stop('server')
 `);
 console.log('PASS real v1 generators: transports, auth, IPv4/IPv6, flags, fields and validation');
 console.log('PASS real launcher: Client/Server x 3 modes, restart/stop, failures, faketcp rule cleanup');
+console.log('PASS FakeTCP IPv4/IPv6: missing-command fallback, warnings, shared/external ownership, operation errors, historical cleanup and readiness isolation');
 console.log('PASS real server_app: mixed instances, mode-specific firewall and stop');
 const app=read('root/usr/share/passwall/app.sh');
 const branches=[...app.matchAll(/\n\thysteria\)\n([\s\S]*?)\n\t;;/g)];assert.equal(branches.length,2);

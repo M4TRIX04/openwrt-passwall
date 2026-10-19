@@ -151,13 +151,27 @@ function start(var)
 					local rule=v[1].." -t filter -A OUTPUT -m "..v[2].." "..v[3].." 1 -p tcp"..endpoint.." -j DROP"
 					-- Client needs only the destination address family.
 					if var.mode == "server" or (c.server:sub(1,1)=="[") == (v[1]=="ip6tables") then
-						r.rules[#r.rules+1]=rule
-						write(path,json.stringify(r))
-                        local status=api.sys.call(rule:gsub(" %-A OUTPUT "," -C OUTPUT ",1).." 2>/dev/null")
-                        assert(status == 0 or status == 1, "cannot query faketcp rule")
-                        if status == 1 then
-							write(registry.."/rule_"..api.md5_string(rule), rule)
-							assert(call(rule), "faketcp requires iptables TTL/ip6tables HL support")
+						local available = true
+						if var.mode == "client" then
+							local status = api.sys.call("command -v " .. quote(v[1]) .. " >/dev/null 2>&1")
+							-- ash returns 127, bash returns 1 for an absent command.
+							assert(status == 0 or status == 1 or status == 127, "cannot probe " .. v[1])
+							available = status == 0
+						end
+						if not available then
+							local warning = "Hysteria 1: WARNING: " .. v[1] .. " unavailable for FakeTCP client " .. var.config ..
+								"; continuing with native core handling, without a managed TTL/HL rule"
+							io.stderr:write(warning .. "\n")
+							call("logger -t passwall " .. quote(warning) .. " 2>/dev/null")
+						else
+							r.rules[#r.rules+1]=rule
+							write(path,json.stringify(r))
+							local status=api.sys.call(rule:gsub(" %-A OUTPUT "," -C OUTPUT ",1).." 2>/dev/null")
+							assert(status == 0 or status == 1, "cannot query faketcp rule")
+							if status == 1 then
+								write(registry.."/rule_"..api.md5_string(rule), rule)
+								assert(call(rule), "faketcp requires iptables TTL/ip6tables HL support")
+							end
 						end
 					end
 				end

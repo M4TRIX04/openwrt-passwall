@@ -24,7 +24,7 @@ local function flag(name, label, default, keep)
 end
 o = s:option(ListValue, "protocol", translate("Transport Protocol"))
 o:value("udp", "UDP")
-o:value("faketcp", "Fake TCP (Linux root, iptables TTL/HL required)")
+o:value("faketcp", "Fake TCP (Linux root)")
 o:value("wechat-video", "WeChat Video (UDP)")
 o.default = "udp"
 o.rmempty = false

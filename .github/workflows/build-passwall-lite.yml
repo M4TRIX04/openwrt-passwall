@@ -13,7 +13,7 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Checkout passwall-lite
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: passwall-lite
           persist-credentials: false
@@ -43,7 +43,7 @@ jobs:
           compgen -G 'upload/luci-app-passwall_*.ipk' > /dev/null
 
       - name: Upload test IPKs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: passwall-lite-24.10.5-x86_64-${{ github.run_id }}
           path: upload/*.ipk

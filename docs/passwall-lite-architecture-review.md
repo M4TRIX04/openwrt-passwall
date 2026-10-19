@@ -1,4 +1,39 @@
-**最终功能边界与本轮实施状态（2026-10-19）**
+**第二阶段审查修复与验证记录（2026-10-19，本地检查点）**
+
+- 已实现：ACL 节点共享端口缓存与实例资源分离。失败回滚仅接收本次新建实例的配置路径，不通过节点旧缓存定位进程，也不删除其他成功实例的共享缓存。已开启日志的 Hysteria 实例可供后续 ACL 复用；首次启用日志时仍允许新建实例。
+- 已实现：FakeTCP 清理保留实例记录及逐规则释放进度。删除失败后，仅查询退出码 1 表示规则不存在；其他查询错误保留所有权并向调用方报错。IPv4/IPv6 分别推进清理，最后一个引用负责删除本程序创建的规则，外部预存规则不取得所有权。记录通过同目录临时文件与 rename 发布。
+- 已实现：共享锁使用固定 inode 的 nixio/lockf 内核锁，由内核管理持有者及进程死亡后的释放，不按超时或用户态 PID 文件抢锁，不删除锁文件。旧 mkdir 锁目录不再参与新锁协议；旧、新运行管理器不得同时热替换运行，升级前必须停止旧实例。
+- 已实现：server_app 捕获 Hysteria 清理异常后继续执行其他核心进程清理、公共防火墙删除及目录清理，随后仍返回失败。app.sh 的显式 stop 也在公共清理后返回 Hysteria 清理状态。可重试记录保留于独立目录 /tmp/etc/passwall_hysteria1，不随普通运行目录删除；错误输出到 stderr，客户端另有日志。此处仅描述应用层清理，init.d 的停止状态传播问题尚未修复。
+- 已实现：run_socks 成功路径显式返回 0。两个临时探测入口统一调用运行管理器回收，通过子 shell 的退出及信号 trap 覆盖异常退出，清理失败保留重试状态。Base64 认证使用 nixio 原始字节解码与重编码校验，允许合法 NUL 字节，不改变公共 api.base64Decode 的语义。
+- 已测试：故障注入调用生产生成器、运行管理器、server_app，以及提取的 app/nftables/探测函数；系统调用和核心执行等 OS 边界使用替身。覆盖同节点第二个 ACL 实例失败后首个实例及端口缓存保留、日志复用、规则查询及删除失败、双栈部分成功及重试、外部规则与共享引用、公共停止异常、探测清理失败及 NUL 认证。独立容器使用真实 Lua 5.1/nixio 验证活跃锁、旧锁目录、SIGKILL 恢复及并发入口；构建工具仅安装在临时容器，不新增设备运行依赖。
+- 已测试与尚未验证：原生 Lua 5.1、BusyBox ash 语法检查、第一阶段真实 UCI/SS/Rust/SSR 回归及 git diff --check 已通过。官方 v1.3.5 三种传输均完成明文/Base64 认证下的 SOCKS/HTTP TCP、SOCKS UDP 容器烟雾测试，错误密码被拒绝。仍须在 VMware OpenWrt 验证完整 Passwall 启停链路、IPv6 TPROXY、多 ACL 与独立 SOCKS 并发、FakeTCP TTL/HL 内核支持及防火墙重载，以及 DNS、本地域名与 KMS SRV。容器二进制测试直接启动核心，不能替代设备完整链路验证；运行后崩溃的完整守护及端口跳跃仍不在本阶段范围。
+
+**第二阶段：Hysteria 1.3.5 基础移植（2026-10-19，工作区实现，未提交）**
+
+本节优先于下文历史状态。目标明确为 Hysteria v1.3.5；新增独立 `type="Hysteria"`，保留 Hysteria2 和其他核心。参考 M4TRIX04/P455W4LL 的 `cd892e83ce96ba63b3ff90d23f69860a3297c261`，未以旧脚本覆盖当前框架。
+
+- Client/Server 均提供 `udp`、`faketcp`、`wechat-video`。配置采用 v1 顶层字段；客户端支持明文 `auth_str` 与 Base64 `auth`，服务端采用 `auth.mode="password", config={password=...}`。客户端连接窗口为 `recv_window`，服务端为 `recv_window_client`；UCI Flag 显式校验 `"0"/"1"`。
+- `util_hysteria.lua` 使用当前 JSON 参数接口，严格拒绝非法端口、带宽、窗口、认证、布尔参数及缺失证书路径。两个 LuCI 类型页使用当前 `set_type_cbi/type_cbi_section` 字段映射。无订阅、分享或插件功能。
+- `app.sh` 接入全局及普通 ACL 的原生 TCP REDIRECT/TCP、UDP TPROXY，并提供独立 SOCKS/HTTP。新 Hysteria ACL 使用同一进程提供透明监听及供公共 DNS 使用的 SOCKS，避免额外 ipt2socks 进程未就绪却发布转发端口；其他核心的 ACL 转接保持原样。生成失败、启动退出或监听未就绪均拒绝成功状态；失败 ACL 跳过，失败全局不停止合法独立 SOCKS。DNS 与基础分流实现未修改。IPv6 开启时要求选择 TCP TPROXY，并生成 `[::]` TCP/UDP 监听；IPv6 与 TCP REDIRECT 的组合明确拒绝，避免生成指向仅 IPv4 监听的 IPv6 规则。
+- `hysteria_runtime.lua` 仅管理 v1 实例：验证二进制为 1.3.5，记录 PID/启动时间，核对该进程持有的监听 inode，最多等待 10 秒。失败仅回收对应实例。SOCKS UDP 监听在 UDP ASSOCIATE 时动态创建，不错误要求 SOCKS TCP 端口存在固定 UDP 监听。
+- 服务端逐实例校验和启动，失败实例无放行规则且不阻断后续实例。外层 `udp/wechat-video` 放行 UDP，`faketcp` 放行 TCP；隧道 UDP 业务开关与外层协议独立。显式停止先回收 v1 及其 faketcp 规则，再走原公共清理。
+- faketcp 依官方 `core/pktconns/faketcp/tcp_linux.go` 使用原始 TCP 与 TTL/HL OUTPUT DROP 规则。启动器先安装相同规则并记录所有权，多个实例共享规则时最后使用者才删除；不删除预先存在且非本程序管理的规则。需要 Linux、root/原始套接字权限及可用的 iptables/ip6tables TTL/HL 匹配。纯 nftables 系统必须另行准备兼容命令与内核支持；缺失时明确启动失败，不伪装为已支持。
+- 组件下载固定官方 `v1.3.5` release，版本识别使用 `--version`。本仓库没有外部 `hysteria` 核心包源码，Makefile 的包选择不保证外部 feed 提供 v1；设备必须安装指定版本，运行时拒绝 v2。
+
+本轮不开放端口跳跃、faketcp/wechat 以外的额外传输、ACME、外部认证、Hysteria 自身 ACL/DNS或服务端自定义 JSON；旧跳跃字段会明确拒绝。基础自动化执行真实生成器、运行管理、服务端与 shell 启动/ACL/nftables函数，OS/核心边界使用替身；另以原生 Lua 5.1 + cjson 验证。
+
+已运行的验证：
+
+- 全部 Lua 文件通过原生 Lua 5.1 `luac -p` 与 Lua 5.1 语法解析；root 下 shell/init/uci-defaults 通过 OpenWrt BusyBox ash 语法检查。
+- `tests/passwall-hysteria1.cjs`：三种模式的配置/启动分发、Client/Server、Flag/数字/认证校验、进程退出/监听未就绪、实例停止/重启、共享及外部已有 faketcp 规则保护、多服务端及协议放行、非法/交错/晚期失败 ACL、全局失败与独立 SOCKS 隔离。原生模式使用 Lua 5.1/cjson，默认模式使用 Fengari；系统调用与 /proc 仍是测试替身。
+- `tests/passwall-hysteria1-binary.cjs`：一次性 Linux 容器下载官方 v1.3.5，实际验证 `--version`、三种传输各自的明文/Base64 双端握手、SOCKS/HTTP TCP 与 SOCKS UDP 回显，以及错误密码拒绝。测试配置含 `[::]` TCP/UDP TPROXY 监听；未接管真实路由或验证完整透明转发。容器仅在独立网络命名空间授予 NET_ADMIN，未映射主机端口，工作区只读。
+- 第一阶段 `passwall-lite-manual`、`passwall-client-isolation`、`passwall-blockers` 回归通过；真实 UCI 验证匿名/混合旧订阅清理不影响其他 section。SS-libev、SSR、SS-Rust 和 Hysteria2 现有测试保持通过。
+
+容器结果不能证明 OpenWrt 的 nixio/真实进程管理、fw4 后端和实际内核支持已经通过；这些仍属于下列设备验收。
+
+设备验收：三种模式均需分别验证双端认证、TCP/UDP 业务、IPv4/IPv6、透明代理和 SOCKS UDP；faketcp 另核对 raw socket 权限、TTL/HL规则、共享实例停止与 fw4 reload。验证显式重启、端口冲突、不可达/错误密码、10秒就绪超时回滚，以及局域网 DNS、本地域名和 KMS SRV。延迟连接只代表本地监听就绪，不能证明远端认证成功。v1 的进程暂由专用实例记录管理，未接入旧通用守护脚本的自动拉起；核心运行后异常退出的自动恢复留待设备验证及后续独立处理。
+
+**最终功能边界与第一阶段实施状态（2026-10-19）**
 
 Passwall Lite 仅供私人使用，目标只保留 Shadowsocks-libev 与指定原版 Hysteria，**两者均必须保留 Client 与 Server 完整链路**。节点全部通过 LuCI 手动配置；取消全部代理订阅、分享链接导入导出，以及 SS-libev 的 SIP003 插件。不保留或重实现 `_shunt`、`_balancing`、`_urltest` 等核心级特殊节点。必须保留原生国内外域名/IP 分流、自定义直连/代理/屏蔽规则、DNS 和本地域名解析、KMS SRV、ACL、TCP/UDP 透明代理及 nftables/IP 集合。
 

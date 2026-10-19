@@ -44,7 +44,7 @@ test_proxy() {
 	echo $result
 }
 
-url_test_node() {
+url_test_node() (
 	local result=0
 	local node_id=$1
 	local test_flag="url_test_${node_id}_$$"
@@ -68,14 +68,21 @@ url_test_node() {
 			[ -n "${_username}" ] && [ -n "${_password}" ] && set -- --proxy-user "${_username}:${_password}"
 		else
 			_tmp_port=$(get_new_port $((48900 + $$ % 201)) tcp,udp) || { echo 0; return 1; }
-			NO_REC_PROCESS=1 /usr/share/${CONFIG}/app.sh run_socks flag="$test_flag" node="$node_id" bind=127.0.0.1 socks_port="$_tmp_port" config_file="${test_flag}.json"
+			if [ "$_type" = hysteria ]; then
+				trap 'cleanup_hysteria_probe "$test_flag" || exit 1' EXIT
+				trap 'exit 1' HUP INT TERM
+			fi
+			NO_REC_PROCESS=1 /usr/share/${CONFIG}/app.sh run_socks flag="$test_flag" node="$node_id" bind=127.0.0.1 socks_port="$_tmp_port" config_file="${test_flag}.json" || { [ "$_type" != hysteria ] || { echo 0; return 1; }; }
 			curlx="socks5h://127.0.0.1:${_tmp_port}"
 		fi
 		sleep 2s
 		probeUrl=$(config_n_get @global_other[0] url_test_url https://www.google.com/generate_204)
 		result=$(curl --connect-timeout 3 --max-time 5 -o /dev/null -I -sk -w "%{http_code}:%{time_pretransfer}:%{time_starttransfer}" "$@" -x "$curlx" "${probeUrl}") || result=0
 		# 结束 SS 插件进程
-		if [ "$_type" != "socks" ]; then
+		if [ "$_type" = hysteria ]; then
+			cleanup_hysteria_probe "$test_flag" || { echo 0; return 1; }
+			trap - EXIT HUP INT TERM
+		elif [ "$_type" != "socks" ]; then
 			pid_file="${TMP_PATH}/${test_flag}_plugin.pid"
 			[ -s "$pid_file" ] && kill -9 "$(head -n 1 "$pid_file")" >/dev/null 2>&1
 			busybox pgrep -af "${TMP_PATH}/${test_flag}[._]" | awk '! /test\.sh/{print $1}' | xargs -r kill -9 >/dev/null 2>&1
@@ -83,7 +90,7 @@ url_test_node() {
 		fi
 	}
 	printf '%s' "$result"
-}
+)
 
 arg1=$1
 shift

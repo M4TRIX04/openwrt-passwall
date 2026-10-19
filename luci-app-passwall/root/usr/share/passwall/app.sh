@@ -15,6 +15,8 @@ UTIL_SS=$LUA_UTIL_PATH/util_shadowsocks.lua
 UTIL_XRAY=$LUA_UTIL_PATH/util_xray.lua
 UTIL_NAIVE=$LUA_UTIL_PATH/util_naiveproxy.lua
 UTIL_HYSTERIA2=$LUA_UTIL_PATH/util_hysteria2.lua
+UTIL_HYSTERIA=$LUA_UTIL_PATH/util_hysteria.lua
+HYSTERIA_RUNTIME=$LUA_UTIL_PATH/hysteria_runtime.lua
 SINGBOX_BIN=$(first_type $(config_n_get @global_app[0] sing_box_file) sing-box)
 XRAY_BIN=$(first_type $(config_n_get @global_app[0] xray_file) xray)
 
@@ -390,6 +392,69 @@ fail_ss_acl() {
 	echolog "ACL ${failed_sid}: SS node ${failed_node} rejected; skipping this ACL."
 }
 
+gen_hysteria_config() {
+	if ! lua "$UTIL_HYSTERIA" gen_config "$1" > "$2" 2> "$2.error"; then
+		echolog "Hysteria 1 configuration rejected: $(cat "$2.error")"
+		rm -f "$2" "$2.error"
+		return 1
+	fi
+	rm -f "$2.error"
+}
+
+check_hysteria_node() {
+	[ "$(config_n_get "$1" type)" = "Hysteria" ] || return 0
+	local output="$TMP_ACL_PATH/check_hysteria_${1}.json"
+	gen_hysteria_config "{\"node\":\"$1\",\"local_socks_port\":\"1080\"}" "$output" || return 1
+	rm -f "$output"
+}
+
+start_hysteria() {
+	local config_file="$1" log_file="$2" level="$3"
+	json_init
+	json_add_string config "$config_file"
+	json_add_string bin "$(first_type "$(config_n_get @global_app[0] hysteria_file)")"
+	json_add_string scope client
+	json_add_string bin_dir "$TMP_BIN_PATH"
+	json_add_string mode client
+	json_add_string log "${log_file:-/dev/null}"
+	json_add_string loglevel "${level:-warn}"
+	if ! lua "$HYSTERIA_RUNTIME" start "$(json_dump)"; then
+		echolog "Hysteria 1 startup failed: $config_file"
+		rm -f "$config_file"
+		return 1
+	fi
+}
+
+fail_hysteria_acl() {
+	local cleanup_status=0 key
+	# The node cache may belong to another successful ACL. Only a caller's
+	# explicit, newly allocated instance path may be reclaimed here.
+	if [ -n "$3" ]; then
+		lua "$HYSTERIA_RUNTIME" stop client "$3" || {
+			cleanup_status=1
+			echolog "ACL $1: Hysteria cleanup pending: $3"
+		}
+	fi
+	for key in node redir_port dns_port default fakedns; do del_cache_var "ACL_${1}_${key}"; done
+	set_cache_var "ACL_${1}_failed" 1
+	rm -rf "${TMP_ACL_PATH:?}/$1"
+	echolog "ACL $1: Hysteria 1 node $2 failed; skipping this ACL."
+	return "$cleanup_status"
+}
+
+run_hysteria_acl() {
+	local config_file="$TMP_PATH/$2"
+	json_init
+	json_add_string node "$1"
+	json_add_string local_redir_port "$3"
+	json_add_string local_socks_address 127.0.0.1
+	json_add_string local_socks_port "$4"
+	json_add_string tcp_proxy_way "$TCP_PROXY_WAY"
+	json_add_string proxy_ipv6 "${PROXY_IPV6:-0}"
+	gen_hysteria_config "$(json_dump)" "$config_file" || return 1
+	start_hysteria "$config_file" "$5" "$6"
+}
+
 run_socks() {
 	local flag node bind socks_port config_file http_port http_config_file relay_port log_file no_run loglevel
 	eval_set_val "$@"
@@ -543,6 +608,17 @@ run_socks() {
 		lua $UTIL_SS gen_config "$(json_dump)" > $config_file
 		[ -n "$no_run" ] || ln_run "$(first_type sslocal)" "sslocal" $log_file -c "$config_file" -v
 	;;
+	hysteria)
+		json_add_string local_socks_address "$bind"
+		json_add_string local_socks_port "$socks_port"
+		if [ "$http_port" != 0 ]; then
+			http_flag=1
+			json_add_string local_http_address "$bind"
+			json_add_string local_http_port "$http_port"
+		fi
+		gen_hysteria_config "$(json_dump)" "$config_file" || return 1
+		[ -n "$no_run" ] || start_hysteria "$config_file" "$log_file" "$loglevel" || return 1
+	;;
 	hysteria2)
 		[ "$http_port" != "0" ] && {
 			http_flag=1
@@ -589,6 +665,7 @@ run_socks() {
 	unset http_flag
 
 	[ -z "$no_run" ] && [ "${server_host}" != "127.0.0.1" ] && [ "$type" != "sing-box" ] && [ "$type" != "xray" ] && echo "${node}" >> $TMP_PATH/direct_node_list
+	return 0
 }
 
 start_global() {
@@ -872,6 +949,18 @@ start_global() {
 		lua $UTIL_SS gen_config "$(json_dump)" > $config_file
 		ln_run "$(first_type sslocal)" "sslocal" $log_file -c "$config_file" -v
 	;;
+	hysteria)
+		json_add_string local_redir_port "$REDIR_PORT"
+		json_add_string tcp_proxy_way "$TCP_PROXY_WAY"
+		json_add_string proxy_ipv6 "${PROXY_IPV6:-0}"
+		json_add_string local_socks_address "$node_socks_bind"
+		json_add_string local_socks_port "$GLOBAL_SOCKS_port"
+		[ "$on_node_http" = 1 ] && json_add_string local_http_port "$GLOBAL_HTTP_port"
+		gen_hysteria_config "$(json_dump)" "$config_file" || return 1
+		start_hysteria "$config_file" "$log_file" "$(config_n_get @global[0] loglevel warn)" || return 1
+		node_socks_flag=1
+		[ "$on_node_http" = 1 ] && node_http_flag=1
+	;;
 	hysteria2)
 		json_add_string "local_redir_port" "$REDIR_PORT"
 		[ "$on_node_socks" = "1" ] && {
@@ -941,7 +1030,7 @@ start_socks() {
 				local enable_autoswitch=$(config_n_get $id enable_autoswitch 0)
 				local no_rec=0
 				[ "$enable_autoswitch" = "1" ] && no_rec=1
-				NO_REC_PROCESS=$no_rec $APP_PATH/app.sh run_socks flag=$id node=$node bind=$bind socks_port=$port config_file=$config_file http_port=$http_port http_config_file=$http_config_file log_file=$log_file || { [ "$(config_n_get $node type)" = "SS" ] && continue; }
+				NO_REC_PROCESS=$no_rec $APP_PATH/app.sh run_socks flag=$id node=$node bind=$bind socks_port=$port config_file=$config_file http_port=$http_port http_config_file=$http_config_file log_file=$log_file || { { [ "$(config_n_get $node type)" = "SS" ] || [ "$(config_n_get $node type)" = Hysteria ]; } && continue; }
 				set_cache_var "${id}" "$node"
 				#自动切换逻辑
 				[ "$enable_autoswitch" = "1" ] && { $APP_PATH/socks_auto_switch.sh ${id} > /dev/null 2>&1 & }
@@ -954,6 +1043,7 @@ socks_node_switch() {
 	local flag new_node
 	eval_set_val "$@"
 	[ -n "$flag" ] && [ -n "$new_node" ] && {
+		[ ! -f "$HYSTERIA_RUNTIME" ] || lua "$HYSTERIA_RUNTIME" stop client "$TMP_PATH/${flag}.json"
 		local suffix pf filename
 		# 结束 SS 插件进程
 		for suffix in "" "+http"; do
@@ -981,7 +1071,7 @@ socks_node_switch() {
 		local http_port=$(config_n_get $flag http_port 0)
 		local http_config_file="${flag}_http.json"
 		LOG_FILE="/dev/null"
-		run_socks flag=$flag node=$new_node bind=$bind socks_port=$port config_file=$config_file http_port=$http_port http_config_file=$http_config_file log_file=$log_file || { [ "$(config_n_get $new_node type)" = "SS" ] && return 1; }
+		run_socks flag=$flag node=$new_node bind=$bind socks_port=$port config_file=$config_file http_port=$http_port http_config_file=$http_config_file log_file=$log_file || { { [ "$(config_n_get $new_node type)" = "SS" ] || [ "$(config_n_get $new_node type)" = Hysteria ]; } && return 1; }
 		sleep 2s
 		[ "$(check_port_exists "$port" tcp)" = "0" ] && return 1
 		set_cache_var "${flag}" "$new_node"
@@ -1473,6 +1563,10 @@ acl_app() {
 				fail_ss_acl "$sid" "$check_node"
 				continue
 			fi
+			if [ "$(config_n_get "$check_node" type)" = Hysteria ] && ! check_hysteria_node "$check_node"; then
+				fail_hysteria_acl "$sid" "$check_node"
+				continue
+			fi
 			del_cache_var "ACL_${sid}_failed"
 			local acl_failed=0
 			has_enabled=1
@@ -1676,21 +1770,21 @@ acl_app() {
 						local _socks_port=$(get_cache_var "acl_node_${node}_socks_port")
 						local _enable_log=$(get_cache_var "acl_node_${node}_enable_log")
 						local _dns_port
-						if [ -n "${_socks_port}" ] && [ -n "${_redir_port}" ] && [ "${_enable_log}" != "1" ] && [ "${log}" != "1" ]; then
+						if [ -n "${_socks_port}" ] && [ -n "${_redir_port}" ] && { { [ "$type" = hysteria ] && [ "${_enable_log}" = 1 ]; } || { [ "${_enable_log}" != 1 ] && [ "${log}" != 1 ]; }; }; then
 							socks_port=${_socks_port}
 							node_port=${_redir_port}
 							_dns_port=$(get_cache_var "node_${node}_${dns_cache_key}")
 							run_dns ${_dns_port}
 						else
 							socks_port=$(get_new_port $(expr $socks_port + 1))
-							[ "$type" = ss ] || set_cache_var "acl_node_${node}_socks_port" "${socks_port}"
+							{ [ "$type" = ss ] || [ "$type" = hysteria ]; } || set_cache_var "acl_node_${node}_socks_port" "${socks_port}"
 							redir_port=$(get_new_port $(expr $redir_port + 1))
-							[ "$type" = ss ] || set_cache_var "acl_node_${node}_redir_port" "${redir_port}"
+							{ [ "$type" = ss ] || [ "$type" = hysteria ]; } || set_cache_var "acl_node_${node}_redir_port" "${redir_port}"
 							node_port=$redir_port
 							local log_file="/dev/null"
 							[ "${log}" = "1" ] && {
 								log_file="${TMP_ACL_PATH}/${sid}/node.log"
-								[ "$type" = ss ] || set_cache_var "acl_node_${node}_enable_log" "1"
+								{ [ "$type" = ss ] || [ "$type" = hysteria ]; } || set_cache_var "acl_node_${node}_enable_log" "1"
 							}
 
 							if [ "${type}" = "sing-box" ] || [ "${type}" = "xray" ]; then
@@ -1717,6 +1811,14 @@ acl_app() {
 								}
 								_extra_param="${_extra_param} use_proxy_list=$use_proxy_list use_gfw_list=$use_gfw_list chn_list=$chn_list"
 								run_${type} flag=$node node=$node redir_port=$redir_port ${_extra_param} config_file=$config_file log_file=$log_file loglevel=$loglevel
+							elif [ "$type" = hysteria ]; then
+								# Native v1 listeners allow the checked launcher to verify
+								# every forwarding port; SOCKS remains available for DNS.
+								config_file="acl/${node}_SOCKS_${socks_port}.json"
+								if ! run_hysteria_acl "$node" "$config_file" "$redir_port" "$socks_port" "$log_file" "$loglevel"; then
+									acl_failed=1
+									fail_hysteria_acl "$sid" "$node" "$TMP_ACL_PATH/${node}_SOCKS_${socks_port}.json"
+								fi
 							else
 								config_file="acl/${node}_SOCKS_${socks_port}.json"
 								if ! run_socks flag=$node node=$node bind=127.0.0.1 socks_port=$socks_port config_file=$config_file log_file=$log_file loglevel=$loglevel; then
@@ -1729,7 +1831,7 @@ acl_app() {
 								log_file="/dev/null"
 								[ "$acl_failed" = 1 ] || run_ipt2socks flag=acl_${node} tcp_tproxy=${is_tproxy} local_port=$redir_port socks_address=127.0.0.1 socks_port=$socks_port log_file=$log_file
 							fi
-							if [ "$type" = ss ] && [ "$acl_failed" != 1 ]; then
+							if { [ "$type" = ss ] || [ "$type" = hysteria ]; } && [ "$acl_failed" != 1 ]; then
 								set_cache_var "acl_node_${node}_socks_port" "$socks_port"
 								set_cache_var "acl_node_${node}_redir_port" "$redir_port"
 								[ "$log" != 1 ] || set_cache_var "acl_node_${node}_enable_log" 1
@@ -1778,6 +1880,12 @@ start() {
 		set_cache_var ACL_GLOBAL_failed 1
 		echolog "Global SS node ${NODE} rejected; global transparent proxy disabled."
 	fi
+	if [ "$ENABLED_DEFAULT_ACL" = 1 ] && [ "$(config_n_get "$NODE" type)" = Hysteria ] && ! check_hysteria_node "$NODE"; then
+		ENABLED_DEFAULT_ACL=0
+		set_cache_var ENABLED_DEFAULT_ACL 0
+		for key in ACL_GLOBAL_node ACL_GLOBAL_redir_port ACL_default_dns_port GLOBAL_SOCKS_server; do del_cache_var "$key"; done
+		set_cache_var ACL_GLOBAL_failed 1
+	fi
 	export V2RAY_LOCATION_ASSET=$(config_n_get @global_rules[0] v2ray_location_asset "/usr/share/v2ray/")
 	export XRAY_LOCATION_ASSET=$V2RAY_LOCATION_ASSET
 	export ENABLE_DEPRECATED_GEOSITE=true
@@ -1801,11 +1909,18 @@ start() {
 	[ "$ENABLED_DEFAULT_ACL" = 1 ] && {
 		mkdir -p ${GLOBAL_ACL_PATH}
 		start_global || {
-			echolog "全局节点启动失败，停止服务。"
-			stop
-			return 1
+			if [ "$(config_n_get "$NODE" type)" = Hysteria ]; then
+				ENABLED_DEFAULT_ACL=0
+				set_cache_var ENABLED_DEFAULT_ACL 0
+				for key in ACL_GLOBAL_node ACL_GLOBAL_redir_port ACL_default_dns_port GLOBAL_SOCKS_server; do del_cache_var "$key"; done
+				set_cache_var ACL_GLOBAL_failed 1
+			else
+				echolog "全局节点启动失败，停止服务。"
+				stop
+				return 1
+			fi
 		}
-		start_dns || {
+		[ "$ENABLED_DEFAULT_ACL" != 1 ] || start_dns || {
 			echolog "DNS 启动失败，停止服务。"
 			stop
 			return 1
@@ -1830,6 +1945,9 @@ start() {
 }
 
 stop() {
+	local hysteria_cleanup_status=0
+	[ ! -f "$HYSTERIA_RUNTIME" ] || lua "$HYSTERIA_RUNTIME" stop client || hysteria_cleanup_status=1
+	[ "$hysteria_cleanup_status" = 0 ] || echolog "Hysteria cleanup pending; retry stop after resolving the error."
 	clean_log
 	eval_cache_var
 	[ -n "$USE_TABLES" ] && source $APP_PATH/${USE_TABLES}.sh stop
@@ -1871,7 +1989,7 @@ stop() {
 	}
 	rm -rf $TMP_PATH
 	echolog "清空并关闭相关程序和缓存完成。"
-	exit 0
+	exit "$hysteria_cleanup_status"
 }
 
 get_config() {
@@ -1922,8 +2040,8 @@ get_config() {
 	FILTER_PROXY_IPV6=$(config_n_get @global[0] filter_proxy_ipv6 0)
 	DNS_REDIRECT=$(config_n_get @global[0] dns_redirect 1)
 
-	REDIRECT_LIST="socks ss ss-rust ssr sing-box xray naiveproxy hysteria2"
-	TPROXY_LIST="socks ss ss-rust ssr sing-box xray hysteria2"
+	REDIRECT_LIST="socks ss ss-rust ssr sing-box xray naiveproxy hysteria hysteria2"
+	TPROXY_LIST="socks ss ss-rust ssr sing-box xray hysteria hysteria2"
 
 	NEXT_DNS_LISTEN_PORT=$(get_new_port 15353 tcp,udp)
 	TUN_DNS="127.0.0.1#${NEXT_DNS_LISTEN_PORT}"

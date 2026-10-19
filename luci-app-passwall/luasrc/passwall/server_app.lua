@@ -167,6 +167,25 @@ local function start()
 					config = require(require_dir .. "util_sing-box").gen_config_server(server)
 				end
 				bin = ln_run(api.get_app_path("sing-box"), "sing-box", "run -c " .. config_file, log_path)
+			elseif type == "Hysteria" then
+				local ok, result = pcall(function()
+					local c = require(require_dir .. "util_hysteria").gen_config_server(server)
+					local f = assert(io.open(config_file, "w"))
+					local written, err = f:write(jsonc.stringify(c, 1))
+					local closed = f:close()
+					assert(written and closed, err or "cannot write Hysteria config")
+					require(require_dir .. "hysteria_runtime").start({
+						config=config_file, bin=api.get_app_path("hysteria"), bin_dir=TMP_BIN_PATH,
+						scope="server", mode="server", log=log_path or "/dev/null"
+					})
+					return c
+				end)
+				if not ok then
+					api.fs.remove(config_file)
+					log("Hysteria 1 server " .. id .. " rejected: " .. tostring(result))
+					return
+				end
+				-- Already written and started by the checked v1 launcher.
 			elseif type == "Hysteria2" then
 				if server.custom == "1" and server.config_str then
 					config = jsonc.parse(api.base64Decode(server.config_str))
@@ -204,6 +223,9 @@ local function start()
 				uci:set("firewall", uid, "src", server.firewall_allow_src or "wan")
 				uci:set("firewall", uid, "dest_port", port)
 				uci:set("firewall", uid, "target", "ACCEPT")
+				if server.type == "Hysteria" then
+					uci:set("firewall", uid, "proto", server.protocol == "faketcp" and "tcp" or "udp")
+				end
 			end
 		end
 	end)
@@ -213,9 +235,16 @@ local function start()
 end
 
 local function stop()
+	local cleanup_ok, cleanup_error = true, nil
+	-- Reclaim v1 processes and core-required faketcp rules before generic kill.
+	if api.fs and api.fs.access("/tmp/etc/passwall_hysteria1") then
+		cleanup_ok, cleanup_error = pcall(function() require(require_dir .. "hysteria_runtime").stop("server") end)
+		if not cleanup_ok then io.stderr:write("Hysteria cleanup pending: " .. tostring(cleanup_error) .. "\n") end
+	end
 	cmd(string.format("/bin/busybox top -bn1 | grep -v 'grep' | grep '%s/' | awk '{print $1}' | xargs kill -9 >/dev/null 2>&1", CONFIG_PATH))
 	remove_firewall_rules()
 	api.remove(CONFIG_PATH, LOG_APP_FILE)
+	if not cleanup_ok then error(cleanup_error, 0) end
 end
 
 if action then

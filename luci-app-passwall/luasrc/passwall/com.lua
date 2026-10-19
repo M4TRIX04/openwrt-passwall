@@ -28,9 +28,10 @@ _M.passwall = {
 
 _M.hysteria = {
 	name = "Hysteria",
-	repo = "HyNetwork/hysteria",
-	get_url = gh_release_url,
-	cmd_version = "version | awk '/^Version:/ {print $2}'",
+	repo = "HyNetworks/hysteria",
+	-- Pin the private Lite target; never offer the v2 latest release.
+	get_url = function(self) return "https://api.github.com/repos/" .. self.repo .. "/releases/tags/v1.3.5" end,
+	cmd_version = "--version | sed -n 's/^hysteria version v*\\([0-9][0-9.]*\\).*/\\1/p'",
 	remote_version_str_replace = "app/",
 	zipped = false,
 	default_path = "/usr/bin/hysteria",

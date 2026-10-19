@@ -456,7 +456,8 @@ function add_node()
 	elseif api.is_finded("ssr-local") then
 		uci_set(uid, "type", "SSR")
 	elseif api.finded_com("hysteria") then
-		uci_set(uid, "type", "Hysteria2")
+		local version = api.get_app_version("hysteria") or ""
+		uci_set(uid, "type", version:match("^v?1%.3%.5$") and "Hysteria" or "Hysteria2")
 	elseif api.is_finded("naive") then
 		uci_set(uid, "type", "Naiveproxy")
 	end

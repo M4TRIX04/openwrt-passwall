@@ -72,15 +72,24 @@ test_node() {
 		[ -n "${_type}" ] && {
 			check_process
 			_tmp_port=$(get_new_port 48800 tcp,udp) || exit 1
-			NO_REC_PROCESS=1 "$APP_FILE" run_socks flag="$test_flag" node="$node_id" bind=127.0.0.1 socks_port="$_tmp_port" config_file="${test_flag}.json" 8>&- 9>&-
+			if [ "$_type" = hysteria ]; then
+				trap 'cleanup_hysteria_probe "$test_flag" || exit 1' EXIT
+				trap 'exit 1' HUP INT TERM
+			fi
+			NO_REC_PROCESS=1 "$APP_FILE" run_socks flag="$test_flag" node="$node_id" bind=127.0.0.1 socks_port="$_tmp_port" config_file="${test_flag}.json" 8>&- 9>&- || { [ "$_type" != hysteria ] || exit 1; }
 			sleep 2s 8>&- 9>&-
 			curlx="socks5h://127.0.0.1:${_tmp_port}"
 			_proxy_status=$(test_url "${probe_url}" ${retry_num} ${connect_timeout} "-x $curlx" 1)
 			# 结束 SS 插件进程
+			if [ "$_type" = hysteria ]; then
+				cleanup_hysteria_probe "$test_flag" || exit 1
+				trap - EXIT HUP INT TERM
+			else
 			pid_file="${TMP_PATH}/${test_flag}_plugin.pid"
 			[ -s "$pid_file" ] && kill -9 "$(head -n 1 "$pid_file")" >/dev/null 2>&1
 			busybox pgrep -af "${TMP_PATH}/${test_flag}[._]" | awk '! /socks_auto_switch\.sh/{print $1}' | xargs -r kill -9 >/dev/null 2>&1
 			rm -f "$TMP_PATH/${test_flag}"*.*
+			fi
 			if [ "${_proxy_status}" -eq 200 ]; then
 				exit 0
 			fi

@@ -566,3 +566,11 @@ get_local_ips() {
 		echo "$ip"
 	done
 }
+
+# Probe instances have the same FakeTCP ownership as permanent instances.
+cleanup_hysteria_probe() {
+    lua /usr/lib/lua/luci/passwall/hysteria_runtime.lua stop client "$TMP_PATH/$1.json" || {
+        echo "Hysteria probe cleanup pending: $TMP_PATH/$1.json" >&2
+        return 1
+    }
+}

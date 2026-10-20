@@ -48,9 +48,6 @@ done
 
 chmod +x /usr/share/passwall/*.sh
 
-[ "$(uci -q get passwall.@global_xray[0].sniffing)" == "1" ] && [ "$(uci -q get passwall.@global_xray[0].route_only)" != "1" ] && uci -q set passwall.@global_xray[0].sniffing_override_dest=1
-uci -q delete passwall.@global_xray[0].sniffing
-uci -q delete passwall.@global_xray[0].route_only
 
 [ "$(uci -q get passwall.@global_haproxy[0].health_check_type)" = "passwall_logic" ] && uci -q set passwall.@global_haproxy[0].health_check_type='script_logic'
 

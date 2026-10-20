@@ -93,27 +93,57 @@ eval_cache_var() {
 
 del_cache_var() {
 	local key="${1}"
-	[ -n "${key}" ] && [ -f "${TMP_PATH}/var" ] && {
-		sed -i "/^${key}=/d" "$TMP_PATH/var" >/dev/null 2>&1
-	}
+	[ -n "${key}" ] || return 1
+	if [ -f "${TMP_PATH}/var" ]; then
+		sed -i "/^${key}=/d" "$TMP_PATH/var" >/dev/null 2>&1 || return 1
+	fi
+	# set_cache_var also publishes a shell variable (possibly exported).
+	unset "$key"
 }
 
 set_cache_var() {
 	local key="${1}"
 	shift 1
-	[ -n "${key}" ] && {
-		del_cache_var ${key}
-		local val="$@"
-		[ -n "${val}" ] && {
-			[ ! -d $TMP_PATH ] && mkdir -p $TMP_PATH
-			printf '%s=%s\n' "$key" "$(shell_quote "$val")" >> "$TMP_PATH/var"
-			eval "$key=\$val"
-		}
-	}
+	local val="$@"
+	set_cache_vars "$key" "$val" || return 1
+	[ -n "$val" ]
+}
+
+# Prepare complete records off to the side. Readers only ever source var.
+# A small group (global endpoint or ACL inheritance) is published in one rename.
+set_cache_vars() {
+	[ "$#" -gt 0 ] && [ $(($# % 2)) = 0 ] || return 1
+	mkdir -p "$TMP_PATH" || return 1
+	local cache_file
+	cache_file=$(mktemp "$TMP_PATH/var.XXXXXX") || return 1
+	if ! (
+		[ ! -e "$TMP_PATH/var" ] || cp -p "$TMP_PATH/var" "$cache_file" || exit 1
+		while [ "$#" -gt 0 ]; do
+			[ -n "$1" ] || exit 1
+			sed -i "/^${1}=/d" "$cache_file" || exit 1
+			if [ -n "$2" ]; then
+				printf '%s=%s\n' "$1" "$(shell_quote "$2")" >> "$cache_file" || exit 1
+			fi
+			shift 2
+		done
+		mv -f "$cache_file" "$TMP_PATH/var" || exit 1
+	); then
+		rm -f "$cache_file" || echo "Passwall cache: temporary cleanup failed: $cache_file" >&2
+		return 1
+	fi
+	# Shell/environment copies are updated only after the complete file is live.
+	local key val
+	while [ "$#" -gt 0 ]; do
+		key="$1"; val="$2"; shift 2
+		if [ -n "$val" ]; then eval "$key=\$val"; else unset "$key"; fi
+	done
 }
 
 get_cache_var() {
 	[ -n "$1" ] && [ -s "$TMP_PATH/var" ] && (
+		# The file is authoritative, including after deletion by another process.
+		# Assign empty rather than unset: unset can expose an outer local's value.
+		eval "$1="
 		. "$TMP_PATH/var"
 		eval "printf '%s' \"\${$1-}\""
 	)

@@ -46,7 +46,6 @@ function index()
 	entry({"admin", "services", appname, "rule"}, cbi(appname .. "/client/rule"), _("Rule Manage"), 96).leaf = true
 	entry({"admin", "services", appname, "rule_list"}, cbi(appname .. "/client/rule_list", {autoapply = true}), _("Rule List"), 97).leaf = true
 	entry({"admin", "services", appname, "node_config"}, cbi(appname .. "/client/node_config")).leaf = true
-	entry({"admin", "services", appname, "shunt_rules"}, cbi(appname .. "/client/shunt_rules")).leaf = true
 	entry({"admin", "services", appname, "socks_config"}, cbi(appname .. "/client/socks_config")).leaf = true
 	entry({"admin", "services", appname, "acl"}, cbi(appname .. "/client/acl"), _("Access control"), 98).leaf = true
 	entry({"admin", "services", appname, "acl_config"}, cbi(appname .. "/client/acl_config")).leaf = true
@@ -90,9 +89,6 @@ function index()
 	entry({"admin", "services", appname, "update_rules"}, call("update_rules")).leaf = true
 	entry({"admin", "services", appname, "rollback_rules"}, call("rollback_rules")).leaf = true
 	entry({"admin", "services", appname, "flush_set"}, call("flush_set")).leaf = true
-	entry({"admin", "services", appname, "get_shunt_rules"}, call("get_shunt_rules")).leaf = true
-	entry({"admin", "services", appname, "add_shunt_rule"}, call("add_shunt_rule")).leaf = true
-	entry({"admin", "services", appname, "delete_select_shunt_rules"}, call("delete_select_shunt_rules")).leaf = true
 
 	--[[rule_list]]
 	entry({"admin", "services", appname, "read_rulelist"}, call("read_rulelist")).leaf = true
@@ -334,10 +330,17 @@ function socks_status()
 	e.index = index
 	e.socks_status = luci.sys.call(string.format("/bin/busybox top -bn1 | grep -v -E 'grep|acl/|acl_' | grep '%s/bin/' | grep '/%s' > /dev/null", appname, id)) == 0
 	local use_http = uci_get(id, "http_port") or 0
+	local node = api.get_cache_var(id) or uci_get(id, "node")
+	local core = node and uci_get(node, "type")
 	e.use_http = 0
-	if tonumber(use_http) > 0 then
+	if tonumber(use_http) > 0 and (core == "Hysteria" or core == "SS-Rust") then
 		e.use_http = 1
-		e.http_status = luci.sys.call(string.format("/bin/busybox top -bn1 | grep -v -E 'grep|acl/|acl_' | grep '%s/bin/' | grep '/%s' | grep -E '\\+http|_http' > /dev/null", appname, id)) == 0
+		if core == "Hysteria" then
+			-- The v1 launcher verifies SOCKS and HTTP in the same instance.
+			e.http_status = e.socks_status
+		else
+			e.http_status = luci.sys.call(string.format("/bin/busybox top -bn1 | grep -v -E 'grep|acl/|acl_' | grep '%s/bin/' | grep '/%s' | grep -E '\\+http|_http' > /dev/null", appname, id)) == 0
+		end
 	end
 	http_write_json(e)
 end
@@ -420,6 +423,10 @@ function update_config()
 	local data = http.formvalue("data") -- json new Data
 	if id and data then
 		local data_t = jsonParse(data) or {}
+		if data_t.type == "Xray" or data_t.type == "sing-box" or data_t.type == "Hysteria2" or data_t.type == "Socks" then
+			http_write_json_error({message = "This proxy core has been removed."})
+			return
+		end
 		if next(data_t) then
 			for k, v in pairs(data_t) do
 				uci_set(id, k, v)
@@ -445,19 +452,12 @@ function add_node()
 
 	if api.is_finded("ss-local") and api.is_finded("ss-redir") then
 		uci_set(uid, "type", "SS")
-	elseif api.is_finded("ipt2socks") then
-		uci_set(uid, "type", "Socks")
-	elseif api.finded_com("sing-box") then
-		uci_set(uid, "type", "sing-box")
-	elseif api.finded_com("xray") then
-		uci_set(uid, "type", "Xray")
 	elseif api.is_finded("sslocal") then
 		uci_set(uid, "type", "SS-Rust")
 	elseif api.is_finded("ssr-local") then
 		uci_set(uid, "type", "SSR")
 	elseif api.finded_com("hysteria") then
-		local version = api.get_app_version("hysteria") or ""
-		uci_set(uid, "type", version:match("^v?1%.3%.5$") and "Hysteria" or "Hysteria2")
+		uci_set(uid, "type", "Hysteria")
 	elseif api.is_finded("naive") then
 		uci_set(uid, "type", "Naiveproxy")
 	end
@@ -475,19 +475,11 @@ function set_node()
 	local type = http.formvalue("type")
 	local config = http.formvalue("config")
 	local section = http.formvalue("section")
-	if type == "@global[0]" then
-		local node_protocol = uci_get(section, "protocol")
-		if node_protocol == "_shunt" then
-			local node_type = uci_get(section, "type")
-			local dns_shunt = uci_get(type, "dns_shunt")
-			local dns_key = (dns_shunt == "smartdns") and "smartdns_dns_mode" or "dns_mode"
-			local dns_mode = uci_get(type, dns_key)
-			local new_dns_mode = (node_type == "Xray") and "xray" or "sing-box"
-			if dns_mode ~= new_dns_mode then
-				uci_set(type, dns_key, new_dns_mode)
-				uci_set(type, "v2ray_dns_mode", "tcp")
-			end
-		end
+	local node_type = uci_get(section, "type")
+	local node = uci_get(section) or {}
+	if node_type == "Hysteria2" or node_type == "Xray" or node_type == "sing-box" or node_type == "Socks" or node[".type"] == "socks" then
+		http_write_json_error({message = "This proxy core has been removed."})
+		return
 	end
 	uci_set(type, config, section)
 	uci_save(true, true)
@@ -705,6 +697,10 @@ function server_update_config()
 	local data = http.formvalue("data") -- json new Data
 	if id and data then
 		local data_t = jsonParse(data) or {}
+		if data_t.type == "Xray" or data_t.type == "sing-box" or data_t.type == "Hysteria2" then
+			http_write_json_error({message = "This proxy core has been removed."})
+			return
+		end
 		if next(data_t) then
 			for k, v in pairs(data_t) do
 				api.uci_set_s(id, k, v)
@@ -1055,93 +1051,13 @@ function fetch_certsha256()
 	local port = (id ~= "") and uci_get(id, "port") or 0
 	local sni = (id ~= "") and uci_get(id, "tls_serverName") or ""
 	sni = (sni ~= "") and sni or address
-	local protocol = uci_get(id, "protocol")
 	local h3, timeout = false, 10
-	if protocol == "hysteria2" then
-		h3 = true
-		timeout = 60
-		if port == 0 then
-			local hop = uci_get(id, "hysteria2_hop") or "0"
-			port = tonumber(hop:match("^%s*(%d+)"))
-		end
-	end
 	if address == "" or port == 0 then
 		http_write_json_error()
 		return
 	end
 	local data = api.fetch_cert_sha256(address, port, sni, timeout, h3)
 	http_write_json(data ~= "" and { code = 1, data = data } or { code = 0 })
-end
-
-function get_shunt_rules()
-	local id = http.formvalue("id")
-	local result = {}
-
-	if id then
-		result = uci_get(id)
-	else
-		local default_items = {}
-		local other_items = {}
-		uci_foreach("shunt_rules", function(t)
-			if not t.group or t.group == "" then
-				default_items[#default_items + 1] = t
-			else
-				other_items[#other_items + 1] = t
-			end
-		end)
-		for i = 1, #default_items do result[#result + 1] = default_items[i] end
-		for i = 1, #other_items do result[#result + 1] = other_items[i] end
-	end
-	http_write_json(result)
-end
-
-function add_shunt_rule()
-	local add_name = http.formvalue("add_name")
-	local redirect = http.formvalue("redirect")
-
-	local uid = add_name
-	if add_name then
-		local has = uci_get(uid)
-		if has then
-			http_write_json_error({ message = i18n.translate("This ID already exists.") })
-			return
-		end
-	else
-		uid = api.gen_random_char()
-	end
-	uci:section(c_config, "shunt_rules", uid)
-
-	local group = http.formvalue("group")
-	if group and group ~= "default" then
-		uci_set(uid, "group", group)
-	end
-
-	if redirect == "1" then
-		uci_save()
-		http.redirect(api.url("shunt_rules", uid))
-	else
-		uci_save()
-		http_write_json_ok({uid = uid, redirect_url = api.url("shunt_rules", uid)})
-	end
-end
-
-function delete_select_shunt_rules()
-	local ids = http.formvalue("ids")
-	local redirect = http.formvalue("redirect")
-	string.gsub(ids, '[^' .. "," .. ']+', function(w)
-		uci_foreach("nodes", function(s)
-			if s["protocol"] and s["protocol"] == "_shunt" then
-				uci_del(s[".name"], w)
-			end
-		end)
-		uci_del(w)
-	end)
-	if redirect == "1" then
-		uci_save()
-		http.redirect(api.url("rule"))
-	else
-		uci_save(true, true)
-	end
 end
 
 function gen_wireguard_key()

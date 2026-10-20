@@ -84,6 +84,10 @@ local function start()
 			local config_file = CONFIG_PATH .. "/" .. id .. ".json"
 			local udp_forward = 1
 			local type = server.type or ""
+			if type == "Hysteria2" or type == "Xray" or type == "sing-box" then
+				log("Server " .. id .. " rejected: " .. type .. " support has been removed.")
+				return
+			end
 			if type == "Socks" then
 				local auth = ""
 				if server.auth and server.auth == "1" then
@@ -138,35 +142,6 @@ local function start()
 					config = require(require_dir .. "util_shadowsocks").gen_config_server(server)
 				end
 				bin = ln_run("/usr/bin/ssserver", "ssserver", "-c " .. config_file, log_path)
-			elseif type == "Xray" then
-				if server.custom == "1" and server.config_str then
-					config = jsonc.parse(api.base64Decode(server.config_str))
-					if log_path then
-						if not config.log then
-							config.log = {}
-						end
-						config.log.loglevel = server.loglevel
-					end
-				else
-					config = require(require_dir .. "util_xray").gen_config_server(server)
-				end
-				bin = ln_run(api.get_app_path("xray"), "xray", "run -c " .. config_file, log_path)
-			elseif type == "sing-box" then
-				if server.custom == "1" and server.config_str then
-					config = jsonc.parse(api.base64Decode(server.config_str))
-					if log_path then
-						if not config.log then
-							config.log = {}
-						end
-						config.log.timestamp = true
-						config.log.disabled = false
-						config.log.level = server.loglevel
-						config.log.output = log_path
-					end
-				else
-					config = require(require_dir .. "util_sing-box").gen_config_server(server)
-				end
-				bin = ln_run(api.get_app_path("sing-box"), "sing-box", "run -c " .. config_file, log_path)
 			elseif type == "Hysteria" then
 				local ok, result = pcall(function()
 					local c = require(require_dir .. "util_hysteria").gen_config_server(server)
@@ -186,13 +161,6 @@ local function start()
 					return
 				end
 				-- Already written and started by the checked v1 launcher.
-			elseif type == "Hysteria2" then
-				if server.custom == "1" and server.config_str then
-					config = jsonc.parse(api.base64Decode(server.config_str))
-				else
-					config = require(require_dir .. "util_hysteria2").gen_config_server(server)
-				end
-				bin = ln_run(api.get_app_path("hysteria"), "hysteria", "-c " .. config_file .. " server", log_path)
 			end
 
 			-- Ignore legacy SIP003 options, including custom SS server JSON.

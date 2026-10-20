@@ -51,30 +51,16 @@ url_test_node() (
 	local _address _port curlx _username _password _tmp_port probeUrl pid_file
 	local _type=$(config_n_get "$node_id" type | tr 'A-Z' 'a-z')
 
+	case "$_type" in xray|sing-box|hysteria2|socks) echo 0; return 1 ;; esac
 	set --
 	[ -n "${_type}" ] && {
-		if [ "${_type}" == "socks" ]; then
-			# 防止socks节点密码包含 #、% 等字符，将地址和认证信息分开传递
-			_address=$(config_n_get "$node_id" address)
-			_port=$(config_n_get "$node_id" port)
-			[ -n "$_address" ] && [ -n "$_port" ] || { echo 0; return 1; }
-			case "$_address" in
-				\[*\]) ;;
-				*:*) _address="[$_address]" ;;
-			esac
-			curlx="socks5h://${_address}:${_port}"
-			_username=$(config_n_get "$node_id" username)
-			_password=$(config_n_get "$node_id" password)
-			[ -n "${_username}" ] && [ -n "${_password}" ] && set -- --proxy-user "${_username}:${_password}"
-		else
-			_tmp_port=$(get_new_port $((48900 + $$ % 201)) tcp,udp) || { echo 0; return 1; }
-			if [ "$_type" = hysteria ]; then
-				trap 'cleanup_hysteria_probe "$test_flag" || exit 1' EXIT
-				trap 'exit 1' HUP INT TERM
-			fi
-			NO_REC_PROCESS=1 /usr/share/${CONFIG}/app.sh run_socks flag="$test_flag" node="$node_id" bind=127.0.0.1 socks_port="$_tmp_port" config_file="${test_flag}.json" || { [ "$_type" != hysteria ] || { echo 0; return 1; }; }
-			curlx="socks5h://127.0.0.1:${_tmp_port}"
+		_tmp_port=$(get_new_port $((48900 + $$ % 201)) tcp,udp) || { echo 0; return 1; }
+		if [ "$_type" = hysteria ]; then
+			trap 'cleanup_hysteria_probe "$test_flag" || exit 1' EXIT
+			trap 'exit 1' HUP INT TERM
 		fi
+		NO_REC_PROCESS=1 /usr/share/${CONFIG}/app.sh run_socks flag="$test_flag" node="$node_id" bind=127.0.0.1 socks_port="$_tmp_port" config_file="${test_flag}.json" || { echo 0; return 1; }
+		curlx="socks5h://127.0.0.1:${_tmp_port}"
 		sleep 2s
 		probeUrl=$(config_n_get @global_other[0] url_test_url https://www.google.com/generate_204)
 		result=$(curl --connect-timeout 3 --max-time 5 -o /dev/null -I -sk -w "%{http_code}:%{time_pretransfer}:%{time_starttransfer}" "$@" -x "$curlx" "${probeUrl}") || result=0
@@ -82,7 +68,7 @@ url_test_node() (
 		if [ "$_type" = hysteria ]; then
 			cleanup_hysteria_probe "$test_flag" || { echo 0; return 1; }
 			trap - EXIT HUP INT TERM
-		elif [ "$_type" != "socks" ]; then
+		else
 			pid_file="${TMP_PATH}/${test_flag}_plugin.pid"
 			[ -s "$pid_file" ] && kill -9 "$(head -n 1 "$pid_file")" >/dev/null 2>&1
 			busybox pgrep -af "${TMP_PATH}/${test_flag}[._]" | awk '! /test\.sh/{print $1}' | xargs -r kill -9 >/dev/null 2>&1

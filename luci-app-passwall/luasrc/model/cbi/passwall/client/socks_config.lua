@@ -11,12 +11,10 @@ end
 m:appendTemplate("/cbi/nodes_dynamiclist_com")
 m:appendTemplate("/cbi/nodes_listvalue_com")
 
-local has_singbox = api.finded_com("sing-box")
-local has_xray = api.finded_com("xray")
 
 local nodes_table = {}
 for k, e in ipairs(api.get_valid_nodes()) do
-	nodes_table[#nodes_table + 1] = e
+	if e.type ~= "Socks" then nodes_table[#nodes_table + 1] = e end
 end
 
 s = m:section(NamedSection, arg[1], translate("Socks Config"), translate("Socks Config"))
@@ -66,11 +64,10 @@ o.default = n + 1080
 o.datatype = "range(1,65535)"
 o.rmempty = false
 
-if has_singbox or has_xray then
-	o = s:option(Value, "http_port", "HTTP " .. translate("Listen Port") .. " " .. translate("0 is not use"))
-	o.default = 0
-	o.datatype = "port"
-end
+o = s:option(Value, "http_port", "HTTP " .. translate("Listen Port") .. " " .. translate("0 is not use"))
+o.default = 0
+o.datatype = "port"
+o:depends({node="__native_http__"})
 
 o = s:option(Flag, "log", translate("Enable") .. " " .. translate("Log"))
 o.default = 1
@@ -119,6 +116,7 @@ for i, v in pairs(nodes_table) do
 		o.group[#o.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 		s.fields["enable_autoswitch"]:depends({ node = v.id })
 	end
+	if v.type == "Hysteria" or v.type == "SS-Rust" then s.fields["http_port"]:depends({node=v.id}) end
 	socks_node:value(v.id, v["remark"])
 	socks_node.group[#socks_node.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 end

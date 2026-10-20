@@ -36,7 +36,12 @@ o = s:option(ListValue, "type", translate("Type"))
 
 local type_table = {}
 for filename in api.fs.dir(types_dir) do
-	table.insert(type_table, filename)
+	-- Do not load obsolete files left by an incomplete package upgrade.
+	if filename ~= "5_hysteria2.lua" and filename ~= "hysteria2.lua"
+		and filename ~= "1_sing-box.lua" and filename ~= "sing-box.lua"
+		and filename ~= "2_xray.lua" and filename ~= "xray.lua" then
+		table.insert(type_table, filename)
+	end
 end
 table.sort(type_table, function(a, b)
 	return a < b

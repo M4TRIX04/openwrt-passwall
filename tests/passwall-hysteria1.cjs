@@ -114,6 +114,9 @@ for _,entry in ipairs({{'port','0'},{'port','65536'},{'hysteria_up_mbps','abc'},
 end
 for _,field in ipairs({'tls_certificateFile','tls_keyFile'}) do local n=node('udp');n[field]='/missing';rejected(hy.gen_config_server,n);n[field]=nil;rejected(hy.gen_config_server,n) end
 nodes.n=node('udp');nodes.n.hysteria_up_mbps=nil;rejected(hy.gen_config,{node='n',local_socks_port='1080'})
+nodes.n=node('udp');nodes.n.hysteria_ca='/ca'
+assert(encoded[hy.gen_config({node='n',local_socks_port='1080'})].ca=='/ca')
+nodes.n.hysteria_ca='/missing';rejected(hy.gen_config,{node='n',local_socks_port='1080'})
 nodes.n=node('udp')
 local v6=encoded[hy.gen_config({node='n',local_redir_port='1041',tcp_proxy_way='tproxy',proxy_ipv6='1'})]
 assert(v6.tproxy_tcp.listen=='[::]:1041' and v6.tproxy_udp.listen=='[::]:1041')
@@ -312,7 +315,7 @@ console.log('PASS real global/SOCKS shell branches: generation/launch failure pr
 // Production ACL/nftables/start/stop functions are extracted by that fixture.
 const fixturePath=path.join(__dirname,'passwall-client-isolation.cjs');
 let fixture=fs.readFileSync(fixturePath,'utf8').split("run('cleanup preserves")[0];
-fixture=fixture.replace('hy:type) echo Hysteria2','hy:type|hybad:type) echo Hysteria');
+fixture=fixture.replace('hy:type) echo SS-Rust','hy:type|hybad:type) echo Hysteria');
 const addition=String.raw`
 run('Hysteria mixed ACLs: invalid first/interleaved and valid TCP+UDP forwarding', \`
 \${func(app,'gen_hysteria_config')}
@@ -346,11 +349,11 @@ run('Hysteria invalid global and startup failure preserve independent SOCKS; sto
 \${func(app,'stop')}
 \${func(app,'start_socks')}
 gen_hysteria_config() { [ "$global_node" != hybad ] || return 1;echo '{}' > "$2"; }
-get_config() { ENABLED=1;SOCKS_ENABLED=1;ENABLED_ACLS=0;ENABLED_DEFAULT_ACL=1;NODE="$global_node"; }
+get_config() { ENABLED=1;SOCKS_ENABLED=1;ENABLED_ACLS=0;ENABLED_DEFAULT_ACL=1;NODE="$global_node";REDIR_PORT=1041; }
 start_haproxy() { :; };export events
 printf '#!/bin/sh\necho independent-socks >> "$events"\n' > "$APP_PATH/app.sh";chmod +x "$APP_PATH/app.sh"
-start_global() { echo global-start >> "$events";[ "$runtime_failure" != core ]; }
-start_dns() { echo global-dns >> "$events"; }
+start_global() { GLOBAL_SOCKS_server=127.0.0.1:1070;echo global-start >> "$events";[ "$runtime_failure" != core ]; }
+start_dns() { ACL_default_dns_port=11400;echo global-dns >> "$events"; }
 start_crontab() { :; };stop_crontab() { :; };clean_log() { :; };eval_cache_var() { :; };delete_ip2route() { :; }
 check_run_environment() { USE_TABLES=fw; }
 busybox() { return 1; };xargs() { cat >/dev/null;echo process-cleanup >> "$events"; }

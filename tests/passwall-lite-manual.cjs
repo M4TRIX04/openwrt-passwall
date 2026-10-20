@@ -96,11 +96,6 @@ ss.gen_config({node='test'})
 assert(plugin_sh==nil and plugin_bin==nil)
 nodes.ssr={type='SSR',address='example.com',port='8388',method='aes-128-cfb',protocol='origin',obfs='plain'}
 assert(ss.gen_config({node='ssr'}).protocol=='origin')
-${read('luasrc/passwall/util_hysteria2.lua')}
-modules['luci.passwall.util_hysteria2']={gen_config=gen_config,gen_config_server=gen_config_server}
-nodes.hy={type='Hysteria2',address='example.com',port='443',hysteria2_auth_password='secret'}
-local client=gen_config({node='hy',local_socks_port='1070',local_redir_port='1041',tcp_proxy_way='redirect'})
-assert(client.socks5 and client.tcpRedirect and client.udpTProxy and client.auth=='secret')
 -- Run the entire real service dispatcher with in-memory filesystem/UCI stubs.
 io.open=function(name, mode)
   return {write=function(_,value)
@@ -110,18 +105,24 @@ end
 servers={
  {['.name']='ss',enable='1',type='SS',remarks='ss',port='8388',method='aes-128-gcm',user='user',udp_forward='1',firewall_allow='1'},
  {['.name']='custom',enable='1',type='SS',remarks='custom',port='8389',custom='1',config_str={server_port=8389,method='aes-256-gcm',plugin='obfs-server',plugin_opts='obfs=http'}},
- {['.name']='hy',enable='1',type='Hysteria2',remarks='hy',port='443',firewall_allow='1'}
+ {['.name']='hy',enable='1',type='Hysteria2',remarks='hy',port='443',firewall_allow='1'},
+ {['.name']='hy_custom',enable='1',type='Hysteria2',remarks='hy-custom',port='444',custom='1',config_str={listen=':444'},firewall_allow='1'},
+ {['.name']='xray',enable='1',type='Xray',remarks='retired',port='445',firewall_allow='1'},
+ {['.name']='sb_custom',enable='1',type='sing-box',remarks='retired',port='446',custom='1',config_str={inbounds={}},firewall_allow='1'}
 }
 arg={'start'}
 ${read('luasrc/passwall/server_app.lua')}
 assert(files['/tmp/etc/passwall_server/ss.json'].server_port==8388)
 assert(files['/tmp/etc/passwall_server/custom.json'].plugin==nil)
 assert(files['/tmp/etc/passwall_server/custom.json'].plugin_opts==nil)
-assert(files['/tmp/etc/passwall_server/hy.json'].listen==':443')
+assert(files['/tmp/etc/passwall_server/hy.json']==nil)
+assert(files['/tmp/etc/passwall_server/hy_custom.json']==nil and rules.passwall_server_hy_custom==nil)
+assert(files['/tmp/etc/passwall_server/xray.json']==nil and rules.passwall_server_xray==nil)
+assert(files['/tmp/etc/passwall_server/sb_custom.json']==nil and rules.passwall_server_sb_custom==nil)
 local joined=table.concat(commands,string.char(10))
 assert(joined:find('ss%-server %-c') and joined:find(' %-u'))
-assert(joined:find('hysteria %-c .- server'))
-assert(rules.passwall_server_ss.dest_port==8388 and rules.passwall_server_hy.dest_port==443)
+assert(not joined:find('hysteria %-c .- server'))
+assert(rules.passwall_server_ss.dest_port==8388 and rules.passwall_server_hy==nil)
 arg={'stop'}
 ${read('luasrc/passwall/server_app.lua')}
 assert(next(rules)==nil)
@@ -148,13 +149,13 @@ assert(files['/tmp/etc/passwall_server/good.json'] and rules.passwall_server_goo
 assert(files['/tmp/log/passwall_server.log']:find('unsupported or missing method',1,true))
 assert(files['/tmp/log/passwall_server.log']:find('invalid server JSON',1,true))
 `);
-console.log('PASS real SS/Hysteria generators and server start/stop, ports/firewall, legacy plugin isolation, Rust/SSR regression');
+console.log('PASS real SS generator, retired Hysteria2 rejection and server start/stop, ports/firewall, legacy plugin isolation, Rust/SSR regression');
 const controller=read('luasrc/controller/passwall.lua');
 for (const name of ['node_subscribe','link_add_node','gen_client_config','subscribe_manual']) assert.ok(!controller.includes('function '+name+'('));
 for (const name of ['node_config','server_config','add_node','update_config','server_update_config']) {
   assert.ok(controller.includes('"'+name+'"'), name);
 }
-for (const p of ['client/type/4_ss.lua','client/type/5_hysteria2.lua','server/type/4_ss.lua','server/type/5_hysteria2.lua']) assert.ok(fs.existsSync(path.join(root,'luasrc/model/cbi/passwall',p)));
+for (const p of ['client/type/4_ss.lua','client/type/5_hysteria.lua','server/type/4_ss.lua','server/type/5_hysteria.lua']) assert.ok(fs.existsSync(path.join(root,'luasrc/model/cbi/passwall',p)));
 assert.ok(!read('luasrc/model/cbi/passwall/client/type/4_ss.lua').includes('plugin'));
 assert.ok(!read('luasrc/model/cbi/passwall/client/node_config.lua').includes('link_share'));
 assert.ok(!read('luasrc/view/passwall/node_config/footer.htm').includes('fromUrl'));
@@ -180,6 +181,40 @@ assert(data.manual.type=='SS' and data.manual.group=='private' and saved==1)
 form={id='manual',data={address='example.com',port='8388',method='aes-128-gcm',password='secret'}}
 update_config()
 assert(data.manual.address=='example.com' and data.manual.method=='aes-128-gcm' and saved==2 and response==true)
+api.is_finded=function() return false end
+api.finded_com=function(name) return name=='hysteria' end
+api.get_app_version=function() error('new node must not fall back to Hysteria2 by version') end
+form={};add_node()
+assert(data.manual.type=='Hysteria' and saved==3)
+http_write_json_error=function() response='rejected' end
+for _,core in ipairs({'Xray','sing-box','Hysteria2','Socks'}) do
+ form={id='manual',data={type=core}};response=nil;update_config()
+ assert(response=='rejected' and data.manual.type=='Hysteria' and saved==3)
+end
+uci_get=function(id,key) local n=data[id];if not key then return n end;return n and n[key] end
+${controller.slice(controller.indexOf('function set_node()'),controller.indexOf('function copy_node()'))}
+for _,core in ipairs({'Xray','sing-box','Hysteria2','Socks'}) do
+ data.retired={type=core};form={type='@global[0]',config='node',section='retired'};response=nil
+ set_node();assert(response=='rejected' and saved==3)
+end
+data.retired={['.type']='socks'};response=nil;set_node();assert(response=='rejected' and saved==3)
+appname='passwall';luci={sys={call=function(cmd) if cmd:find('grep -E',1,true) then return 1 end;return 0 end}}
+api.get_cache_var=function() return 'manual' end
+http_write_json=function(value) response=value end
+data.listener={node='manual',http_port='8080'};form={id='listener'}
+${controller.slice(controller.indexOf('function socks_status()'),controller.indexOf('function connect_status()'))}
+socks_status();assert(response.use_http==1 and response.http_status==true)
+data.manual.type='SS';socks_status();assert(response.use_http==0 and response.socks_status==true)
+local server_data,server_saved={},0
+api.uci_set_s=function(_,k,v) server_data[k]=v end
+api.uci_save_s=function() server_saved=server_saved+1 end
+${controller.slice(controller.indexOf('function server_update_config()'),controller.indexOf('function server_status()'))}
+for _,core in ipairs({'Xray','sing-box','Hysteria2'}) do
+ form={id='server',data={type=core}};response=nil;server_update_config()
+ assert(response=='rejected' and server_saved==0 and next(server_data)==nil)
+end
+form={id='server',data={type='SS',port='8388'}};server_update_config()
+assert(server_saved==1 and server_data.type=='SS' and server_data.port=='8388')
 `);
 const app=read('root/usr/share/passwall/app.sh');
 const ssBlocks=[...app.matchAll(/\n\tss\)\n([\s\S]*?)\n\t;;/g)];

@@ -1,6 +1,4 @@
 local api = require "luci.passwall.api"
-local has_xray = api.finded_com("xray")
-local has_singbox = api.finded_com("sing-box")
 api.set_default_cbi()
 
 m = Map()
@@ -53,7 +51,7 @@ o:value("https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/google
 o:value("https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/ChinaMax/ChinaMax_Domain.txt", translate("ios_rule_script/ChinaMax_Domain"))
 o:value("https://cdn.jsdelivr.net/gh/pexcn/daily@gh-pages/chinalist/chinalist.txt", translate("pexcn/chinalist"))
 
-if has_xray or has_singbox then
+do
 	o = s:option(Value, "geoip_url", translate("GeoIP Update URL"))
 	o:value("https://github.com/Loyalsoldier/geoip/releases/latest/download/geoip.dat", translate("Loyalsoldier/geoip"))
 	o:value("https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/geoip.dat", translate("MetaCubeX/geoip"))
@@ -85,7 +83,7 @@ if has_xray or has_singbox then
 		o.rmempty = false
 		o.description = "<ul>"
 			.. "<li>" .. translate("Experimental feature.") .. "</li>"
-			.. "<li>" .. "1." .. translate("Parses and preloads GeoIP/Geosite data to improve Sing-box/Xray routing performance.") .. "</li>"
+			.. "<li>" .. "1." .. translate("Parses GeoIP/Geosite data for the rule lists.") .. "</li>"
 			.. "<li>" .. "2." .. translate("Once enabled, the rule list can support GeoIP/Geosite rules.") .. "</li>"
 			.. "</ul>"
 		function o.write(self, section, value)
@@ -140,26 +138,5 @@ for _, f in ipairs(flags) do
 end
 
 s:appendTemplate("/rule/rule_version")
-
-if has_xray or has_singbox then
-	m:appendTemplate("/rule/shunt_rule_list")
-
-	if luci.http.formvalue("cbi.submit") == "1" then
-		local group_order = luci.http.formvaluetable("group.order")
-		if group_order then
-			for k, v in pairs(group_order) do
-				if v and v~= "" then
-					local new_order = {}
-					string.gsub(v, "[^" .. " " .. "]+", function(w)
-						new_order[#new_order + 1] = w
-					end)
-					for idx, name in ipairs(new_order) do
-						m.uci:reorder(m.config, name, idx - 1)
-					end
-				end
-			end
-		end
-	end
-end
 
 return api.return_map(m)

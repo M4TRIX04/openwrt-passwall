@@ -23,13 +23,16 @@ events="$work/events"; : > "$events"
 fail() { echo "FAIL: $*" >&2; cat "$events" >&2; exit 1; }
 echolog() { echo "log $*" >> "$events"; }
 set_cache_var() { printf '%s' "$2" > "$TMP_PATH/key_$1"; eval "$1=\$2"; }
+set_cache_vars() { while [ "$#" -gt 0 ]; do set_cache_var "$1" "$2" || return 1; shift 2; done; }
 get_cache_var() { cat "$TMP_PATH/key_$1" 2>/dev/null; }
 del_cache_var() { rm -f "$TMP_PATH/key_$1"; }
 config_n_get() {
   case "$1:$2" in
     bad:type|late:type|good:type) echo SS;;
-    rust:type) echo SS-Rust;; ssr:type) echo SSR;; hy:type) echo Hysteria2;;
+    retired:type) echo Hysteria2;;
+    rust:type) echo SS-Rust;; ssr:type) echo SSR;; hy:type) echo SS-Rust;;
     a:enabled|b:enabled|c:enabled|d:enabled|e:enabled) echo 1;;
+    a:mode|b:mode|c:mode|d:mode|e:mode) echo 1;;
     a:node) echo "$a_node";; b:node) echo "$b_node";; c:node) echo "$c_node";;
     d:node) echo ssr;; e:node) echo hy;;
     s1:enabled) echo 1;; s1:node) echo good;; s1:port) echo 1080;;
@@ -72,12 +75,15 @@ uci() {
     local id="\${3#passwall.}" n
     n=$(config_n_get "$id" node)
     printf "passwall.%s.enabled='1'\npasswall.%s.node='%s'\npasswall.%s.remarks='%s'\n" "$id" "$id" "$n" "$id" "$id"
-    echo "passwall.$id.mode='1'"
+    echo "passwall.$id.mode='$(config_n_get "$id" mode)'"
     [ "$id" != b ] || echo "passwall.$id.log='1'"
     return
   fi
   return 1
 }
+${func(app, 'check_node_supported')}
+${func(app, 'check_dns_config')}
+${func(app, 'fail_acl')}
 ${func(app, 'check_ss_node')}
 ${func(app, 'fail_ss_acl')}
 ${func(app, 'acl_app')}
@@ -110,7 +116,115 @@ fail_ss_acl a bad
 grep -q '^node_bad_extra_deadbeef=8888$' "$TMP_PATH/var" || fail 'similarly named DNS state deleted'
 [ -z "$(get_cache_var ACL_a_redir_port)" ] || fail 'failed ACL cache retained'
 `);
-run('invalid-first and interleaved ACLs; valid SS/Rust/SSR/Hysteria TCP+UDP rules survive', `
+run('ACL mode=0 keeps source-specific TCP/UDP exemptions without checking or starting nodes', String.raw`
+eval "$(declare -f config_n_get | sed '1s/config_n_get/config_original/')"
+config_n_get() {
+  case "$1:$2" in
+    a:mode) echo 0;; a:dns_mode) echo xray;; old:type) echo "$retired_core";;
+    *) config_original "$@";;
+  esac
+}
+eval "$(declare -f uci | sed '1s/uci/uci_original/')"
+uci() {
+  uci_original "$@"
+  if [ "$1:$2:$3" = '-q:show:passwall.a' ]; then
+    echo "passwall.a.sources='00:11:22:33:44:55'"
+    echo "passwall.a.dns_mode='xray'"
+  fi
+}
+lua_api() { case "$1" in iprange*) echo false;; ip_or_mac*) echo mac;; esac; }
+eval "$(declare -f check_node_supported | sed '1s/check_node_supported/check_node_original/')"
+check_node_supported() { echo checked-node >> "$events"; check_node_original "$@"; }
+eval "$(declare -f check_ss_node | sed '1s/check_ss_node/check_ss_original/')"
+check_ss_node() { echo checked-ss >> "$events"; check_ss_original "$@"; }
+eval "$(declare -f check_dns_config | sed '1s/check_dns_config/check_dns_original/')"
+check_dns_config() { echo checked-dns >> "$events"; check_dns_original "$@"; }
+check_hysteria_node() { fail 'unused Hysteria node checked'; }
+config_get_type() { [ "$1" != missing ] && echo nodes; }
+items=a;PROXY_IPV6=1
+for way in redirect tproxy; do
+  TCP_PROXY_WAY=$way;is_tproxy=;nft_prerouting_chain=PSW_NAT
+  [ "$way" != tproxy ] || { is_tproxy=1;nft_prerouting_chain=PSW_MANGLE; }
+  for node_case in good Xray sing-box missing; do
+      a_node=$node_case
+      case "$node_case" in Xray|sing-box) a_node=old;retired_core=$node_case;; esac
+      rm -f "$TMP_PATH"/key_*;: > "$events";ENABLED_ACLS=1
+      set_cache_var ACL_GLOBAL_node good;set_cache_var ACL_GLOBAL_redir_port 1041
+      set_cache_var acl_node_good_socks_port 11111;set_cache_var acl_node_good_redir_port 11211
+      set_cache_var ACL_a_failed 1
+      for key in node redir_port dns_port default fakedns;do set_cache_var "ACL_a_$key" 19999;done
+      load_acl
+      [ -z "$(get_cache_var ACL_a_failed)" ] || fail 'direct ACL rejected'
+      [ "$(cat "$TMP_ACL_PATH/a/source_list")" = 'mac:00:11:22:33:44:55' ] || fail 'source lost'
+      for key in node redir_port dns_port default fakedns;do
+        [ -z "$(get_cache_var "ACL_a_$key")" ] || fail 'direct ACL retained proxy state'
+      done
+      [ "$(get_cache_var ACL_GLOBAL_redir_port)" = 1041 ] || fail 'global port changed'
+      [ "$(get_cache_var acl_node_good_redir_port)" = 11211 ] || fail 'shared instance changed'
+      ! grep -Eq '^checked-|^socks |^ipt2socks |^dns |^process ' "$events" || fail 'unused node/DNS checked or started'
+      for proto in tcp udp;do
+        grep "^nft .*ip protocol $proto .*counter return comment" "$events" | grep -F 'ether saddr {00:11:22:33:44:55}' | grep -v 'dport 53' | grep -q '"a"' || fail "IPv4 $proto exemption missing"
+        grep "^nft .*PSW_MANGLE_V6 meta l4proto $proto .*counter return comment" "$events" | grep -F 'ether saddr {00:11:22:33:44:55}' | grep -v 'dport 53' | grep -q '"a"' || fail "IPv6 $proto exemption missing"
+      done
+      ! grep '^nft ' "$events" | grep -Eq 'tproxy|redirect to :19999|redirect to :1041' || fail 'direct traffic forwarded'
+  done
+done
+`);
+run('ACL effective DNS: reuse started global SS, reject retired nodes and invalid independent DNS', String.raw`
+eval "$(declare -f config_n_get | sed '1s/config_n_get/config_original/')"
+config_n_get() {
+  case "$1:$2" in
+    old:type) echo Xray;; a:dns_mode) echo "$acl_dns";; a:use_global_config) echo "$inherit";;
+    *) config_original "$@";;
+  esac
+}
+eval "$(declare -f uci | sed '1s/uci/uci_original/')"
+uci() {
+  uci_original "$@"
+  if [ "$1:$2:$3" = '-q:show:passwall.a' ]; then
+    echo "passwall.a.dns_mode='$acl_dns'"
+    echo "passwall.a.use_global_config='$inherit'"
+  fi
+}
+items=a;NODE=good;GLOBAL_DNSMASQ_PORT=11400;nft_prerouting_chain=PSW_NAT
+for scenario in retired reuse inherit independent-bad independent-good global-not-started;do
+  rm -rf "$TMP_ACL_PATH";mkdir -p "$TMP_ACL_PATH";rm -f "$TMP_PATH"/key_*;: > "$events"
+  ENABLED_ACLS=1;a_node=good;acl_dns=xray;inherit=0
+  case "$scenario" in
+    retired) a_node=old;;
+    reuse|inherit) set_cache_var ACL_GLOBAL_node good;set_cache_var ACL_GLOBAL_redir_port 1041;set_cache_var ACL_default_dns_port 11400;
+      [ "$scenario" != inherit ] || { inherit=1;a_node=old; };;
+    independent-good) acl_dns=dns2socks;;
+    global-not-started) set_cache_var ACL_GLOBAL_failed 1;;
+  esac
+  load_acl
+  case "$scenario" in
+    retired|independent-bad|global-not-started)
+      [ "$(get_cache_var ACL_a_failed)" = 1 ] || fail 'invalid independent ACL accepted'
+      [ -z "$(get_cache_var ACL_a_redir_port)" ] || fail 'invalid ACL published port'
+      [ ! -d "$TMP_ACL_PATH/a" ] || fail 'invalid ACL source directory retained'
+      ! grep -Eq '^socks |^ipt2socks |^dns |^nft ' "$events" || fail 'invalid ACL started or forwarded'
+      ;;
+    *)
+      [ -z "$(get_cache_var ACL_a_failed)" ] || fail 'valid ACL rejected'
+      port=$(get_cache_var ACL_a_redir_port)
+      if [ "$scenario" = independent-good ];then
+        [ -n "$port" ] && [ "$port" != 1041 ] || fail 'independent ACL port missing'
+        grep -q '^socks good$' "$events" && grep -q '^ipt2socks ' "$events" && grep -q '^dns ' "$events" || fail 'independent SS/DNS not started'
+        [ -z "$(get_cache_var ACL_a_default)" ] || fail 'independent ACL inherited failed/unstarted global'
+      else
+        [ "$port" = 1041 ] && [ "$(get_cache_var ACL_a_default)" = 1 ] || fail 'global listener not inherited'
+        [ "$(get_cache_var ACL_a_dns_port)" = 11400 ] || fail 'global DNS not inherited'
+        ! grep -Eq '^socks |^ipt2socks |^dns |unsupported backend' "$events" || fail 'unused independent DNS checked or started'
+      fi
+      for proto in tcp udp;do
+        grep "^nft .*ip protocol $proto" "$events" | grep -q ":$port" || fail "$proto forwarding missing"
+      done
+      ;;
+  esac
+done
+`);
+run('invalid-first and interleaved ACLs; valid SS/Rust/SSR TCP+UDP rules survive', `
 for layout in first interleaved late shared; do
   rm -rf "$TMP_ACL_PATH"; mkdir -p "$TMP_ACL_PATH"; rm -f "$TMP_PATH"/key_*; : > "$events"
   ENABLED_ACLS=1; items='a b c d e'
@@ -166,17 +280,17 @@ for layout in first interleaved late shared; do
   ${func(app, 'acl_app')}
 done
 `);
-run('invalid/valid global SS with independent SOCKS; explicit stop and real failure rollback', `
+run('invalid/valid global SS and retired Hysteria2 with independent SOCKS; explicit stop and real failure rollback', `
 ${func(app, 'start')}
 ${func(app, 'stop')}
 ${func(app, 'start_socks')}
-get_config() { ENABLED=1; SOCKS_ENABLED=1; ENABLED_ACLS=0; ENABLED_DEFAULT_ACL=1; NODE="$global_node"; set_cache_var ENABLED_DEFAULT_ACL 1; }
+get_config() { ENABLED=1; SOCKS_ENABLED=1; ENABLED_ACLS=0; ENABLED_DEFAULT_ACL=1; NODE="$global_node"; REDIR_PORT=1041; }
 start_haproxy() { :; }
 export events
 printf '#!/bin/sh\necho independent-socks >> "$events"\n' > "$APP_PATH/app.sh"
 chmod +x "$APP_PATH/app.sh"
-start_global() { echo global-start >> "$events"; [ "$runtime_failure" != core ]; }
-start_dns() { echo global-dns >> "$events"; [ "$runtime_failure" != dns ]; }
+start_global() { GLOBAL_SOCKS_server=127.0.0.1:1070; echo global-start >> "$events"; [ "$runtime_failure" != core ]; }
+start_dns() { ACL_default_dns_port=11400; echo global-dns >> "$events"; [ "$runtime_failure" != dns ]; }
 start_crontab() { echo cron-start >> "$events"; }
 stop_crontab() { echo cron-stop >> "$events"; }
 clean_log() { :; }; eval_cache_var() { :; }; delete_ip2route() { echo route-cleanup >> "$events"; }
@@ -186,12 +300,12 @@ xargs() { cat >/dev/null; echo process-cleanup >> "$events"; }
 sysctl() { return 0; }; logger() { :; }; ulimit() { :; }
 mkdir() { local dir; for dir in "$@"; do case "$dir" in -p|/tmp/etc|/tmp/log) :;; *) command mkdir -p "$dir";; esac; done; }
 printf 'case "$1" in start) echo firewall-start >> "$events";; stop) echo firewall-stop >> "$events";; esac\n' > "$APP_PATH/fw.sh"
-for global_node in bad good; do
+for global_node in bad good retired; do
   command mkdir -p "$TMP_PATH" "$TMP_ACL_PATH"; : > "$events"; runtime_failure=
   start
   grep -q '^independent-socks$' "$events" || fail 'SOCKS not started'
   ! grep -q process-cleanup "$events" || fail 'SOCKS stopped on validation failure'
-  if [ "$global_node" = bad ]; then
+  if [ "$global_node" != good ]; then
     ! grep -Eq '^global-start|^global-dns' "$events" || fail 'invalid global started'
     [ "$(get_cache_var ENABLED_DEFAULT_ACL)" = 0 ] || fail 'global forwarding flag retained'
   else grep -q '^global-start' "$events" && grep -q '^global-dns' "$events" || fail 'valid global missing'; fi

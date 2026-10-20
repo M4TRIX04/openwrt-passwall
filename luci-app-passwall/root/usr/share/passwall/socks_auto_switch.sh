@@ -69,6 +69,7 @@ test_node() {
 		exec 8>"${LOCK_PATH}/${CONFIG}_socks_auto_switch_test.lock"
 		flock -x 8 || exit 1
 		_type=$(echo $(config_n_get ${node_id} type) | tr 'A-Z' 'a-z')
+		case "$_type" in xray|sing-box|hysteria2|socks) exit 1 ;; esac
 		[ -n "${_type}" ] && {
 			check_process
 			_tmp_port=$(get_new_port 48800 tcp,udp) || exit 1
@@ -76,7 +77,7 @@ test_node() {
 				trap 'cleanup_hysteria_probe "$test_flag" || exit 1' EXIT
 				trap 'exit 1' HUP INT TERM
 			fi
-			NO_REC_PROCESS=1 "$APP_FILE" run_socks flag="$test_flag" node="$node_id" bind=127.0.0.1 socks_port="$_tmp_port" config_file="${test_flag}.json" 8>&- 9>&- || { [ "$_type" != hysteria ] || exit 1; }
+			NO_REC_PROCESS=1 "$APP_FILE" run_socks flag="$test_flag" node="$node_id" bind=127.0.0.1 socks_port="$_tmp_port" config_file="${test_flag}.json" 8>&- 9>&- || exit 1
 			sleep 2s 8>&- 9>&-
 			curlx="socks5h://127.0.0.1:${_tmp_port}"
 			_proxy_status=$(test_url "${probe_url}" ${retry_num} ${connect_timeout} "-x $curlx" 1)

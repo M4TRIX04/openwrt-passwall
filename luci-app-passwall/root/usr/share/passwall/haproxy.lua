@@ -99,7 +99,7 @@ api.uci_foreach_c("haproxy_config", function(t)
 		local lbss = t.lbss
 		local listen_port = tonumber(t.haproxy_port) or 0
 		local server_node = api.uci_get_c(lbss)
-		local hop = (health_check_type == "script_logic") and server_node and (server_node.hysteria_hop or server_node.hysteria2_hop) or nil
+		local hop = (health_check_type == "script_logic") and server_node and (server_node.hysteria_hop) or nil
 		hop = hop and hop:gsub(":", "-") or nil
 		if server_node and server_node.address and (server_node.port or hop) then
 			server_remark = server_node.address .. ":" .. (server_node.port or hop)

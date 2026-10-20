@@ -1,3 +1,13 @@
+**代理核心精简实施状态（2026-10-20，工作区修改，尚未提交）**
+
+- 最终目标仍为 Shadowsocks-libev 与 Hysteria v1.3.5。当前这一批完成 Xray、sing-box 及远端 SOCKS 客户端节点的退出，并承接此前独立 Hysteria2 清理；不是所有历史核心均已删除。
+- 已删除对应 Client/Server 类型页、两个核心的生成器、客户端与服务端启动分支、组件检测下载注册及核心构建选项。Client/Server 类型加载器跳过已知旧文件；旧节点、特殊分流节点和旧 DNS 后端在运行前诊断并隔离，不自动改协议或 DNS 后端。
+- 保留 SS-libev/Hysteria 的独立本地 SOCKS 服务、Hysteria 原生 HTTP，以及 SS ACL 的 SOCKS → ipt2socks、dns2socks、DNS helper、nftables 和基础规则更新。取消远端 SOCKS 节点、本地 SOCKS 服务二次转接节点及依赖已删除核心的 HTTP 转换；SS-libev 没有被添加 HTTP 实现。
+- 全局 dns2socks 使用当前节点自己的本地 SOCKS 监听；旧自定义 socks_server 若与此不符则明确拒绝，保存新的 DNS 设置可清除旧选项。全局 DNS 无效时不启动全局透明代理，其他合法独立服务与自定义 ACL 仍初始化。
+- SS-libev/Hysteria 配置生成器及 Hysteria 运行管理器保持原样；UDP、FakeTCP、WeChat Video、Custom CA、认证、QUIC 窗口及 Client/Server 运行链路保留。DNS helper 和规则更新器未重写，新增真实 dnsmasq 配置复制回归覆盖本地域名、反向解析、hosts 与 KMS SRV。
+- 后续仍需独立清理 SS-Rust、SSR、NaiveProxy 等历史类型及不再需要的独立服务端工具。为避免提前破坏其现有行为，本批没有顺带删除这些模块。Geo 数据与 geoview 为基础规则的公共输入，不因历史命名含 v2ray 就删除。
+- 分阶段改动、文件清单、升级方式及测试边界见 [核心精简实施记录](passwall-lite-core-removal.md)。下文保留早期审查事实与当时的实施计划，不代表最新功能边界。
+
 **第二阶段审查修复与验证记录（2026-10-19，本地检查点）**
 
 - 已实现：ACL 节点共享端口缓存与实例资源分离。失败回滚仅接收本次新建实例的配置路径，不通过节点旧缓存定位进程，也不删除其他成功实例的共享缓存。已开启日志的 Hysteria 实例可供后续 ACL 复用；首次启用日志时仍允许新建实例。

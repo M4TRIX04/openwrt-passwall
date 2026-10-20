@@ -197,10 +197,14 @@ get_jump_ipt() {
 }
 
 load_acl() {
+	local acl_status=0
 	{ [ "$ENABLED_ACLS" = "1" ] || { [ "$ENABLED_DEFAULT_ACL" = "1" ] && [ "$CLIENT_PROXY" = "1" ]; }; } && echolog "  - 访问控制："
 	[ "$ENABLED_ACLS" = 1 ] && {
-		acl_app
+		acl_app || acl_status=$?
+		# Status 2 guarantees that each failed publication was fully isolated.
+		case "$acl_status" in 0|2) ;; *) return 1 ;; esac
 		for sid in $(ls -F ${TMP_ACL_PATH} | grep '/$' | awk -F '/' '{print $1}' | grep -v 'default'); do
+			[ "$(get_cache_var "ACL_${sid}_failed")" = 1 ] && continue
 			eval "$(uci -q show "${CONFIG}.${sid}" | cut -d'.' -sf 3-)"
 
 			mode=${mode:-0}
@@ -755,6 +759,7 @@ load_acl() {
 		$ipt_m -A PSW $(comment "默认") -p udp -j RETURN
 		$ip6t_m -A PSW $(comment "默认") -p udp -j RETURN
 	}
+	return "$acl_status"
 }
 
 filter_haproxy() {
@@ -816,8 +821,6 @@ filter_node() {
 	[ -z "$node" ] && return 1
 	local address=$(config_n_get "$node" address)
 	local port=$(config_n_get "$node" port)
-	local hop=$(config_n_get "$node" hysteria2_hop)
-	[ -n "$hop" ] && port="${port:+$port,}$hop" 
 	[ -z "$address" ] && return 1
 	echo "$address" | grep -Eq "$EXCLUDE_VPSIP" && return 1
 	[ -z "$port" ] && return 1
@@ -1414,7 +1417,9 @@ add_firewall_rule() {
 	}
 
 	#  加载ACLS
-	load_acl
+	local acl_status=0
+	load_acl || acl_status=$?
+	case "$acl_status" in 0|2) ;; *) return 1 ;; esac
 
 	[ -d "${TMP_IFACE_PATH}" ] && {
 		for iface in $(ls ${TMP_IFACE_PATH}); do
@@ -1434,6 +1439,7 @@ add_firewall_rule() {
 	done
 
 	echolog "防火墙规则加载完成！"
+	return "$acl_status"
 }
 
 del_firewall_rule() {
@@ -1583,8 +1589,11 @@ get_ip6t_bin() {
 
 start() {
 	[ "$ENABLED_DEFAULT_ACL" = 0 ] && [ "$ENABLED_ACLS" = 0 ] && return
-	add_firewall_rule
-	gen_include
+	local acl_status=0
+	add_firewall_rule || acl_status=$?
+	case "$acl_status" in 0|2) ;; *) return 1 ;; esac
+	gen_include || return 1
+	return "$acl_status"
 }
 
 stop() {

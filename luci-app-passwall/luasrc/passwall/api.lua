@@ -628,163 +628,48 @@ end
 
 function get_valid_nodes()
 	local show_node_info = uci_get_c("@global_other[0]", "show_node_info") or "0"
-	local nodes = {}
-	local default_nodes = {}
-	local other_nodes = {}
+	local nodes, default_nodes, other_nodes = {}, {}, {}
 	uci_foreach_c("nodes", function(e)
+		if e.type == "Hysteria2" or e.type == "Xray" or e.type == "sing-box" or e.type == "Socks" or (e.protocol and e.protocol:sub(1, 1) == "_") then return end
+		if not (e.type and e.remarks and e.port and e.address) then return end
+		if not (is_ip(e.address) or datatypes.hostname(e.address)) then return end
 		e.id = e[".name"]
-		if e.type and e.remarks then
-			local type_name = e.type
-			if e.type == "sing-box" then type_name = "Sing-Box" end
-			if e.protocol and (e.protocol == "_balancing" or e.protocol == "_shunt" or e.protocol == "_iface" or e.protocol == "_urltest") then
-				e["remark"] = trim("%s：[%s]" % {type_name .. " " .. i18n.translatef(e.protocol), e.remarks})
-				e["node_type"] = "special"
-				if not e.group or e.group == "" then
-					default_nodes[#default_nodes + 1] = e
-				else
-					other_nodes[#other_nodes + 1] = e
-				end
-			end
-			local port = e.port or e.hysteria_hop or e.hysteria2_hop
-			local is_realm = (e.type == "Hysteria2" or e.protocol == 'hysteria2') and e.hysteria2_realms or nil
-			if (port and e.address) or is_realm then
-				local address = e.address
-				if is_ip(address) or datatypes.hostname(address) or is_realm then
-					if (e.type == "sing-box" or e.type == "Xray") and e.protocol then
-						local protocol = e.protocol
-						if protocol == "vmess" then
-							protocol = "VMess"
-						elseif protocol == "vless" then
-							protocol = "VLESS"
-						elseif protocol == "shadowsocks" then
-							protocol = "SS"
-						elseif protocol == "shadowsocksr" then
-							protocol = "SSR"
-						elseif protocol == "wireguard" then
-							protocol = "WG"
-						elseif protocol == "hysteria" then
-							protocol = "HY"
-						elseif protocol == "hysteria2" then
-							protocol = "HY2"
-						elseif protocol == "anytls" then
-							protocol = "AnyTLS"
-						elseif protocol == "ssh" then
-							protocol = "SSH"
-						else
-							protocol = protocol:gsub("^%l",string.upper)
-						end
-						type_name = type_name .. " " .. protocol
-					end
-					if is_ipv6(address) then address = get_ipv6_full(address) end
-					type_name = is_realm and type_name .. " Realm" or type_name
-					e["remark"] = trim("%s：[%s]" % {type_name, e.remarks})
-					if show_node_info == "1" then
-						port = (port or ""):gsub(":", "-")
-						if not is_realm then
-							e["remark"] = trim("%s：[%s] %s:%s" % {type_name, e.remarks, address, port})
-						end
-					end
-					e.node_type = "normal"
-					if not e.group or e.group == "" then
-						default_nodes[#default_nodes + 1] = e
-					else
-						other_nodes[#other_nodes + 1] = e
-					end
-				end
-			end
+		local address = is_ipv6(e.address) and get_ipv6_full(e.address) or e.address
+		e.remark = trim("%s：[%s]" % {e.type, e.remarks})
+		if show_node_info == "1" then
+			e.remark = trim("%s：[%s] %s:%s" % {e.type, e.remarks, address, tostring(e.port)})
 		end
+		e.node_type = "normal"
+		local list = (not e.group or e.group == "") and default_nodes or other_nodes
+		list[#list + 1] = e
 	end)
-	for i = 1, #default_nodes do nodes[#nodes + 1] = default_nodes[i] end
-	for i = 1, #other_nodes do nodes[#nodes + 1] = other_nodes[i] end
+	for _, e in ipairs(default_nodes) do nodes[#nodes + 1] = e end
+	for _, e in ipairs(other_nodes) do nodes[#nodes + 1] = e end
 	return nodes
 end
 
+
 function get_node_list()
-	local node_list = {
-		socks_list = {},
-		normal_list = {},
-	}
-	uci_foreach_c("socks", function(s)
-		if s.enabled == "1" and s.node then
-			node_list.socks_list[#node_list.socks_list + 1] = {
-				id = s[".name"],
-				remark = i18n.translate("Socks Config") .. " [" .. s.port .. i18n.translate("Port") .. "]",
-				group = "Socks"
-			}
-		end
-	end)
-	for k, e in ipairs(get_valid_nodes()) do
-		if e.node_type == "normal" then
-			node_list.normal_list[#node_list.normal_list + 1] = {
-				id = e[".name"],
-				remark = e["remark"],
-				type = e["type"],
-				chain_proxy = e["chain_proxy"],
-				group = e["group"]
-			}
-		end
-		if e.protocol and e.protocol:find("^_") then
-			local proto = e.protocol:sub(2)
-			if not node_list[proto .. "_list"] then
-				node_list[proto .. "_list"] = {}
-			end
-			node_list[proto .. "_list"][#node_list[proto .. "_list"] + 1] = {
-				id = e[".name"],
-				remark = e["remark"],
-				group = e["group"],
-				o = e,
-			}
-		end
+	local node_list = {socks_list = {}, normal_list = {}}
+	for _, e in ipairs(get_valid_nodes()) do
+		node_list.normal_list[#node_list.normal_list + 1] = {
+			id=e.id, remark=e.remark, type=e.type, group=e.group
+		}
 	end
 	return node_list
 end
 
+
 function get_node_remarks(n)
-	local remarks = ""
-	if n then
-		local type_name = n.type
-		if n.type == "sing-box" then type_name = "Sing-Box" end
-		if n.protocol and (n.protocol == "_balancing" or n.protocol == "_shunt" or n.protocol == "_iface" or n.protocol == "_urltest") then
-			remarks = trim("%s：[%s]" % {type_name .. " " .. i18n.translatef(n.protocol), n.remarks})
-		else
-			if (n.type == "sing-box" or n.type == "Xray") and n.protocol then
-				local protocol = n.protocol
-				if protocol == "vmess" then
-					protocol = "VMess"
-				elseif protocol == "vless" then
-					protocol = "VLESS"
-				elseif protocol == "shadowsocks" then
-					protocol = "SS"
-				elseif protocol == "shadowsocksr" then
-					protocol = "SSR"
-				elseif protocol == "wireguard" then
-					protocol = "WG"
-				elseif protocol == "hysteria" then
-					protocol = "HY"
-				elseif protocol == "hysteria2" then
-					protocol = "HY2"
-				elseif protocol == "anytls" then
-					protocol = "AnyTLS"
-				elseif protocol == "ssh" then
-					protocol = "SSH"
-				else
-					protocol = protocol:gsub("^%l",string.upper)
-				end
-				type_name = type_name .. " " .. protocol
-			end
-			if (n.type == "Hysteria2" or n.protocol == 'hysteria2') and n.hysteria2_realms then
-				type_name = type_name .. " Realm"
-			end
-			remarks = trim("%s：[%s]" % {type_name, n.remarks})
-		end
-	end
-	return remarks
+	if not n then return "" end
+	return trim("%s：[%s]" % {n.type or "", n.remarks or ""})
 end
+
 
 function get_full_node_remarks(n)
 	local remarks = get_node_remarks(n)
 	if #remarks > 0 then
-		local port = n.port or n.hysteria_hop or n.hysteria2_hop
+		local port = n.port
 		if n.address and port then
 			port = port:gsub(":", "-")
 			remarks = remarks .. " " .. n.address .. ":" .. port
@@ -908,6 +793,7 @@ function get_app_path(app_name)
 end
 
 function get_app_version(app_name, file)
+	if not com[app_name] then return nil end
 	if file == nil then file = get_app_path(app_name) end
 	return get_bin_version_cache(file, com[app_name].cmd_version)
 end
@@ -1983,6 +1869,7 @@ function get_socks_backup_nodes(id)
 	id = trim(id)
 	if id == "" then return "" end
 	local socks = uci_get_c(id)
+	if not socks then return "" end
 	local nodes
 	if socks.backup_node_add_mode and socks.backup_node_add_mode == "batch" then
 		local node = {}
@@ -1992,9 +1879,10 @@ function get_socks_backup_nodes(id)
 	else
 		nodes = socks.autoswitch_backup_node
 	end
-	local backup_nodes, seen = {}, {}
+	local backup_nodes, seen, available = {}, {}, {}
+	for _, n in ipairs(get_valid_nodes()) do available[n.id] = true end
 	for _, v in ipairs(nodes or {}) do
-		if v ~= socks.node and not seen[v] then
+		if available[v] and v ~= socks.node and not seen[v] then
 			seen[v] = true
 			table.insert(backup_nodes, v)
 		end
@@ -2043,25 +1931,6 @@ function fetch_cert_sha256(host, port, sni, timeout, http3)
 	return fp:upper()
 end
 
-function sha256_xray_sb(str)
-	local decoded = base64Decode(str)
-	if decoded ~= str and #decoded == 32 then return str end
-	local hex = str:gsub(":", "")
-	if #hex ~= 64 or not hex:match("^[A-Fa-f0-9]+$") then return str end
-	local binary = hex:gsub("%x%x", function(byte)
-		return string.char(tonumber(byte, 16))
-	end)
-	return base64Encode(binary)
-end
-
-function sha256_sb_xray(str)
-	local binary = base64Decode(str)
-	if binary == str or #binary ~= 32 then return str end
-	return (binary:gsub(".", function(byte)
-		return string.format("%02X", string.byte(byte))
-	end))
-end
-
 function vps_domain_exclude(domain)
 	domain = trim(domain)
 	if domain == "" then return true end
@@ -2079,40 +1948,6 @@ function vps_domain_exclude(domain)
 		domain = domain:sub(p + 1)
 	end
 	return false
-end
-
-function parse_realm_uri(uri)
-	uri = trim(uri)
-	if uri == "" then return nil end
-	-- realm[+http]://token@server/realm_id?query
-	local scheme = (uri:match("^realm%+http://") and "realm+http") or (uri:match("^realm://") and "realm")
-	if not scheme then return nil end
-	uri = uri:gsub("^realm%+http://", ""):gsub("^realm://", "")
-	local token, server_url, realm_id, query = uri:match("^([^@]+)@([^/]+)/([^?]*)%??(.*)$")
-	if not token or not server_url or not realm_id then return nil end
-	realm_id = realm_id:gsub("/+$", "")
-	local address, port = server_url:match("^%[([^%]]+)%]:(%d+)$") --ipv6:port
-	if not address then
-		address, port = server_url:match("^([^:]+):(%d+)$") --ipv4[domain]:port
-	end
-	address = address or server_url:match("^%[([^%]]+)%]$") or server_url
-	port = tonumber(port) or (scheme == "realm+http" and 80 or 443)
-	local realm = {
-		scheme = scheme,
-		token = token,
-		server_url = server_url,
-		address = address,
-		port = port,
-		realm_id = realm_id
-	}
-	-- 解析 query 中的 stun=
-	local stun_servers
-	for v in (query or ""):gmatch("[Ss][Tt][Uu][Nn]=([^&]+)") do
-		stun_servers = stun_servers or {}
-		stun_servers[#stun_servers + 1] = v
-	end
-	realm.stun_servers = stun_servers
-	return realm
 end
 
 function get_network_devices()
@@ -2221,28 +2056,7 @@ function gen_wireguard_key()
 			public_key = public_key
 		}
 	end
-	local xray = finded_com("xray")
-	if xray then
-		local result = sys.exec(xray .. " wg | awk -F ': ' '{print $2}'")
-		local s = split(result, "\n")
-		local private_key = s[1]
-		local public_key = s[2]
-		return {
-			private_key = private_key,
-			public_key = public_key
-		}
-	end
-	local sb = finded_com("sing-box")
-	if sb then
-		local result = sys.exec(sb .. " generate wg-keypair | awk '{print $2}'")
-		local s = split(result, "\n")
-		local private_key = s[1]
-		local public_key = s[2]
-		return {
-			private_key = private_key,
-			public_key = public_key
-		}
-	end
+
 end
 
 function get_socks_port_by_cache(node_id)

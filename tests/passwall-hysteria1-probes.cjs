@@ -22,12 +22,13 @@ SH
 chmod +x "$APP_FILE"
 config_n_get() { [ "$2" != type ] || echo Hysteria; }
 get_new_port() { echo 48900; };check_process() { :; };flock() { :; };sleep() { :; }
-test_url() { echo 200; };curl() { echo 200; }
+test_url() { case "$*" in *socks5h://127.0.0.1:48900*) echo 200;;*) return 97;;esac; }
+curl() { case "$*" in *socks5h://127.0.0.1:48900*) echo 200;;*) return 97;;esac; }
 busybox() { echo 'ERROR generic Hysteria kill' >&2;exit 99; }
 lua() { [ "$2:$3" = stop:client ] || exit 98;echo "$4" >> "$TMP_PATH/cleaned";[ "\u0024{cleanup_error:-0}" = 0 ] || return 1;rm -f "$4"; }
 ${helper}
 ${body}
-${invoke} >/dev/null || exit 1
+${name==='url'?`[ "$(${invoke})" = 200 ] || exit 1`:`${invoke} >/dev/null || exit 1`}
 [ "$(wc -l < "$work/cleaned")" = 1 ] || exit 1
 ! ls "$work"/*.json >/dev/null 2>&1 || exit 1
 # Failure to launch still takes the production EXIT cleanup path.
@@ -39,5 +40,11 @@ if ${invoke} >/dev/null;then exit 1;fi
 ls "$work"/*.json >/dev/null 2>&1 || exit 1
 cleanup_error=0
 cleanup_hysteria_probe "$(basename "$(ls "$work"/*.json)" .json)" || exit 1
+# Retired nodes never create probe instances or contact remote SOCKS directly.
+config_n_get() { [ "$2" != type ] || echo "$retired_core"; }
+for retired_core in Xray sing-box Hysteria2 Socks;do
+ if ${invoke} >/dev/null;then exit 1;fi
+ ! ls "$work"/*.json >/dev/null 2>&1 || exit 1
+done
 `});console.log('PASS '+name+' real probe: success, launch failure, cleanup failure, retained state and retry');
 }

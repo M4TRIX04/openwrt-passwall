@@ -22,7 +22,7 @@ function checkUnused(dir) {
   for (const entry of fs.readdirSync(path.join(root, dir), {withFileTypes: true})) {
     const p = dir + '/' + entry.name;
     if (entry.isDirectory()) checkUnused(p);
-    else if (p !== helperPath && !['global_nodes.sh', 'acl_nodes.sh'].some(n => p === 'luci-app-passwall/root/usr/share/passwall/' + n)) {
+    else if (p !== helperPath && !['global_nodes.sh', 'acl_nodes.sh', 'runtime_snapshot.sh'].some(n => p === 'luci-app-passwall/root/usr/share/passwall/' + n)) {
       const text = read(p);
       assert(!/passwall_resolve_(?:acl_)?node_pair|node_config\.sh/.test(text), p);
     }

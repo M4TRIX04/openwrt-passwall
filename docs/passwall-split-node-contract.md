@@ -1,5 +1,8 @@
 # Passwall Lite 阶段 B1：TCP/UDP 配置与运行契约
 
+本文件保留 B1 交付时的边界记录。B2 已实现但未接入的全局链路见
+[阶段 B2 实施说明](passwall-split-node-global-runtime.md)；不表示已启用双节点运行或迁移。
+
 基线：`17f4d144b7d94e108d825316d46209a506a5095a`。本地 main 参考：
 `1294c9aa4a6faadc1d583e05191ca4e7f056e817`。
 

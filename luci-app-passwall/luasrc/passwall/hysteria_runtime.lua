@@ -204,6 +204,37 @@ function start(var)
 		return true
 	end)
 end
+-- Read-only capability check for the inactive split-global caller. Existing
+-- launch/stop paths keep their behavior; readiness is never inferred from PID alone.
+function ready(scope, config, tcp, udp)
+	return locked(function()
+		local r = json.parse(read(registry .. "/" .. api.md5_string(config) .. ".json") or "")
+		if not r or r.scope ~= scope or r.config ~= config or not alive(r) then return false end
+		local c = json.parse(read(config) or "")
+		if not c then return false end
+		-- B2 supplies the capabilities recorded in its instance metadata. A
+		-- changed JSON must not validate a different port/protocol than cached.
+		if tcp ~= nil or udp ~= nil then
+			if scope ~= "client" then return false end
+			local function matches(expected, listener)
+				if expected == "" then return listener == nil end
+				local n = tonumber(expected)
+				return n and n >= 1 and n <= 65535 and n % 1 == 0 and
+					listener and port(listener.listen) == n
+			end
+			if not matches(tcp, c.redirect_tcp or c.tproxy_tcp) or not matches(udp, c.tproxy_udp) then return false end
+		end
+		local found = false
+		for _, k in ipairs({"socks5", "http", "redirect_tcp", "tproxy_tcp", "tproxy_udp"}) do
+			if c[k] then
+				found = true
+				if not listening(r.pid, k == "tproxy_udp" and "udp" or "tcp", port(c[k].listen)) then return false end
+			end
+		end
+		return found and alive(r)
+	end)
+end
+
 function stop(scope, config)
 	return locked(function()
 		local errors = {}
@@ -216,9 +247,11 @@ function stop(scope, config)
         if #errors > 0 then error(table.concat(errors,"; "),0) end
 	end)
 end
-if arg and arg[0] and arg[0]:match("hysteria_runtime%.lua$") and (arg[1] == "start" or arg[1] == "stop") then
+if arg and arg[0] and arg[0]:match("hysteria_runtime%.lua$") and (arg[1] == "start" or arg[1] == "stop" or arg[1] == "ready") then
 	local ok, err=pcall(function()
-		if arg[1]=="start" then start(assert(json.parse(arg[2]))) else stop(arg[2], arg[3]) end
+		if arg[1]=="start" then start(assert(json.parse(arg[2])))
+		elseif arg[1]=="ready" then assert(ready(arg[2], arg[3], arg[4], arg[5]), "Hysteria listeners are not ready")
+		else stop(arg[2], arg[3]) end
 	end)
 	if not ok then io.stderr:write(tostring(err).."\n"); os.exit(1) end
 end

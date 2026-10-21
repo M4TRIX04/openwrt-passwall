@@ -13,14 +13,15 @@ _pw_global_ss_alive() {
 }
 
 _pw_global_ss_socket() {
+	# Optional family 4/6 narrows B3.1 checks; omitted retains B2's dual-family query.
 	local pid="$1" proto="$2" port="$3" fd link inode owned=' ' hex files=
 	for fd in /proc/"$pid"/fd/*; do
 		link=$(readlink "$fd") || continue
 		case "$link" in socket:\[*\]) inode=${link#'socket:['}; inode=${inode%']'}; owned="$owned$inode " ;; esac
 	done
 	hex=$(printf '%04X' "$port") || return 1
-	[ ! -r "/proc/net/$proto" ] || files="/proc/net/$proto"
-	[ ! -r "/proc/net/${proto}6" ] || files="$files /proc/net/${proto}6"
+	[ "${4:-}" = 6 ] || [ ! -r "/proc/net/$proto" ] || files="/proc/net/$proto"
+	[ "${4:-}" = 4 ] || [ ! -r "/proc/net/${proto}6" ] || files="$files /proc/net/${proto}6"
 	[ -n "$files" ] || return 1
 	awk -v owned="$owned" -v port="$hex" -v proto="$proto" '
 		$2 ~ ":" port "$" && index(owned, " " $10 " ") && (proto == "udp" || $4 == "0A") {found=1}

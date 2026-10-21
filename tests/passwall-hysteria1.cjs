@@ -121,6 +121,53 @@ nodes.n=node('udp')
 local v6=encoded[hy.gen_config({node='n',local_redir_port='1041',tcp_proxy_way='tproxy',proxy_ipv6='1'})]
 assert(v6.tproxy_tcp.listen=='[::]:1041' and v6.tproxy_udp.listen=='[::]:1041')
 rejected(hy.gen_config,{node='n',local_redir_port='1041',tcp_proxy_way='redirect',proxy_ipv6='1'})
+-- Stage A: legacy merged and equivalent split ports must yield equal tables;
+-- the split parameters use main's names, with the current JSON API.
+local function same(a,b)
+ assert(type(a)==type(b))
+ if type(a)~='table' then assert(a==b);return end
+ for k,v in pairs(a) do same(v,b[k]) end
+ for k in pairs(b) do assert(a[k]~=nil,k) end
+end
+for _,protocol in ipairs({'udp','faketcp','wechat-video'}) do
+ nodes.n=node(protocol)
+ for _,way in ipairs({'redirect','tproxy'}) do
+  local legacy=encoded[hy.gen_config({node='n',local_redir_port='1041',tcp_proxy_way=way,local_socks_port='1080',local_http_port='8080'})]
+  local split=encoded[hy.gen_config({node='n',local_tcp_redir_port='1041',local_udp_redir_port='1041',tcp_proxy_way=way,local_socks_port='1080',local_http_port='8080'})]
+  same(legacy,split)
+  for _,ipv6 in ipairs({'0','1'}) do if ipv6=='0' or way=='tproxy' then
+   local bind=ipv6=='1' and '[::]' or '0.0.0.0'
+   local tcp_key=way=='redirect' and 'redirect_tcp' or 'tproxy_tcp'
+   for _,ports in ipairs({{tcp='1041'},{udp='1051'},{tcp='1041',udp='1051'},{tcp='1041',udp='1041'}}) do
+    local c=encoded[hy.gen_config({node='n',local_tcp_redir_port=ports.tcp,local_udp_redir_port=ports.udp,tcp_proxy_way=way,proxy_ipv6=ipv6,local_socks_port='1080',local_http_port='8080'})]
+    assert((c[tcp_key]~=nil)==(ports.tcp~=nil))
+    assert((c.tproxy_udp~=nil)==(ports.udp~=nil))
+    if ports.tcp then assert(c[tcp_key].listen==bind..':'..ports.tcp and c[tcp_key].timeout==300) end
+    if ports.udp then assert(c.tproxy_udp.listen==bind..':'..ports.udp and c.tproxy_udp.timeout==60) end
+    assert(c[way=='redirect' and 'tproxy_tcp' or 'redirect_tcp']==nil)
+    assert(c.socks5.listen=='127.0.0.1:1080' and c.socks5.disable_udp==false and c.http.listen=='127.0.0.1:8080')
+    assert(c.protocol==protocol and c.auth_str=='secret' and c.recv_window==1048576)
+   end
+  end end
+ end
+ -- UDP-only must neither require TCP mode nor inherit its IPv6 REDIRECT ban.
+ local udp=encoded[hy.gen_config({node='n',local_udp_redir_port='1051',proxy_ipv6='1'})]
+ assert(udp.tproxy_udp.listen=='[::]:1051' and not udp.redirect_tcp and not udp.tproxy_tcp)
+ assert(not udp.socks5 and not udp.http)
+end
+for _,field in ipairs({'local_tcp_redir_port','local_udp_redir_port'}) do
+ for _,value in ipairs({'',0,'0','65536','-1','abc','1041.5',false,{}}) do
+  local v={node='n',tcp_proxy_way='tproxy',local_socks_port='1080'};v[field]=value
+  rejected(hy.gen_config,v)
+ end
+ local mixed={node='n',local_redir_port='1041',tcp_proxy_way='tproxy'};mixed[field]='1041'
+ local ok,err=pcall(hy.gen_config,mixed);assert(not ok and err:find('cannot mix',1,true))
+end
+rejected(hy.gen_config,{node='n',local_tcp_redir_port='1041'})
+rejected(hy.gen_config,{node='n',local_tcp_redir_port='1041',tcp_proxy_way='redirect',proxy_ipv6='1'})
+rejected(hy.gen_config,{node='n',local_udp_redir_port='1051',proxy_ipv6='yes'})
+rejected(hy.gen_config,{node='n'})
+print('PASS split Hysteria ports: legacy equivalence, TCP/UDP-only, separate/shared ports, IPv4/IPv6, all transports and invalid combinations')
 ${read('luasrc/passwall/hysteria_runtime.lua')}
 runtime={start=start,stop=stop};modules['luci.passwall.hysteria_runtime']=runtime
 function launch(protocol,mode,scope)
@@ -128,6 +175,23 @@ function launch(protocol,mode,scope)
  files[file]=mode=='server' and stringify(hy.gen_config_server(nodes.n)) or hy.gen_config({node='n',local_socks_port='1080',local_redir_port='1041',tcp_proxy_way='tproxy'})
  return {config=file,bin='/usr/bin/hysteria',scope=scope,mode=mode}
 end
+-- Exercise the real runtime's expected-listener/readiness and cleanup logic
+-- using split JSON. Only /proc, process execution and OS access are fixtures.
+for _,protocol in ipairs({'udp','faketcp','wechat-video'}) do
+ for _,ports in ipairs({{tcp='1041'},{udp='1051'},{tcp='1041',udp='1051'}}) do
+  nodes.n=node(protocol)
+  local file='/tmp/etc/client/split.json'
+  files[file]=hy.gen_config({node='n',local_tcp_redir_port=ports.tcp,local_udp_redir_port=ports.udp,tcp_proxy_way='tproxy',proxy_ipv6='1'})
+  local v={config=file,bin='/usr/bin/hysteria',scope='client',mode='client'}
+  assert(runtime.start(v));local pid=counter
+  assert(#processes[pid].listeners==((ports.tcp and 1 or 0)+(ports.udp and 1 or 0)))
+  for _,listener in ipairs(processes[pid].listeners) do
+   assert(listener[2]==tonumber(listener[1]=='udp' and ports.udp or ports.tcp))
+  end
+  runtime.stop('client');assert(processes[pid].dead and not files[file])
+ end
+end
+print('PASS real Hysteria runtime: split TCP/UDP listeners, readiness and stop for all transports')
 for _,protocol in ipairs({'udp','faketcp','wechat-video'}) do for _,mode in ipairs({'client','server'}) do
  local v=launch(protocol,mode,mode);assert(runtime.start(v));assert(files[v.config]);assert(runtime.start(v));runtime.stop(mode);assert(not files[v.config])
 end end

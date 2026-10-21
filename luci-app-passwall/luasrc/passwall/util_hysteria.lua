@@ -105,15 +105,29 @@ function gen_config(var)
 			enabled = true
 		end
 	end
+	local tcp_port, udp_port = var.local_tcp_redir_port, var.local_udp_redir_port
+	if var.local_redir_port ~= nil and (tcp_port ~= nil or udp_port ~= nil) then
+		reject("cannot mix local_redir_port with separate TCP/UDP ports")
+	end
+	-- Keep the merged-node callers unchanged until the runtime migration.
 	if var.local_redir_port then
-		local port = number(var.local_redir_port, "redirect port", 1, 65535, true)
-		local way = var.tcp_proxy_way
-		if way ~= "redirect" and way ~= "tproxy" then reject("invalid TCP proxy mode") end
+		tcp_port = number(var.local_redir_port, "redirect port", 1, 65535, true)
+		udp_port = tcp_port
+	end
+	if tcp_port ~= nil or udp_port ~= nil then
 		local ipv6 = flag(var.proxy_ipv6, "proxy_ipv6")
-		if ipv6 and way ~= "tproxy" then reject("IPv6 transparent proxy requires TCP TPROXY") end
 		local bind = ipv6 and "[::]" or "0.0.0.0"
-		c[way == "redirect" and "redirect_tcp" or "tproxy_tcp"] = {listen = bind .. ":" .. port, timeout = 300}
-		c.tproxy_udp = {listen = bind .. ":" .. port, timeout = 60}
+		if tcp_port ~= nil then
+			local port = number(tcp_port, "TCP redirect port", 1, 65535, true)
+			local way = var.tcp_proxy_way
+			if way ~= "redirect" and way ~= "tproxy" then reject("invalid TCP proxy mode") end
+			if ipv6 and way ~= "tproxy" then reject("IPv6 transparent proxy requires TCP TPROXY") end
+			c[way == "redirect" and "redirect_tcp" or "tproxy_tcp"] = {listen = bind .. ":" .. port, timeout = 300}
+		end
+		if udp_port ~= nil then
+			local port = number(udp_port, "UDP redirect port", 1, 65535, true)
+			c.tproxy_udp = {listen = bind .. ":" .. port, timeout = 60}
+		end
 		enabled = true
 	end
 	if not enabled then reject("no local listener requested") end

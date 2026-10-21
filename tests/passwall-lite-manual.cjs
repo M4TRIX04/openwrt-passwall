@@ -77,6 +77,13 @@ for _,method in ipairs({'aes-128-gcm','aes-256-gcm','chacha20-ietf-poly1305'}) d
   assert(config.method==method and config.password=='secret' and config.mode=='tcp_and_udp' and config.tcp_tproxy)
   assert(config.plugin==nil and config.plugin_opts==nil)
   assert(plugin_sh==nil and plugin_bin==nil)
+  for _,mode in ipairs({'tcp_only','udp_only','tcp_and_udp'}) do
+    for _,host in ipairs({'192.0.2.1','2001:db8::1'}) do
+      local c=ss.gen_config({node='test',server_host=host,local_addr='0.0.0.0',local_port='1041',mode=mode,tcp_tproxy=true})
+      assert(c.mode==mode and c.server==host and c.local_port==1041 and c.tcp_tproxy)
+      assert(c.method==method and c.password=='secret' and c.plugin==nil and c.plugin_opts==nil)
+    end
+  end
   local server=ss.gen_config_server({type='SS',user='user',port='8388',method=method,timeout='300'})
   assert(server.method==method and server.server_port==8388 and server.password=='server-secret')
 end
@@ -150,6 +157,7 @@ assert(files['/tmp/log/passwall_server.log']:find('unsupported or missing method
 assert(files['/tmp/log/passwall_server.log']:find('invalid server JSON',1,true))
 `);
 console.log('PASS real SS generator, retired Hysteria2 rejection and server start/stop, ports/firewall, legacy plugin isolation, Rust/SSR regression');
+console.log('PASS real SS generator: all three AEAD methods and tcp_only/udp_only/tcp_and_udp over IPv4/IPv6');
 const controller=read('luasrc/controller/passwall.lua');
 for (const name of ['node_subscribe','link_add_node','gen_client_config','subscribe_manual']) assert.ok(!controller.includes('function '+name+'('));
 for (const name of ['node_config','server_config','add_node','update_config','server_update_config']) {

@@ -29,11 +29,11 @@ trap 'rm -rf "$work"' EXIT
 UTIL_SS=real-util
 ${helper}
 echolog() { printf '%s' "$*" > "$work/error"; }
-lua() { if [ "$fail" = 1 ]; then echo 'Shadowsocks-libev: unsupported or missing method: none' >&2; return 1; fi; echo '{}'; }
-json_dump() { echo '{}'; }
-json_add_string() { :; }
+lua() { if [ "$fail" = 1 ]; then echo 'Shadowsocks-libev: unsupported or missing method: none' >&2; return 1; fi; printf '%s\\n' "$3"; }
+json_dump() { printf '{"mode":"%s"}' "$ss_mode"; }
+json_add_string() { [ "$1" != mode ] || ss_mode=$2; return 0; }
 first_type() { echo "$1"; }
-ln_run() { echo started >> "$work/started"; }
+ln_run() { echo started >> "$work/started"; printf '%s\\n' "$@" > "$work/argv"; }
 start_node() {
   ${branch[1]}
 }
@@ -46,6 +46,9 @@ grep -q 'unsupported or missing method' "$work/error"
 fail=0
 start_node
 [ -s "$work/started" ] && [ -s "$config_file" ]
+grep -q '"mode":"tcp_and_udp"' "$config_file"
+grep -qx -- '-c' "$work/argv"
+! grep -Eq -- '^-(u|U)$' "$work/argv"
 echo 'PASS real SS startup branch: generation failure returns nonzero and prevents launch; valid config launches'
 `, stdio: ['pipe','inherit','inherit']});
 }

@@ -159,11 +159,12 @@ Lite 中部分带候选值的可编辑输入框右侧出现灰色方块；普通
 
 ### 5.2 最近一次已报告的提交状态
 
-2026-10-22 只读核对（B3.3-3A）：
+2026-10-22 只读核对（B3.3-3A，契约冻结前）：
 
 - `passwall-lite` HEAD：`fbc4f138` — `docs: establish AI agent guidelines and development manual`；与 `origin/passwall-lite` 一致。
 - `main`：`1294c9aa`（`origin/main` behind 2）。
-- 工作区仅有未跟踪的 `AGENTS.md.bak`；无暂存内容，未提交、未推送。
+- 当时工作区有**两个未跟踪文件**：`AGENTS.md.bak` 与 `docs/passwall-b3.3-3-dependency-contract.md`；无暂存内容，未提交、未推送。
+- 此后变化（区分于上述历史快照）：该契约文件已于 `4dc908e9` — `docs(passwall-lite): define frozen DNS/SOCKS dependency contract` 提交并纳入版本库，**不再是未跟踪文件**；`AGENTS.md.bak` 仍为未跟踪，按约定不纳入提交。当前状态须重新用 Git 命令确认，不得沿用本条。
 
 以下为更早的历史记录：
 
@@ -297,7 +298,15 @@ Lite 中部分带候选值的可编辑输入框右侧出现灰色方块；普通
 ### 8.2 B3.3-3 依赖契约（已冻结，未接入）
 
 - 契约全文见 [B3.3-3 冻结节点 SOCKS/DNS 依赖契约](passwall-b3.3-3-dependency-contract.md)。
-- 核心原则：DNS 代理依赖默认归属**当前作用域 TCP 节点**实例，禁止隐式借用 UDP 节点；首批只适配 `dns2socks` 与必要的 dnsmasq 路径；ChinaDNS-NG/SmartDNS 完整适配留待后续且不支持组合必须明确拒绝；SOCKS listener、透明能力、实际外层连接三类证据分别验证；依赖失败即拒绝发布，不允许静默降级；已发布实例不可变。
+- 核心原则：DNS 代理依赖默认归属**当前作用域 TCP 节点**实例，禁止隐式借用 UDP 节点；首批只适配 `dns2socks` 与必要的 dnsmasq 路径；ChinaDNS-NG/SmartDNS 完整适配留待后续且不支持组合必须明确拒绝；依赖失败即拒绝发布，不允许静默降级；已发布实例不可变。
+- 证据要求：**五类独立能力证据**分别记录、不可互相替代——SOCKS listener、透明代理能力、helper 身份与监听归属、实际外层连接、真实 DNS 查询。
+- 派生配置门禁：由冻结监听地址/端口生成的 dnsmasq 片段必须在隔离环境通过实际配置验证，才允许启动 helper；该门禁不替代上述任何一类证据。
+- 三层 DNS 验收（**L1/L2/L3 均为 `dep_ready` 发布的必要条件**，缺一不可）：
+  - **L1** Helper 自身可用：真实查询经指定 SOCKS 实例完成；
+  - **L2** 配置片段有效：冻结参数生成的片段通过隔离验证；
+  - **L3** 完整衔接：隔离 dnsmasq 实例经指定 Helper 完成真实 DNS 查询。
+  - L1 或 L2 通过**不得替代 L3**；L3 证据须按协议分段取得（dnsmasq → Helper 为 UDP），不能只用 TCP socket 证据。
+- 消费前复核：`dep_ready` 是“发布时成立”的记录，每次消费前仍须重新核验动态身份与绑定条件（快照/代次、实例身份、SOCKS 端口归属、helper 身份与监听归属）；该复核不替代首次发布前的真实外层连接与 DNS 证据，也不要求每次消费重跑完整探针。
 - 阶段划分：**3B** 依赖解析与只读核验；**3C** `dns2socks` + dnsmasq 最小衔接；**3D** 组合矩阵、拒绝发布与 B4 交接。三者均不接入生产入口。
 
 ### 8.3 进入下一阶段前需人工决定

@@ -37,6 +37,10 @@ _pw_bound_seal() {
 	_pw_bound_fresh && _pw_bound_helper seal "$1"
 }
 
+_pw_bound_reference() {
+	_pw_bound_fresh && _pw_bound_helper reference "$1" "$PW_BOUND_SNAPSHOT" "$PW_BOUND_PREFERENCE" "$PW_BOUND_FAMILY"
+}
+
 passwall_start_bound_global_nodes() {
 	[ "$#" = 3 ] || return 1
 	case "$2" in ipv4|ipv6|ipv4-only|ipv6-only) ;; *) return 1 ;; esac

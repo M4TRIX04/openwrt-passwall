@@ -165,16 +165,37 @@ local function sockets(pid, proto, port, gid, transparent, diag, loopback)
 	return found
 end
 
+local function check_capabilities(dir, expected)
+	local record = decode(dir .. "/bound.capabilities")
+	need(type(record) == "table", "invalid sealed capabilities")
+	for proto, families in pairs(record) do
+		need(expected[proto] and type(families) == "table", "sealed capabilities changed")
+		for family, value in pairs(families) do
+			need(value == true and expected[proto][family] == value, "sealed capabilities changed")
+		end
+	end
+	for proto, families in pairs(expected) do
+		for family, value in pairs(families) do
+			need(record[proto] and record[proto][family] == value, "sealed capabilities changed")
+		end
+	end
+end
 -- verify is live, never treats a persisted capability record as current ready.
--- seal records creation identity BEFORE existing atomic cache publication.
-function M.verify(dir, seal, expected_family, expected_proto, expected_port)
+-- seal is creation-only; references require the original, complete seal.
+function M.verify(dir, seal, expected_family, expected_proto, expected_port, require_seal)
+	if seal then
+		for _, file in ipairs({"bound.identity", "bound.capabilities"}) do
+			local st, errno = fs.lstat(dir .. "/" .. file)
+			need(not st and errno == 2, "seal already exists or cannot establish absence")
+		end
+	end
 	local b = binding(dir)
 	local core = b.endpoint.original_node.type
 	local pid, birth, executable = process(dir, core)
 	identity(pid, birth, b.gid)
 	need(executable and fs.realpath(executable) == fs.readlink("/proc/" .. pid .. "/exe"), "core executable changed")
 	local owner = endpoint.instance(b.endpoint, dir .. "/config.json", b.config_md5, pid, birth)
-	if fs.access(dir .. "/bound.identity") then endpoint.check_instance(decode(dir .. "/bound.identity"), b.endpoint, dir .. "/config.json", b.config_md5, pid, birth) end
+	if require_seal or fs.access(dir .. "/bound.identity") then endpoint.check_instance(decode(dir .. "/bound.identity"), b.endpoint, dir .. "/config.json", b.config_md5, pid, birth) end
 	local meta = read(dir .. "/meta"); local lines = {}; for v in (meta .. "\n"):gmatch("(.-)\n") do lines[#lines + 1] = v end
 	need(lines[1] == core and lines[2] == b.endpoint.node_id, "instance metadata mismatch")
 	local diag, capabilities = diagnostics(), {}
@@ -210,6 +231,14 @@ function M.verify(dir, seal, expected_family, expected_proto, expected_port)
 		end
 	end
 	if expected_family then need(capabilities[expected_proto] and capabilities[expected_proto][expected_family], "requested protocol/family unavailable") end
+	if require_seal then
+		check_capabilities(dir, capabilities)
+		if core == "SS" and fs.access(dir .. "/relay/process") then
+			need(line(dir .. "/socks_port") == tostring(config.local_port), "sealed SOCKS port changed")
+		elseif core == "Hysteria" and config.socks5 then
+			need(config.socks5.listen == "127.0.0.1:" .. line(dir .. "/socks_port"), "sealed SOCKS port changed")
+		end
+	end
 	identity(pid, birth, b.gid)
 	if seal then write(dir .. "/bound.identity", owner); write(dir .. "/bound.capabilities", capabilities) end
 	return true
@@ -222,11 +251,11 @@ function M.remote(dir, proto)
 	local stream = b.endpoint.original_node.type == "SS" and proto or streams[1]
 	return b.endpoint.address .. " " .. b.endpoint.port .. " " .. stream
 end
-function M.compatible(dir, snapshot_dir, preference, family)
+function M.compatible(dir, snapshot_dir, preference, family, require_seal)
 	local b = binding(dir)
 	need(b.snapshot == snapshot_dir and b.endpoint.preference == preference and
 		(b.family == family or (b.family == "dual" and (family == "4" or family == "6"))), "instance belongs to another binding/generation")
-	return M.verify(dir)
+	return M.verify(dir, false, nil, nil, nil, require_seal)
 end
 function M.owner(dir)
 	local b = decode(dir .. "/binding.json")
@@ -264,6 +293,7 @@ if arg and arg[0] and arg[0]:match("runtime_binding%.lua$") then
 		elseif action == "hysteria" then return M.start_hysteria(arg[2],arg[3],arg[4],arg[5],arg[6])
 		elseif action == "verify" or action == "seal" then return M.verify(arg[2],action == "seal",arg[3],arg[4],arg[5])
 		elseif action == "compatible" then return M.compatible(arg[2],arg[3],arg[4],arg[5])
+		elseif action == "reference" then return M.compatible(arg[2],arg[3],arg[4],arg[5],true)
 		elseif action == "owner" then return M.owner(arg[2]) end
 		error("invalid bound runtime action")
 	end)

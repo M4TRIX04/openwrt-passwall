@@ -270,7 +270,9 @@ _pw_acl_find() {
 _pw_acl_publish() {
 	local sid="$1" instance="$2" tcp="$3" udp="$4" inherit="$5" node tport uport
 	_pw_acl_instance_ready "$instance" || return 1
-	[ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_seal "$instance" || return 1
+	# Creation seals once, before any reference is published. Reuse (including
+	# Global inheritance) must never repair or rewrite an existing seal.
+	[ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_reference "$instance" || return 1
 	node=$(sed -n '2p' "$instance/meta") || return 1
 	tport=$(sed -n '3p' "$instance/meta") || return 1
 	uport=$(sed -n '4p' "$instance/meta") || return 1
@@ -278,7 +280,7 @@ _pw_acl_publish() {
 	[ "$tcp" = 0 ] || { [ -n "$tport" ] && set -- "$@" "ACL_${sid}_tcp_node" "$node" "ACL_${sid}_tcp_redir_port" "$tport" "ACL_${sid}_tcp_instance" "$instance/config.json" "ACL_${sid}_tcp_default" "$inherit"; } || return 1
 	[ "$udp" = 0 ] || { [ -n "$uport" ] && set -- "$@" "ACL_${sid}_udp_node" "$node" "ACL_${sid}_udp_redir_port" "$uport" "ACL_${sid}_udp_instance" "$instance/config.json" "ACL_${sid}_udp_default" "$inherit"; } || return 1
 	set_cache_vars "$@" || return 1
-	_pw_acl_instance_ready "$instance" && { [ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_fresh; } && return 0
+	_pw_acl_instance_ready "$instance" && { [ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_reference "$instance"; } && return 0
 	set --
 	[ "$tcp" = 0 ] || set -- "$@" "ACL_${sid}_tcp_node" '' "ACL_${sid}_tcp_redir_port" '' "ACL_${sid}_tcp_instance" '' "ACL_${sid}_tcp_default" ''
 	[ "$udp" = 0 ] || set -- "$@" "ACL_${sid}_udp_node" '' "ACL_${sid}_udp_redir_port" '' "ACL_${sid}_udp_instance" '' "ACL_${sid}_udp_default" ''
@@ -341,7 +343,11 @@ _pw_acl_create() {
 			;;
 	esac
 	for i in $(seq 1 100); do
-		if _pw_acl_instance_ready "$instance"; then sleep 0.1; _pw_acl_instance_ready "$instance"; return; fi
+		if _pw_acl_instance_ready "$instance"; then
+			sleep 0.1
+			_pw_acl_instance_ready "$instance" && { [ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_seal "$instance"; }
+			return
+		fi
 		sleep 0.1
 	done
 	return 2

@@ -62,7 +62,7 @@ B3.3-2 已经能让冻结节点在隔离环境中完成"快照 → 端点 → �
 - DNS 代理依赖（`dns2socks` 所连的 SOCKS 端点）默认归属**当前作用域**（`global` 或具体 ACL）的 **TCP 节点实例**。
 - **禁止隐式借用 UDP 节点**：作用域 TCP 协议关闭或失败时，不得改用该作用域 UDP 节点实例的 SOCKS listener。
 - 作用域 TCP 协议不可用时，DNS 依赖判定为**不可满足**；调用方必须拒绝发布该作用域的 DNS/依赖能力。
-- 不属于"降级"的合法情况：用户显式把 DNS 配成本地/直连模式（`local` 等），这是配置语义，不是代理依赖。
+- 若未来产品明确提供“不适用代理 DNS 依赖”的配置，它不属于自动降级。但**当前没有经代码确认的显式 `dns_mode=local/direct` 产品模式**；3B 只保留独立的接口预留，不能据人为配置宣称产品支持。生产行为由 B4 单独决定（见 6.2 第 3 项）。
 
 依据（[已确认·代码]）：
 
@@ -203,8 +203,8 @@ B3.3-2 已经能让冻结节点在隔离环境中完成"快照 → 端点 → �
 | `instance_dir` | 已发布实例绝对路径 |
 | `socks_addr` / `socks_port` | 来自该实例，不得来自节点共享缓存 |
 | `family` | 依赖校验使用的地址族 |
-| `state` | `dep_resolved` / `dep_validated` / `dep_ready`（见 3.5；不复用协议状态 `ready/failed/closed`） |
-| `reason` | 拒绝/失败原因码（见 3.4） |
+| `state` | 仅成功候选可有 `dep_resolved` / `dep_validated`；3C 才可能发布 `dep_ready`。返回非零时删除此字段（见 3.5） |
+| `reason` | 仅拒绝/失败时的原因码（见 3.4）；成功或接口预留“不适用”时省略，Shell 原因变量为空 |
 
 - 记录本身**不是** `dep_ready` 证明；每次消费前必须按 3.5 的"`dep_ready` 消费前复核"重新核验（与 B3.3-2"`bound.capabilities` 只记录 seal 时通过的能力"一致）。
 - 3B 产出的 `dep_resolved` / `dep_validated` 是**候选/诊断记录**，不构成已发布的运行依赖，也不得落盘为消费者可用的 ready 记录（见 3.5）。
@@ -247,21 +247,31 @@ B3.3-2 已经能让冻结节点在隔离环境中完成"快照 → 端点 → �
 - **三层必要性**：L2 在第 5 步、L1 在第 8a 步、L3 在第 8b 步；三层**均为** `dep_ready` 发布的必要条件，**不得以 L1 或 L2 替代 L3**（反之亦然）。L3 只是既有第 8 步的验收内容，**不新增生命周期状态、不新增架构层、不新增资源管理器**。
 - **禁止以弱证据顶替**：端口存在、进程存活、DNS 解析成功、配置里出现 `server`，均不能替代第 7 步；第 8 步成功也不能替代第 7 步；第 5 步的片段验证也不能替代第 7、8 步（反之亦然）。
 
-### 3.4 原因码（建议，3B 定稿）
+### 3.4 原因码（3B 验收修订定稿）
 
-| 码 | 含义 |
-| --- | --- |
-| `dns_dep_no_tcp` | 作用域无可用 TCP 协议（关闭/失败） |
-| `dns_dep_backend_unsupported` | DNS 后端组合不在首批范围 |
-| `dns_dep_no_instance` | 无已发布实例 |
-| `dns_dep_stale_generation` | 实例属于旧代次或快照已过期 |
-| `dns_dep_identity` | 身份核验失败（PID/birth/可执行文件/GID） |
-| `dns_dep_socks` | SOCKS listener 不可用或协商失败 |
-| `dns_dep_tool_missing` | 必要外部静态依赖缺失或命令行能力不足（3C 阶段 A 第 2 步；含 dnsmasq 配置验证能力不可用） |
-| `dns_dep_config_invalid` | 依冻结监听地址/端口生成的 dnsmasq 片段在隔离环境验证失败（3C 阶段 B 第 5 步） |
-| `dns_dep_helper_start` | helper 进程未能启动或启动后立即退出（3C 第 6 步，早于身份核验） |
-| `dns_dep_outer` | 实际外层连接失败（3C 第 7 步） |
-| `dns_dep_dns_query` | 真实 DNS 查询未达预期（3C 第 8 步）：L1（直接查询 Helper）或 L3（隔离 dnsmasq 完整衔接）失败共用此码，但诊断必须标明失败层 |
+原因码只描述错误；成功用 `rc=0` 和候选状态表达，**不输出 `dns_dep_ok` 或 `dns_dep_not_required`**。不适用接口预留也没有错误原因码。细化原因码不降低既有失败严重性，`0/2/1` 分类保持不变。
+
+| 码 | 阶段 | 含义与 3B 返回分类 |
+| --- | --- | --- |
+| `dns_dep_argument` | 3B；3C 可复用输入校验 | 非法调用参数或逻辑输入。非法 `remote_dns`、`transparent_port`、`cache` 字符串继续返回 `2`；参数个数、作用域、preference/family 等接口结构非法继续返回 `1`。不借用 3C 配置门禁原因码 |
+| `dns_dep_no_tcp` | 3B；3C 消费前复核 | 作用域 TCP 明确关闭，或 ACL 请求继承但全局无成功 TCP 三字段（包括全局 TCP 启动失败、UDP 成功），返回 `2`；不读取 UDP 实例补齐 |
+| `dns_dep_backend_unsupported` | 3B；3C 阶段 A | 后端组合不在首批范围，返回 `2`；`dns_mode=local/direct` 不能作为现有产品模式绕过检查 |
+| `dns_dep_no_instance` | 3B；3C 消费前复核 | 没有运行缓存或 TCP 发布三字段全空时返回 `2`（继承全局 TCP 失败优先用 `dns_dep_no_tcp`）；完整发布指针指向已不存在的实例目录时，仍返回原有的 `1`。不能把缓存读取失败当作实例不存在 |
+| `dns_dep_cache_untrusted` | 3B；3C 消费前复核 | 运行缓存无法可信读取、类型不对、为空而读取失败，或 TCP 三字段部分缺失，返回 `1` |
+| `dns_dep_unbound_instance` | 3B；3C 消费前复核 | 实例目录存在，但缺少 `binding.json` 或 `bound.identity`，无法证明是已发布 bound 实例，返回 `1`；损坏或无法可信读取仍按身份错误处理 |
+| `dns_dep_stale_generation` | 3B；3C 消费前复核 | 快照过期或实例属于旧代次，返回 `1` |
+| `dns_dep_identity` | 3B；3C 身份核验/消费前复核 | PID/birth/可执行文件/GID、节点或发布路径不一致；来源/身份记录损坏或不可读；不能分类的核验异常，3B 返回 `1` |
+| `dns_dep_capability` | 3B；3C 消费前复核 | 既有 `compatible`/`verify` 报告监听 family/preference 不兼容，或透明协议/socket/options/诊断证据不足，返回原有的 `1`，不误报为进程身份冒认。仅适配既有核验诊断，不重复实现其算法 |
+| `dns_dep_socks` | 3B；3C 消费前复核 | 原生 SOCKS 端点缺失、声明与实际不符、指定进程不持有该 SOCKS socket，或方法协商失败，返回 `2`；身份本身不可信时仍返回 `1 / dns_dep_identity` |
+| `dns_dep_tool_missing` | 仅 3C 阶段 A 预检 | 必要外部静态依赖缺失或能力不足，含 dnsmasq 配置验证能力不可用；3B 不执行这套预检，既有实时 socket 诊断失败按能力证据不足拒绝 |
+| `dns_dep_config_invalid` | **仅 3C 阶段 B 第 5 步** | 依冻结监听地址/端口生成的实际 dnsmasq 片段在隔离验证中失败；不得用于 3B 输入非法 |
+| `dns_dep_helper_start` | 仅 3C 第 6 步 | helper 无法启动或立即退出，早于身份核验 |
+| `dns_dep_outer` | 仅 3C 第 7 步 | 实际外层连接失败 |
+| `dns_dep_dns_query` | 仅 3C 第 8 步 | L1 或 L3 真实 DNS 查询未达预期；须标明失败层 |
+
+3C 启动后失败仍按既有清理结果决定 `2` 或 `1`，不能仅凭原因码覆盖清理失败。上述 3C 专用路径在本次 3B 修复中未实现、未验证。
+
+3B 返回非零时，`PW_DNS_DEP_STATE` 必须为空，诊断 JSON 不得带 `state`，不得留下可被误认为有效的 `dep_resolved`/`dep_validated`。已经取得的节点、路径、摘要等非敏感诊断可保留，并附错误 `reason`；不新增失败生命周期状态。
 
 ### 3.5 逻辑依赖与运行绑定（状态模型）
 
@@ -299,7 +309,7 @@ B3.3-2 已经能让冻结节点在隔离环境中完成"快照 → 端点 → �
 
 - `dep_resolved` 与 `dep_validated` 是 **3B 的候选结果/诊断状态**，不代表已经发布的运行依赖；3B **不写**可供消费者使用的 ready 记录，**不引入新的持久化成功缓存**。
 - `dep_ready` 只能由 3C 在完成其全部 9 步（见 3.3）后发布；发布位置属运行绑定层（作用域目录），不得写入已发布实例目录（见 5.2）。
-- 依赖失败继续通过 3.4 原因码、函数返回值与既有 `0/2/1` 分类表达；不新增 `dep_failed`、`dep_closed` 或新的生命周期状态机。
+- 依赖失败继续通过 3.4 原因码、函数返回值与既有 `0/2/1` 分类表达；3B 非零返回时清空公开状态并移除诊断 JSON 的 `state`，保留必要诊断；不新增 `dep_failed`、`dep_closed` 或新的生命周期状态机。
 - 失败清理无法确认时，按既有契约保留必要的所有权记录与重试信息；**不得为了清除失败状态而误删记录，或释放仍被其他使用者引用的实例**。
 
 **`dep_ready` 消费前复核（消费契约）**
@@ -484,16 +494,16 @@ B3.3-2 已经能让冻结节点在隔离环境中完成"快照 → 端点 → �
 **验收**
 
 1. TCP 关闭/失败 → `dns_dep_no_tcp`，且**不**尝试 UDP 实例。
-2. UDP-only ACL（且未显式选择本地/直连 DNS）→ `dns_dep_no_tcp`，不得借用 UDP 实例的 SOCKS。
-3. **用户显式配置的本地/直连 DNS** 不进入代理依赖判定：不返回代理依赖错误，也不被当作代理依赖失败（与第 2 项明确区分）。
+2. 正常代理依赖接口中的 UDP-only ACL、完全关闭作用域 → `2 / dns_dep_no_tcp`，不得借用 UDP 实例的 SOCKS；不因接口预留改变此语义。
+3. **RESERVED / SKIP：不适用代理依赖接口预留**。当前没有经代码确认的显式 `dns_mode=local/direct` 产品模式；人为写入这两个值的普通解析须拒绝，不能计为产品 PASS。3B 仅在既有解析/核验接口末尾保留显式 `APPLICABILITY=not_applicable` 参数（缺省为 `proxy`），返回 `0`、`proxy_required=false`、`applicability=reserved`，无候选状态、无错误原因码；这只验证接口预留逻辑，不读取节点/发布缓存，不新增产品配置、生命周期状态或运行能力。测试必须单列“接口逻辑已验证”与“产品模式 SKIP/未验证”，生产行为留到 B4 决定。
 4. 实例换代/快照过期 → `dns_dep_stale_generation`。
-5. 篡改 `socks_port` 或替换实例路径 → `dns_dep_identity` / `dns_dep_socks`。
+5. 篡改 `socks_port` 或替换实例路径 → 按 3.4 区分 SOCKS、身份、指针不存在与未绑定；family 不匹配用 `dns_dep_capability / 1`，不混同身份冒认。
 6. 未适配后端组合 → `dns_dep_backend_unsupported`，且不产生任何进程。
 7. **全局继承**：ACL `use_global_config=1` 时依赖指向全局 TCP 实例，且不读取该 ACL 自身的 `tcp_node`/`udp_node` 字段（以读取边界探针验证）。
 8. **全局不受 ipt2socks 影响**：缺少 `ipt2socks` 时全局依赖解析不得因此拒绝（见 4.2）。
 9. 拒绝路径不泄露密码/PSK/认证串。
 10. 证据等级：静态检查 + 原生隔离测试；不得宣称数据面通过，也不得写 `dep_ready`。
-11. **状态边界**：`dep_resolved` / `dep_validated` 只作为返回值与诊断信息，不写可供消费者使用的 ready 记录，不新增持久化成功缓存；失败以原因码 + 既有 `0/2/1` 表达，不引入新状态。
+11. **状态边界**：仅 `rc=0` 的成功候选可带 `dep_resolved` / `dep_validated`；失败必须清空公开状态、移除 JSON `state` 并保留必要诊断。成功与不适用预留均无错误原因码，不写 ready 记录、不新增持久化成功缓存或状态；补测非法 DNS/端口/cache、继承失败、family 不匹配、缓存不可信、缺失指针与未绑定实例。
 
 ### 6.3 B3.3-3C：`dns2socks` + dnsmasq 最小衔接
 

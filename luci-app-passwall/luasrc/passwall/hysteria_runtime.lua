@@ -32,13 +32,16 @@ local function entries()
 	return t
 end
 local function release(path, r, keep_config)
+ local term_status, kill_status
  if alive(r) then
-  call("kill -TERM " .. r.pid)
+  term_status = api.sys.call("kill -TERM " .. r.pid)
   for _=1,10 do if not alive(r) then break end; nixio.nanosleep(0,100000000) end
-  if alive(r) then call("kill -KILL " .. r.pid) end
+  if alive(r) then kill_status = api.sys.call("kill -KILL " .. r.pid) end
   for _=1,10 do if not alive(r) then break end; nixio.nanosleep(0,100000000) end
  end
- assert(not alive(r), "Hysteria 1: cannot stop owned process")
+ assert(not alive(r), "Hysteria 1: cannot stop owned process (pid=" .. tostring(r.pid) ..
+  " birth=" .. tostring(r.birth) .. " current=" .. tostring(r.pid and identity(r.pid)) ..
+  " TERM=" .. tostring(term_status) .. " KILL=" .. tostring(kill_status) .. ")")
  r.released = r.released or {}
  write(path, json.stringify(r))
  local errors = {}
@@ -112,6 +115,13 @@ function start(var)
 	return locked(function()
 		assert(var.mode == "client" or var.mode == "server", "invalid Hysteria mode")
 		assert(var.scope == "client" or var.scope == "server", "invalid Hysteria scope")
+		if var.gid ~= nil then
+			assert(var.mode == "client" and var.scope == "client" and tonumber(var.gid) == api.DIRECT_GID,
+				"invalid Hysteria client GID")
+		end
+		if var.bound_endpoint ~= nil then
+			assert(var.bound_endpoint == true and var.gid ~= nil, "bound endpoint requires explicit client identity")
+		end
 		local path = registry .. "/" .. api.md5_string(var.config) .. ".json"
 		local previous = json.parse(read(path) or "")
 		if previous then release(path, previous, true) end
@@ -137,7 +147,8 @@ function start(var)
 				if var.mode == "client" then
 					local host, p = c.server:match("^(.*):(%d+)$")
 					host = host:gsub("^%[", ""):gsub("%]$", "")
-					local addresses = nixio.getaddrinfo(host, "any")
+					if var.bound_endpoint then assert(host:match("^[%x%.:]+$"), "bound endpoint must be literal") end
+					local addresses = var.bound_endpoint and {{address=host}} or nixio.getaddrinfo(host, "any")
 					assert(addresses and addresses[1], "cannot resolve faketcp server")
 					local ip = addresses[1].address
 					assert(ip and ip:match("^[%x%.:]+$"), "invalid resolved IP")
@@ -175,13 +186,18 @@ function start(var)
 						end
 					end
 				end
-				write(var.config,json.stringify(c,1))
+				if not var.bound_endpoint then write(var.config,json.stringify(c,1)) end
 			end
 			-- Use a unique argv[0] symlink under the existing runtime directory.
 			local link=(var.bin_dir or var.config:match("^(.*)/")).."/hysteria1_"..api.md5_string(var.config)
 			fs.remove(link); assert(fs.symlink(var.bin,link), "cannot link Hysteria")
 			r.link=link
-			r.pid=tonumber(api.sys.exec(quote(link).." --no-check --log-level "..quote(var.loglevel or "warn").." -c "..quote(var.config).." "..quote(var.mode).." >"..quote(var.log or "/dev/null").." 2>&1 & echo $!"))
+			local command=quote(link).." --no-check --log-level "..quote(var.loglevel or "warn").." -c "..quote(var.config).." "..quote(var.mode).." >"..quote(var.log or "/dev/null").." 2>&1 & echo $!"
+			if var.gid ~= nil then
+				local status, output = api.exec_call_as_gid(command, api.DIRECT_GID)
+				assert(status == 0 and output:match("^%d+$"), "cannot launch Hysteria with client GID")
+				r.pid=tonumber(output); r.gid=api.DIRECT_GID
+			else r.pid=tonumber(api.sys.exec(command)) end
 			r.birth=identity(r.pid)
 			write(path,json.stringify(r))
 			local ready=false

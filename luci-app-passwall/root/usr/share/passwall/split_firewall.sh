@@ -259,6 +259,12 @@ _pw_fw_remote() {
 
 _pw_fw_family_ready() {
 	local config="$1" proto="$2" port="$3" family="$4" record pid birth
+	if [ -f "${config%/config.json}/binding.json" ]; then
+		# Strict diagnostics also prove IPv4 ability of a V6ONLY=0 socket.
+		# /proc/net/tcp alone would incorrectly reject that verified capability.
+		_pw_bound_helper verify "${config%/config.json}" "$family" "$proto" "$port"
+		return
+	fi
 	record=$(lua "$PW_FW_ENDPOINT_HELPER" "$config" owner) || return 1
 	read -r pid birth <<-EOF
 	$record

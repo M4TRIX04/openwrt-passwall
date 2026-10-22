@@ -19,6 +19,10 @@ local function owner()
 end
 local function endpoint()
 	assert(arg[2] == "tcp" or arg[2] == "udp", "invalid business protocol")
+	local dir = assert(arg[1]:match("^(.*)/config%.json$"))
+	if api.fs.access(dir .. "/binding.json") then
+		return require("luci.passwall.runtime_binding").remote(dir, arg[2])
+	end
 	local f = assert(io.open(arg[1], "rb"))
 	local c = assert(json.parse(f:read("*a"))); f:close()
 	local host, port, stream

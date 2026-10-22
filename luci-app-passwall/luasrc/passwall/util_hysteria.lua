@@ -78,7 +78,11 @@ end
 
 function gen_config(var)
 	if type(var) ~= "table" then reject("invalid parameters") end
-	local node = api.uci_get_c(text(var.node, "node", true))
+	local id = text(var.node, "node", true)
+	local node = var.frozen_node
+	if node ~= nil then
+		if type(node) ~= "table" or node.type ~= "Hysteria" then reject("invalid frozen node") end
+	else node = api.uci_get_c(id) end
 	local c = common(node, false)
 	c.server = address(var.server_host or node.address, "server") .. ":" .. number(var.server_port or node.port, "port", 1, 65535, true)
 	c.server_name = text(node.tls_serverName, "server_name")
@@ -117,6 +121,10 @@ function gen_config(var)
 	if tcp_port ~= nil or udp_port ~= nil then
 		local ipv6 = flag(var.proxy_ipv6, "proxy_ipv6")
 		local bind = ipv6 and "[::]" or "0.0.0.0"
+		if var.transparent_address ~= nil then
+			if var.local_redir_port ~= nil then reject("explicit bind requires separate TCP/UDP parameters") end
+			if var.transparent_address ~= (ipv6 and "::" or "0.0.0.0") then reject("transparent address/family mismatch") end
+		end
 		if tcp_port ~= nil then
 			local port = number(tcp_port, "TCP redirect port", 1, 65535, true)
 			local way = var.tcp_proxy_way

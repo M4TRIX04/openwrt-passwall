@@ -3,6 +3,23 @@
 # Caller supplies existing app.sh/utils.sh functions and the B1 parser.
 # Calls must be serialized by the service lifecycle lock when integrated.
 
+_pw_split_node_get() {
+	if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then passwall_snapshot_uci "$PW_BOUND_SNAPSHOT" get "$1.$2"
+	else config_n_get "$@"; fi
+}
+
+_pw_split_node_snapshot() {
+	if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then passwall_snapshot_uci "$PW_BOUND_SNAPSHOT" show "$1"
+	else uci -q show "$CONFIG.$1"; fi
+}
+
+_pw_split_node_supported() {
+	if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then
+		[ "$(passwall_snapshot_uci "$PW_BOUND_SNAPSHOT" get "$1")" = nodes ] || return 1
+		case "$(_pw_split_node_get "$1" type)" in SS|Hysteria) return 0 ;; *) return 1 ;; esac
+	else check_node_supported "$1" && [ "$(config_get_type "$1")" = nodes ]; fi
+}
+
 _pw_global_ss_alive() {
 	local state
 	case "$1:$2" in *[!0-9:]*|:*) return 1 ;; esac
@@ -59,6 +76,7 @@ _pw_global_ss_kill() {
 
 _pw_global_instance_stop() {
 	local instance="$1" core pid= birth=
+	[ ! -f "$instance/binding.json" ] || _pw_bound_helper owner "$instance" || return 1
 	core=$(sed -n '1p' "$instance/meta") || return 1
 	case "$core" in
 		Hysteria) lua "$HYSTERIA_RUNTIME" stop client "$instance/config.json" || return 1 ;;
@@ -131,6 +149,8 @@ _pw_global_instance_ready() {
 			;;
 		*) return 1 ;;
 	esac
+	[ "$?" = 0 ] || return 1
+	[ ! -f "$instance/binding.json" ] || _pw_bound_ready "$instance"
 }
 
 passwall_global_node_ready() {
@@ -153,8 +173,13 @@ _pw_global_ss_start() {
 	local instance="$1" log="$2" bin pid birth i
 	bin=$(first_type ss-redir) || return 1
 	[ -x "$bin" ] && ln -s "$bin" "$instance/core" || return 1
-	"$instance/core" -c "$instance/config.json" -v > "$log" 2>&1 &
-	pid=$!; birth=$(get_process_start_time "$pid")
+	if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then
+		pid=$(_pw_bound_helper spawn "$log" "$instance/core" -c "$instance/config.json" -v) || return 1
+	else
+		"$instance/core" -c "$instance/config.json" -v > "$log" 2>&1 &
+		pid=$!
+	fi
+	birth=$(get_process_start_time "$pid")
 	PW_GLOBAL_NEW_PID=$pid; PW_GLOBAL_NEW_BIRTH=$birth
 	if ! {
 		printf '%s\n' "$pid" "$birth" &&
@@ -180,12 +205,11 @@ _pw_global_start_redir() {
 	local node="$1" proto="$2" base="$3" core port instance tcp= udp= mode log failure=0
 	PW_GLOBAL_NEW_INSTANCE= PW_GLOBAL_NEW_PID= PW_GLOBAL_NEW_BIRTH=
 	case "$node" in ''|*[!a-zA-Z0-9_-]*) echolog 'Split global: invalid node ID.'; return 2 ;; esac
-	check_node_supported "$node" || return 2
-	if [ "$(config_get_type "$node")" != nodes ]; then
+	if ! _pw_split_node_supported "$node"; then
 		echolog "Split global: node $node does not exist or is not a proxy node."
 		return 2
 	fi
-	core=$(config_n_get "$node" type)
+	core=$(_pw_split_node_get "$node" type)
 	case "$core" in SS|Hysteria) ;; *) echolog "Split global: unsupported core $core."; return 2 ;; esac
 	case "$proto" in TCP) mode=tcp_only ;; UDP) mode=udp_only ;; TCP_UDP) mode=tcp_and_udp ;; *) return 1 ;; esac
 	if [ "$proto" != UDP ]; then
@@ -213,7 +237,8 @@ _pw_global_start_redir() {
 			json_add_string local_port "$port"
 			json_add_string mode "$mode"
 			[ -z "$tcp" ] || [ "$TCP_PROXY_WAY" != tproxy ] || json_add_string tcp_tproxy true
-			gen_ss_config "$(json_dump)" "$instance/config.json" && _pw_global_ss_start "$instance" "$log" &&
+			if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then _pw_bound_prepare "$node" "$instance" "$(json_dump)"
+			else gen_ss_config "$(json_dump)" "$instance/config.json"; fi && _pw_global_ss_start "$instance" "$log" &&
 				_pw_global_publish "$node" "$tcp" "$udp" "$instance" && return 0
 			failure=$?
 			;;
@@ -222,8 +247,10 @@ _pw_global_start_redir() {
 			[ -z "$udp" ] || json_add_string local_udp_redir_port "$udp"
 			json_add_string tcp_proxy_way "$TCP_PROXY_WAY"
 			json_add_string proxy_ipv6 "${PROXY_IPV6:-0}"
-			gen_hysteria_config "$(json_dump)" "$instance/config.json" &&
-				start_hysteria "$instance/config.json" "$log" "$(config_n_get @global[0] loglevel warn)" &&
+			if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then
+				_pw_bound_prepare "$node" "$instance" "$(json_dump)" && _pw_bound_hysteria "$instance" "$log" "$(config_n_get @global[0] loglevel warn)"
+			else gen_hysteria_config "$(json_dump)" "$instance/config.json" &&
+				start_hysteria "$instance/config.json" "$log" "$(config_n_get @global[0] loglevel warn)"; fi &&
 				_pw_global_publish "$node" "$tcp" "$udp" "$instance" && return 0
 			failure=$?
 			;;
@@ -239,6 +266,7 @@ _pw_global_start_redir() {
 _pw_global_publish() {
 	local node="$1" tcp="$2" udp="$3" instance="$4"
 	_pw_global_instance_ready "$instance" || return 1
+	[ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_seal "$instance" || return 1
 	set --
 	[ -z "$tcp" ] || set -- "$@" ACL_GLOBAL_TCP_node "$node" ACL_GLOBAL_TCP_redir_port "$tcp" ACL_GLOBAL_TCP_instance "$instance/config.json"
 	[ -z "$udp" ] || set -- "$@" ACL_GLOBAL_UDP_node "$node" ACL_GLOBAL_UDP_redir_port "$udp" ACL_GLOBAL_UDP_instance "$instance/config.json"
@@ -246,7 +274,7 @@ _pw_global_publish() {
 	# A process can exit while the cache file is being prepared/renamed. Do not
 	# report that attempt as successful. Withdraw only this attempt's protocols;
 	# the other protocol and ACL/SOCKS bindings are outside its ownership.
-	if ! _pw_global_instance_ready "$instance"; then
+	if ! { _pw_global_instance_ready "$instance" && { [ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_fresh; }; }; then
 		set --
 		[ -z "$tcp" ] || set -- "$@" ACL_GLOBAL_TCP_node '' ACL_GLOBAL_TCP_redir_port '' ACL_GLOBAL_TCP_instance ''
 		[ -z "$udp" ] || set -- "$@" ACL_GLOBAL_UDP_node '' ACL_GLOBAL_UDP_redir_port '' ACL_GLOBAL_UDP_instance ''

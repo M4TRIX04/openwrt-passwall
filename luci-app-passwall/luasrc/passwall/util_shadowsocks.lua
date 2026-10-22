@@ -53,7 +53,10 @@ function gen_config(var)
 		print("node 不能为空")
 		return
 	end
-	local node = api.uci_get_c(node_id)
+	local node = var.frozen_node
+	if node ~= nil then
+		assert(type(node) == "table" and node.type == "SS", "Shadowsocks-libev: invalid frozen node")
+	else node = api.uci_get_c(node_id) end
 	if node.type == "SS" then validate_method(node.method) end
 	local server_host = var["server_host"] or (node.address or ""):lower()
 	local server_port = var["server_port"] or node.port

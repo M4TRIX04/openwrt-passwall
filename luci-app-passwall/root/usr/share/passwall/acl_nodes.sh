@@ -14,8 +14,8 @@ _pw_acl_id() {
 
 _pw_acl_node_supported() {
 	case "$1" in ''|*[!a-zA-Z0-9_-]*) return 1 ;; esac
-	check_node_supported "$1" && [ "$(config_get_type "$1")" = nodes ] || return 1
-	case "$(config_n_get "$1" type)" in SS|Hysteria) return 0 ;; *) return 1 ;; esac
+	_pw_split_node_supported "$1" || return 1
+	case "$(_pw_split_node_get "$1" type)" in SS|Hysteria) return 0 ;; *) return 1 ;; esac
 }
 
 # Location check also accepts already removed instances in a release retry list.
@@ -67,6 +67,8 @@ _pw_acl_instance_ready() {
 			;;
 		*) return 1 ;;
 	esac
+	[ "$?" = 0 ] || return 1
+	[ ! -f "$instance/binding.json" ] || _pw_bound_ready "$instance"
 }
 
 passwall_acl_node_ready() {
@@ -114,8 +116,13 @@ _pw_acl_launch() {
 	local dir="$1" log="$2" bin="$3" pid birth arg
 	shift 3
 	[ -x "$bin" ] && ln -s "$bin" "$dir/core" || return 1
-	"$dir/core" "$@" > "$log" 2>&1 &
-	pid=$!; birth=$(get_process_start_time "$pid")
+	if [ -n "${PW_BOUND_SNAPSHOT:-}" ] && [ -f "$dir/binding.json" ]; then
+		pid=$(_pw_bound_helper spawn "$log" "$dir/core" "$@") || return 1
+	else
+		"$dir/core" "$@" > "$log" 2>&1 &
+		pid=$!
+	fi
+	birth=$(get_process_start_time "$pid")
 	PW_ACL_NEW_DIR=$dir; PW_ACL_NEW_PID=$pid; PW_ACL_NEW_BIRTH=$birth
 	{
 		printf '%s\n' "$pid" "$birth" && printf '%s' "$(shell_quote "$dir/core")" || return 1
@@ -143,6 +150,7 @@ _pw_acl_stop_process() {
 _pw_acl_instance_stop() {
 	local instance="$1" status=0
 	_pw_acl_path "$instance" || return 1
+	[ ! -f "$instance/binding.json" ] || _pw_bound_helper owner "$instance" || return 1
 	case "$instance" in "$GLOBAL_ACL_PATH"/split/*) _pw_global_instance_stop "$instance"; return ;; esac
 	case "$(sed -n '1p' "$instance/meta")" in
 		Hysteria) _pw_global_instance_stop "$instance" ;;
@@ -225,7 +233,7 @@ _pw_acl_find() {
 	PW_ACL_REUSE=
 	[ -e "$TMP_PATH/var" ] || return 2
 	keys=$(sed -n 's/^\(ACL_[A-Za-z0-9_]*_instance\)=.*/\1/p' "$TMP_PATH/var") || return 1
-	snapshot=$(uci -q show "$CONFIG.$node") || return 1
+	snapshot=$(_pw_split_node_snapshot "$node") || return 1
 	context=$(printf '%s\n' "$TCP_PROXY_WAY" "${PROXY_IPV6:-0}" "$log" "$level")
 	for key in $keys; do
 		config=$(get_cache_var "$key") || return 1
@@ -245,6 +253,9 @@ _pw_acl_find() {
 		[ "$bound_port" = "$actual" ] || continue
 		[ "$(sed -n '2p' "$instance/meta")" = "$node" ] || continue
 		[ "$(cat "$instance/context")" = "$context" ] && [ "$(cat "$instance/node.snapshot")" = "$snapshot" ] || continue
+		if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then
+			[ -f "$instance/binding.json" ] && _pw_bound_ready "$instance" || continue
+		else [ ! -f "$instance/binding.json" ] || continue; fi
 		[ "$tcp" = 0 ] || [ -n "$(sed -n '3p' "$instance/meta")" ] || continue
 		[ "$udp" = 0 ] || [ -n "$(sed -n '4p' "$instance/meta")" ] || continue
 		_pw_acl_instance_ready "$instance" || continue
@@ -259,6 +270,7 @@ _pw_acl_find() {
 _pw_acl_publish() {
 	local sid="$1" instance="$2" tcp="$3" udp="$4" inherit="$5" node tport uport
 	_pw_acl_instance_ready "$instance" || return 1
+	[ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_seal "$instance" || return 1
 	node=$(sed -n '2p' "$instance/meta") || return 1
 	tport=$(sed -n '3p' "$instance/meta") || return 1
 	uport=$(sed -n '4p' "$instance/meta") || return 1
@@ -266,7 +278,7 @@ _pw_acl_publish() {
 	[ "$tcp" = 0 ] || { [ -n "$tport" ] && set -- "$@" "ACL_${sid}_tcp_node" "$node" "ACL_${sid}_tcp_redir_port" "$tport" "ACL_${sid}_tcp_instance" "$instance/config.json" "ACL_${sid}_tcp_default" "$inherit"; } || return 1
 	[ "$udp" = 0 ] || { [ -n "$uport" ] && set -- "$@" "ACL_${sid}_udp_node" "$node" "ACL_${sid}_udp_redir_port" "$uport" "ACL_${sid}_udp_instance" "$instance/config.json" "ACL_${sid}_udp_default" "$inherit"; } || return 1
 	set_cache_vars "$@" || return 1
-	_pw_acl_instance_ready "$instance" && return 0
+	_pw_acl_instance_ready "$instance" && { [ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_fresh; } && return 0
 	set --
 	[ "$tcp" = 0 ] || set -- "$@" "ACL_${sid}_tcp_node" '' "ACL_${sid}_tcp_redir_port" '' "ACL_${sid}_tcp_instance" '' "ACL_${sid}_tcp_default" ''
 	[ "$udp" = 0 ] || set -- "$@" "ACL_${sid}_udp_node" '' "ACL_${sid}_udp_redir_port" '' "ACL_${sid}_udp_instance" '' "ACL_${sid}_udp_default" ''
@@ -278,7 +290,7 @@ _pw_acl_create() {
 	local sid="$1" node="$2" tcp="$3" udp="$4" log="$5" level="$6" core port socks mode bin i logfile
 	PW_ACL_CREATED= PW_ACL_NEW_DIR= PW_ACL_NEW_PID= PW_ACL_NEW_BIRTH=
 	_pw_acl_node_supported "$node" || return 2
-	core=$(config_n_get "$node" type)
+	core=$(_pw_split_node_get "$node" type)
 	case "$core" in SS|Hysteria) ;; *) return 2 ;; esac
 	[ "$tcp" = 0 ] || { case "$TCP_PROXY_WAY" in redirect|tproxy) ;; *) return 2 ;; esac; }
 	if [ "$tcp:$udp" = 1:1 ]; then port=$(get_new_port 11200 tcp,udp)
@@ -295,7 +307,7 @@ _pw_acl_create() {
 	if ! {
 		printf '%s\n' "$core" "$node" "$( [ "$tcp" = 1 ] && echo "$port" )" "$( [ "$udp" = 1 ] && echo "$port" )" "$sid" > "$instance/meta" &&
 		printf '%s\n' "$TCP_PROXY_WAY" "${PROXY_IPV6:-0}" "$log" "$level" > "$instance/context" &&
-		uci -q show "$CONFIG.$node" > "$instance/node.snapshot" &&
+		_pw_split_node_snapshot "$node" > "$instance/node.snapshot" &&
 		printf '%s\n' "$socks" > "$instance/socks_port"
 	}; then
 		rm -rf "$instance" || return 1
@@ -310,12 +322,15 @@ _pw_acl_create() {
 			[ "$udp" = 0 ] || json_add_string local_udp_redir_port "$port"
 			json_add_string local_socks_address 127.0.0.1; json_add_string local_socks_port "$socks"
 			json_add_string tcp_proxy_way "$TCP_PROXY_WAY"; json_add_string proxy_ipv6 "${PROXY_IPV6:-0}"
-			gen_hysteria_config "$(json_dump)" "$instance/config.json" && start_hysteria "$instance/config.json" "$logfile" "$level" || return 2
+			if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then
+				_pw_bound_prepare "$node" "$instance" "$(json_dump)" && _pw_bound_hysteria "$instance" "$logfile" "$level"
+			else gen_hysteria_config "$(json_dump)" "$instance/config.json" && start_hysteria "$instance/config.json" "$logfile" "$level"; fi || return 2
 			;;
 		SS)
 			mode=tcp_only; [ "$udp" = 0 ] || mode=tcp_and_udp
 			json_add_string local_addr 127.0.0.1; json_add_string local_port "$socks"; json_add_string mode "$mode"
-			gen_ss_config "$(json_dump)" "$instance/config.json" || return 2
+			if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then _pw_bound_prepare "$node" "$instance" "$(json_dump)"
+			else gen_ss_config "$(json_dump)" "$instance/config.json"; fi || return 2
 			bin=$(first_type ss-local) && _pw_acl_launch "$instance" "$logfile" "$bin" -c "$instance/config.json" -v || return 2
 			mkdir "$instance/relay" || return 1
 			set -- -l "$port" -b 0.0.0.0 -B :: -s 127.0.0.1 -p "$socks" -o 60 -n 65535 -v

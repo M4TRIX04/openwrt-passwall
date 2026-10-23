@@ -2,6 +2,7 @@
 # Appended to the unchanged native bound fixture; all resources are disposable.
 /bin/ash -n "$PW_BOUND_REPO/luci-app-passwall/root/usr/share/passwall/acl_nodes.sh"
 /bin/ash -n "$PW_BOUND_REPO/luci-app-passwall/root/usr/share/passwall/bound_nodes.sh"
+/bin/ash -n "$PW_BOUND_REPO/luci-app-passwall/root/usr/share/passwall/global_nodes.sh"
 /bin/ash -n "$PW_BOUND_REPO/tests/shell-bound-immutability.sh"
 luac5.1 -p "$PW_BOUND_HELPER"
 uci set passwall.hy.hysteria_lazy_start=1
@@ -18,6 +19,11 @@ LUA
 # Trace the real adapter; inject only the requested first-seal failure.
 _pw_bound_helper() {
 	printf '%s\n' "$*" >> "$work/bound-actions"
+	if [ "$1:${PW_SOCKET_FIXTURE:-0}" = prepare:1 ]; then
+		shift
+		lua "$work/socket-prepare.lua" "$@"
+		return
+	fi
 	case "$1:${PW_IMMUTABLE_FAIL_SEAL:-0}" in seal:1|seal:partial)
 		python3 - "$2" "$work/failed-processes" <<'PY'
 import hashlib,json,os,sys
@@ -44,6 +50,10 @@ seals() { grep -c '^seal ' "$work/bound-actions" || :; }
 publish() {
 	local PW_BOUND_SNAPSHOT="$snapshot" PW_BOUND_PREFERENCE=ipv4 PW_BOUND_FAMILY=4
 	_pw_acl_publish "$@"
+}
+publish_global() {
+	local PW_BOUND_SNAPSHOT="$snapshot" PW_BOUND_PREFERENCE=ipv4 PW_BOUND_FAMILY=4
+	_pw_global_publish "$(sed -n '2p' "$1/meta")" "$(sed -n '3p' "$1/meta")" "$(sed -n '4p' "$1/meta")" "$1"
 }
 files() {
 	python3 - "$1" <<'PY'
@@ -72,6 +82,11 @@ for core in ss hy; do
 	status_is 0 passwall_start_bound_acl_nodes "$snapshot" a ipv4 4 0 warn
 	config=$(acl_config a tcp); instance=${config%/*}
 	[ "$(seals)" = 1 ] && [ -s "$instance/bound.identity" ] && [ -s "$instance/bound.capabilities" ] || fail first-seal-missing
+	python3 - "$instance" <<'PY'
+import json,sys
+for name in ('binding.json','bound.capabilities'):
+ assert 'socks_tcp_socket' not in json.load(open(sys.argv[1]+'/'+name))
+PY
 	files "$instance" > "$work/published"
 	status_is 0 publish a "$instance" 1 1 ''
 	status_is 0 publish a "$instance" 1 1 ''
@@ -191,12 +206,57 @@ for core in ss hy; do
 	config=$(global_config TCP); instance=${config%/*}
 	[ "$(seals)" = 1 ] || fail global-first-seal-missing
 	files "$instance" > "$work/global-published"
+	status_is 0 publish_global "$instance"
+	status_is 0 publish_global "$instance"
+	[ "$(seals)" = 1 ] || fail global-republish-called-seal
+	unchanged "$instance" "$work/global-published"
+	python3 - "$instance" <<'PY'
+import json,sys
+for name in ('binding.json','bound.capabilities'):
+ assert 'socks_tcp_socket' not in json.load(open(sys.argv[1]+'/'+name))
+PY
+	for file in config.json binding.json bound.identity bound.capabilities; do
+		cp -p "$instance/$file" "$work/global-backup"
+		for fault in missing changed; do
+			if [ "$fault" = missing ]; then rm "$instance/$file"
+			else printf '{}' > "$instance/$file"; fi
+			files "$instance" > "$work/rejected"
+			cache_before=$(md5sum "$TMP_PATH/var")
+			status_is 1 publish_global "$instance"
+			[ "$(md5sum "$TMP_PATH/var")" = "$cache_before" ] && [ "$(seals)" = 1 ] || fail global-rejection-resealed-or-published
+			unchanged "$instance" "$work/rejected"
+			cp -p "$work/global-backup" "$instance/$file"
+			echo "REJECT Global $core: $fault $file before publication; no repair or cache change"
+		done
+	done
+	files "$instance" > "$work/global-published"
 	status_is 0 passwall_start_bound_acl_nodes "$snapshot" a ipv4 4 0 warn
 	status_is 0 passwall_start_bound_acl_nodes "$snapshot" b ipv4 4 0 warn
 	[ "$(acl_config a tcp)" = "$config" ] && [ "$(acl_config b udp)" = "$config" ] || fail inherited-wrong-instance
 	status_is 0 publish a "$instance" 1 1 1
 	[ "$(seals)" = 1 ] || fail inheritance-called-seal
 	unchanged "$instance" "$work/global-published"
+	cp -p "$instance/bound.capabilities" "$work/capabilities-backup"
+	rm -f "$work/publish-fired"
+	mv() {
+		command mv "$@" || return 1
+		case "$*" in *" $TMP_PATH/var")
+			if [ ! -e "$work/publish-fired" ]; then
+				touch "$work/publish-fired"; printf '{}' > "$instance/bound.capabilities"
+				files "$instance" > "$work/rejected"
+			fi;;
+		esac
+	}
+	status_is 1 publish_global "$instance"
+	unset -f mv
+	[ -e "$work/publish-fired" ] && [ -z "$(global_config TCP)$(global_config UDP)" ] || fail global-post-check-left-publication
+	[ "$(acl_config a tcp)" = "$config" ] && [ "$(acl_config b udp)" = "$config" ] || fail global-post-check-removed-ACL
+	unchanged "$instance" "$work/rejected"
+	mv "$work/capabilities-backup" "$instance/bound.capabilities"
+	status_is 0 publish_global "$instance"
+	[ "$(seals)" = 1 ] || fail global-post-check-resealed
+	files "$instance" > "$work/global-published"
+	echo "REJECT Global $core: post-publication seal change; exact attempt withdrawn, inherited references retained"
 	status_is 0 passwall_stop_acl_nodes a
 	status_is 0 passwall_stop_global_nodes
 	passwall_acl_node_ready b tcp && passwall_acl_node_ready b udp || fail global-release-stopped-inherited
@@ -204,5 +264,21 @@ for core in ss hy; do
 	status_is 0 passwall_stop_acl_nodes b
 	[ ! -d "$instance" ] || fail inherited-last-release-kept-instance
 	echo "PASS $core: Global inherited by two ACLs, no reseal or immutable file changes; last-reference cleanup preserved"
+	for fault in 1 partial; do
+		PW_IMMUTABLE_FAIL_SEAL=$fault
+		status_is 2 passwall_start_bound_global_nodes "$snapshot" ipv4 4
+		PW_IMMUTABLE_FAIL_SEAL=0
+		[ -z "$(global_config TCP)$(global_config UDP)" ] || fail global-failed-seal-published
+		[ -z "$(find "$GLOBAL_ACL_PATH/split" -maxdepth 1 -name 'instance.*' -print)" ] || fail global-failed-seal-leaked
+		python3 - "$work/failed-processes" <<'PY'
+import json,sys
+for pid,birth in json.load(open(sys.argv[1])):
+ try: fields=open('/proc/'+pid+'/stat').read().rsplit(') ',1)[1].split()
+ except FileNotFoundError: continue
+ assert fields[0]=='Z' or fields[19]!=birth,('Global process survived failed seal',pid,birth)
+PY
+		echo "REJECT Global $core: first/partial seal failure ($fault), rc=2; owned process reclaimed"
+	done
 done
+. "$PW_BOUND_REPO/tests/shell-bound-socket.sh"
 echo 'SKIP production/device data plane and DNS: outside this isolated immutability regression'

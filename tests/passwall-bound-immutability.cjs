@@ -16,6 +16,8 @@ for (const p of ['app.sh', 'nftables.sh', 'iptables.sh']) {
 }
 assert(!/bound_nodes|runtime_binding|passwall_start_bound|_pw_bound_reference/.test(read('luci-app-passwall/root/etc/init.d/passwall')));
 console.log('PASS static: no production bound/reference entry');
+assert(!/local_socks_|socks_tcp_socket|ss-local/.test(func(read('luci-app-passwall/root/usr/share/passwall/global_nodes.sh'), '_pw_global_start_redir')),
+  'this stage must not enable Global SOCKS');
 const helpers = ['shell_quote', 'del_cache_var', 'set_cache_var', 'set_cache_vars', 'get_cache_var',
   'get_new_port', 'check_port_exists', 'get_process_start_time'].map(n => func(utils, n)).join('\n') + '\n' +
   ['check_node_supported', 'gen_ss_config', 'gen_hysteria_config', 'start_hysteria'].map(n => func(app, n)).join('\n');

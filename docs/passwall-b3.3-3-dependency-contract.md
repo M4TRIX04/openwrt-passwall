@@ -410,6 +410,24 @@ B3.3-2 已经能让冻结节点在隔离环境中完成"快照 → 端点 → �
 
 允许的操作：只读核验、引用登记、在最后一个引用释放后按既有规则回收。
 
+**B3.3-3C-1B-A 共同基础补充（未启用 Global SOCKS）**
+
+- Global 与 ACL 均在新实例创建路径首次 seal；publish 前后只读 reference，
+  不因封存记录缺失而补 seal。原子协议元组、共享引用与失败回收分类不变。
+- `prepare` 可显式接收冻结的 `socks_tcp_socket` 描述：
+  `{"address":"127.0.0.1","protocol":"tcp","family":"4","port":11100}`。
+  它只绑定既有主 PID，不创建 listener，不建立 SS 附属进程身份；配置与 `socks_port` 必须匹配。
+- 可选 `bound.capabilities.socks_tcp_socket={"4":true}` 与透明 `tcp/udp` 独立。
+  seal 与 reference 复用现有身份及 socket 核验，要求指定 PID/GID 真正持有精确
+  IPv4 loopback TCP LISTEN；通配地址、错误端口/协议、外部 PID 的 socket 均拒绝。
+  完整格式、旧格式兼容及拒绝条件见 [冻结运行文档](passwall-bound-runtime.md)。
+- 旧实例未声明时保留原格式及原核验，不自动推导或补写能力；新声明缺封存项、
+  旧声明缺失却多出封存项、身份/代次/配置/实时 socket 不符时拒绝。
+- 此项仅为 socket 证据，不能替代 §2.4/§3.3 要求的真实 SOCKS5 方法协商，
+  不产生 `dep_validated` 或 `dep_ready`；既有 3B 依赖接口与原因码保持。
+- 本阶段只在隔离夹具验证该声明。Global Hysteria 原生 SOCKS 接入、Global SS
+  `ss-redir + ss-local` 双进程身份/启动/回收、DNS helper 均仍属后续任务。
+
 ### 5.2 复用而非新建
 
 | 能力 | 归属 | B3.3-3 的处理 |

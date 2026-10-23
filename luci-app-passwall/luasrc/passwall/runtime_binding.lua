@@ -38,6 +38,29 @@ local function frozen(dir, id)
 	need(type(node) == "table" and node[".type"] == "nodes", "missing frozen node")
 	return node, source, generation
 end
+-- Optional socket evidence only, owned by the existing primary process.
+-- No auxiliary process identity or SOCKS protocol/forwarding claim is implied.
+local function socks_declaration(value)
+	if value == nil then return nil end
+	need(type(value) == "table" and value.address == "127.0.0.1" and
+		value.protocol == "tcp" and value.family == "4" and type(value.port) == "number" and
+		value.port == math.floor(value.port) and value.port >= 1 and value.port <= 65535,
+		"invalid SOCKS TCP socket declaration")
+	for key in pairs(value) do
+		need(key == "address" or key == "protocol" or key == "family" or key == "port", "unknown SOCKS socket field")
+	end
+	return value
+end
+local function socks_config(socks, core, config)
+	if not socks then return end
+	if core == "SS" then
+		need(config.local_address == socks.address and config.local_port == socks.port and config.mode ~= "udp_only",
+			"SOCKS declaration differs from configuration")
+	else
+		need(config.socks5 and config.socks5.listen == socks.address .. ":" .. socks.port,
+			"SOCKS declaration differs from configuration")
+	end
+end
 local function binding(dir)
 	local b = decode(dir .. "/binding.json")
 	local node, source, generation = frozen(b.snapshot, b.endpoint.node_id)
@@ -47,7 +70,9 @@ local function binding(dir)
 	local selected = decode(path)
 	need(selected.address == b.endpoint.address and selected.family == b.endpoint.family and selected.port == b.endpoint.port, "instance endpoint differs from generation record")
 	need(digest(dir .. "/config.json") == b.config_md5, "generated configuration changed")
-	endpoint.config(b.endpoint, decode(dir .. "/config.json"))
+	local config = decode(dir .. "/config.json")
+	endpoint.config(b.endpoint, config)
+	socks_config(socks_declaration(b.socks_tcp_socket), node.type, config)
 	return b
 end
 
@@ -65,6 +90,8 @@ function M.prepare(snapshot_dir, id, preference, family, dir, parameters)
 	if fs.access(path) then e = decode(path); endpoint.check(e, generation, source, id, node)
 	else e = endpoint.bind(generation, source, id, node, preference); write(path, e) end
 	local params = need(json.parse(parameters), "invalid generator parameters")
+	local socks = socks_declaration(params.socks_tcp_socket)
+	params.socks_tcp_socket = nil -- binding metadata, never a generator input
 	params.node = id; params.frozen_node = e.generator_node
 	params.server_host = nil; params.server_port = nil
 	local module
@@ -78,9 +105,11 @@ function M.prepare(snapshot_dir, id, preference, family, dir, parameters)
 	end
 	local config = need(json.parse(module.gen_config(params)), "generator rejected frozen node")
 	endpoint.config(e, config)
+	socks_config(socks, node.type, config)
 	write(dir .. "/config.json", config)
 	write(dir .. "/binding.json", {snapshot = snapshot_dir, endpoint = e, family = family,
-		config_md5 = digest(dir .. "/config.json"), endpoint_md5 = digest(path), gid = api.DIRECT_GID})
+		config_md5 = digest(dir .. "/config.json"), endpoint_md5 = digest(path), gid = api.DIRECT_GID,
+		socks_tcp_socket = socks})
 end
 
 function M.spawn(log, argv)
@@ -151,6 +180,13 @@ local function sockets(pid, proto, port, gid, transparent, diag, loopback)
 			local address, p = (f[2] or ""):match("^(%x+):(%x+)$")
 			local detail = diag[f[10]]
 			local local_bind = address and (address:match("^0+$") or (loopback and family == 4 and (address == "0100007F" or address == "7F000001")))
+			if loopback == "127.0.0.1" then
+				-- /proc encodes IPv4 in native byte order. Corroborate the
+				-- exact numeric address in the SAME inode's ss record, so the
+				-- opposite-endian 1.0.0.127 cannot masquerade as loopback.
+				local_bind = family == 4 and (address == "0100007F" or address == "7F000001") and
+					detail and detail:match("%s127%.0%.0%.1:" .. port .. "%s")
+			end
 			if local_bind and tonumber(p, 16) == port and owned[f[10]] and detail and
 				((proto == "udp" and f[4] == "07") or (proto == "tcp" and f[4] == "0A")) then
 				need(detail:find("inet%-sockopt:"), "missing socket option evidence")
@@ -200,6 +236,11 @@ function M.verify(dir, seal, expected_family, expected_proto, expected_port, req
 	need(lines[1] == core and lines[2] == b.endpoint.node_id, "instance metadata mismatch")
 	local diag, capabilities = diagnostics(), {}
 	local config = decode(dir .. "/config.json")
+	if b.socks_tcp_socket then
+		capabilities.socks_tcp_socket = sockets(pid, "tcp", b.socks_tcp_socket.port, b.gid, false, diag, "127.0.0.1")
+		need(capabilities.socks_tcp_socket["4"], "SOCKS TCP socket unavailable at exact loopback")
+		need(line(dir .. "/socks_port") == tostring(b.socks_tcp_socket.port), "sealed SOCKS port changed")
+	end
 	local listener_pid, listener_gid = pid, b.gid
 	if core == "SS" and fs.access(dir .. "/relay/process") then
 		-- The SOCKS TCP control listener is an auxiliary dependency. It is
@@ -224,6 +265,7 @@ function M.verify(dir, seal, expected_family, expected_proto, expected_port, req
 		end
 	end
 	if expected_proto then
+		need(expected_proto == "tcp" or expected_proto == "udp", "invalid transparent protocol")
 		need(capabilities[expected_proto], "requested protocol unavailable")
 		if expected_port then
 			local index = expected_proto == "tcp" and 3 or 4

@@ -25,7 +25,7 @@ IPv6 TCP 必须使用 TPROXY。旧调用方不设置绑定上下文，继续原�
 但缺失的请求协议返回 failed/2，不能把它悄悄改成 Close。
 
 `runtime_binding.lua` 提供 prepare、spawn、start_hysteria、verify、compatible、
-owner、remote。CLI 为 prepare/spawn/hysteria/verify/seal/compatible/owner。
+owner、remote。CLI 为 prepare/spawn/hysteria/verify/seal/compatible/reference/owner。
 `verify DIR FAMILY PROTOCOL [PORT]` 可检查精确能力及端口；不接受仅 PID 存活的证明。
 `firewall_endpoint.lua` 对绑定实例调用 remote；`split_firewall.sh` 的未挂接规则
 在消费能力时使用相同实时校验，不再用 `/proc/net/tcp` 单表否定已证实的双栈 socket。
@@ -87,10 +87,51 @@ PID FD socket inode、FD GID、监听状态/端口、通配绑定地址与 socke
 OpenWrt 的 `ss` 是独立软件包，不能假设安装 ip-full 就存在它；
 本轮没有修改 Makefile，B4 必须核实包和内核诊断依赖后才可启用。
 
-seal 在既有原子缓存发布前保存身份；发布后再次检查活监听和快照。
+seal 在新实例创建路径、既有原子缓存发布前保存身份。
+Global 与 ACL 的 publish 本身不 seal；发布前后均执行完整只读 reference，
+重复 publish、共享及继承不会补写缺失的封存记录。
 发布失败按原有实例引用/回滚分类处理，回滚失败返回 1 并保留精确重试记录。
 owner 检查不依赖仍然新鲜的 UCI，因此可清理已过期代次，但不得据旧 PID
 杀死新实例。快照/端点清单在仍有实例引用时不得先删除；其回收时序留给集成。
+
+## B3.3-3C-1B-A：可选 SOCKS TCP socket 声明
+
+本节是共同核验基础，**没有启用 Global SOCKS**，没有 SS 附属进程或双进程身份结构。
+Global 创建参数没有新增 SOCKS 字段；生成器与进程管理器未改动。
+生产入口（`app.sh`、`init.d/passwall`、LuCI）未修改。`global_nodes.sh` 调整了冻结实例
+首次 seal 和只读 reference 的调用时序；新增调用仅在 `PW_BOUND_SNAPSHOT` 定义的路径下执行。
+未新增或启用 Global SOCKS listener。
+
+`prepare` 的参数 JSON 可显式带 `socks_tcp_socket`。它在生成前被移出生成器输入，
+只作为冻结绑定元数据；**不会自动配置或启动 listener**。格式固定为：
+
+```json
+{"address":"127.0.0.1","protocol":"tcp","family":"4","port":11100}
+```
+
+- `port` 必须为 1–65535 的 JSON 整数；四个字段均必需，不接受额外字段、PID 或附属角色。
+- 声明写入 `binding.json.socks_tcp_socket`。它必须与现有 SS 本地 TCP 配置或
+  Hysteria v1.3.5 的 `socks5.listen` 一致；`socks_port` 文件也必须逐值匹配。
+- 仅绑定当前主进程，复用其 PID/birth、实际 executable、全线程 GID 及 FD GID 核验。
+  通过现有 socket inode/inet-diag 路径检查该 PID 持有的 **IPv4 TCP LISTEN**，
+  地址精确等于 `127.0.0.1`、端口等于声明值。通配地址、IPv6、UDP、其他 PID 的 socket 均不能满足。
+- 成功时首次 seal 增加 `bound.capabilities.socks_tcp_socket = {"4":true}`；
+  透明能力仍位于既有 `tcp`/`udp`，仍按既有通配地址、transparent、V6ONLY 和 family 规则验证。
+  `verify` 的透明协议参数仍只接受 `tcp`/`udp`，不能用 SOCKS socket 冒充透明 TCP。
+- 首次 seal 前必须取得全部声明 socket 及透明能力证据；任何一项失败均不发布。
+  `reference DIR SNAPSHOT PREFERENCE FAMILY` 重验来源、代次、配置、身份、实时能力，
+  并比较完整封存能力记录；缺失、不兼容、格式错误或不一致均拒绝，不重新 seal、不修复记录。
+- 未声明的旧实例保持原来的 binding/capabilities 格式及核验路径。
+  即使配置已有 SOCKS（如既有 ACL），也不自动新增能力字段；只读 reference 不升级记录。
+  声明存在而封存项缺失，或无声明却额外出现该封存项，均拒绝。
+
+此记录只证明 TCP socket，**不证明 SOCKS5 方法协商、外层连接或真实 DNS 转发**；
+3B 的真实协商与精确连接归属探针保持不变，不产生 `dep_ready`。
+未来 Global Hysteria SOCKS 和 SS 双进程接入需要另行授权，不能给已发布实例追加声明。
+
+隔离测试仍使用 `tests/passwall-bound-immutability.cjs`，其新增
+`tests/shell-bound-socket.sh` 仅在测试夹具中声明能力；夹具中的 socket 成功
+不能描述为 Global SOCKS 已运行成功。静态检查、原生隔离测试和目标设备验收须分别报告。
 
 ## 真实测试证据与地址族矩阵
 

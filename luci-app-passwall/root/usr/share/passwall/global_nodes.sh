@@ -239,6 +239,7 @@ _pw_global_start_redir() {
 			[ -z "$tcp" ] || [ "$TCP_PROXY_WAY" != tproxy ] || json_add_string tcp_tproxy true
 			if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then _pw_bound_prepare "$node" "$instance" "$(json_dump)"
 			else gen_ss_config "$(json_dump)" "$instance/config.json"; fi && _pw_global_ss_start "$instance" "$log" &&
+				{ [ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_seal "$instance"; } &&
 				_pw_global_publish "$node" "$tcp" "$udp" "$instance" && return 0
 			failure=$?
 			;;
@@ -251,6 +252,7 @@ _pw_global_start_redir() {
 				_pw_bound_prepare "$node" "$instance" "$(json_dump)" && _pw_bound_hysteria "$instance" "$log" "$(config_n_get @global[0] loglevel warn)"
 			else gen_hysteria_config "$(json_dump)" "$instance/config.json" &&
 				start_hysteria "$instance/config.json" "$log" "$(config_n_get @global[0] loglevel warn)"; fi &&
+				{ [ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_seal "$instance"; } &&
 				_pw_global_publish "$node" "$tcp" "$udp" "$instance" && return 0
 			failure=$?
 			;;
@@ -266,7 +268,9 @@ _pw_global_start_redir() {
 _pw_global_publish() {
 	local node="$1" tcp="$2" udp="$3" instance="$4"
 	_pw_global_instance_ready "$instance" || return 1
-	[ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_seal "$instance" || return 1
+	# Only the new-instance creation path seals. Publication/republication
+	# checks the existing seal without repairing or upgrading its records.
+	[ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_reference "$instance" || return 1
 	set --
 	[ -z "$tcp" ] || set -- "$@" ACL_GLOBAL_TCP_node "$node" ACL_GLOBAL_TCP_redir_port "$tcp" ACL_GLOBAL_TCP_instance "$instance/config.json"
 	[ -z "$udp" ] || set -- "$@" ACL_GLOBAL_UDP_node "$node" ACL_GLOBAL_UDP_redir_port "$udp" ACL_GLOBAL_UDP_instance "$instance/config.json"
@@ -274,7 +278,7 @@ _pw_global_publish() {
 	# A process can exit while the cache file is being prepared/renamed. Do not
 	# report that attempt as successful. Withdraw only this attempt's protocols;
 	# the other protocol and ACL/SOCKS bindings are outside its ownership.
-	if ! { _pw_global_instance_ready "$instance" && { [ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_fresh; }; }; then
+	if ! { _pw_global_instance_ready "$instance" && { [ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_reference "$instance"; }; }; then
 		set --
 		[ -z "$tcp" ] || set -- "$@" ACL_GLOBAL_TCP_node '' ACL_GLOBAL_TCP_redir_port '' ACL_GLOBAL_TCP_instance ''
 		[ -z "$udp" ] || set -- "$@" ACL_GLOBAL_UDP_node '' ACL_GLOBAL_UDP_redir_port '' ACL_GLOBAL_UDP_instance ''

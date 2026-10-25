@@ -13,7 +13,7 @@ echolog() {
 	echo "$*" >> "$PW_EVENTS"
 	case "$*" in *'reclaiming only'*) find "$GLOBAL_ACL_PATH" -name node.log -exec cat '{}' \; >> "$PW_EVENTS" ;; esac
 }
-lua() { command lua5.1 /tmp/b2-api.lua "$@"; }
+lua() { if [ "$1" = - ]; then command lua5.1 "$@"; else command lua5.1 /tmp/b2-api.lua "$@"; fi; }
 json_init() { request=''; }
 json_add_string() { [ -z "$request" ] || request="$request,";request="$request\"$1\":\"$2\""; }
 json_dump() { printf '{%s}' "$request"; }

@@ -57,18 +57,52 @@ _pw_global_ss_ready() {
 	_pw_global_ss_alive "$pid" "$birth"
 }
 
+_pw_global_ss_state() {
+	# Stop-only observation. Lua 5.1 io.open returns errno separately: a failed
+	# read is not proof of exit. No UCI, binding freshness or persistent state.
+	lua - "$1" "${2:-}" <<'LUA'
+local function result(s) print(s) end
+local pid, birth = arg[1], arg[2]
+if not pid or not pid:match("^%d+$") or tonumber(pid) <= 0 or
+ not birth or (birth ~= "" and not birth:match("^%d+$")) then result("unknown"); return end
+local self = io.open("/proc/self/stat", "r")
+if not self then result("unknown"); return end
+local visible = self:read("*a"); local closed = self:close()
+if not visible or not closed or not visible:match("^%d+ ") then result("unknown"); return end
+local f, _, errno = io.open("/proc/" .. pid .. "/stat", "r")
+if not f then result(errno == 2 and "exited" or "unknown"); return end
+local data = f:read("*a"); closed = f:close()
+if not data or not closed then result("unknown"); return end
+local actual, rest = data:match("^(%d+) .*%) (.*)$")
+local fields = {}; for v in (rest or ""):gmatch("%S+") do fields[#fields + 1] = v end
+if actual ~= pid or not fields[1] or not fields[1]:match("^[A-Za-z]$") or
+ not fields[20] or not fields[20]:match("^%d+$") or birth == "" then result("unknown")
+elseif fields[20] ~= birth then result("reused")
+elseif fields[1] == "Z" then result("zombie")
+else result("alive") end
+LUA
+}
+
 _pw_global_ss_kill() {
 	local pid="$1" birth="$2" i
-	_pw_global_ss_alive "$pid" "$birth" || return 0
+	case "$(_pw_global_ss_state "$pid" "$birth")" in
+		alive) ;; exited|reused|zombie) return 0 ;; *) return 1 ;;
+	esac
 	kill -TERM "$pid" 2>/dev/null || :
 	for i in 1 2 3 4 5 6 7 8 9 10; do
-		_pw_global_ss_alive "$pid" "$birth" || return 0
+		case "$(_pw_global_ss_state "$pid" "$birth")" in
+			alive) ;; exited|reused|zombie) return 0 ;; *) return 1 ;;
+		esac
 		sleep 0.1
 	done
-	_pw_global_ss_alive "$pid" "$birth" || return 0
+	case "$(_pw_global_ss_state "$pid" "$birth")" in
+		alive) ;; exited|reused|zombie) return 0 ;; *) return 1 ;;
+	esac
 	kill -KILL "$pid" 2>/dev/null || :
 	for i in 1 2 3 4 5 6 7 8 9 10; do
-		_pw_global_ss_alive "$pid" "$birth" || return 0
+		case "$(_pw_global_ss_state "$pid" "$birth")" in
+			alive) ;; exited|reused|zombie) return 0 ;; *) return 1 ;;
+		esac
 		sleep 0.1
 	done
 	return 1
@@ -76,7 +110,9 @@ _pw_global_ss_kill() {
 
 _pw_global_instance_stop() {
 	local instance="$1" core pid= birth=
-	[ ! -f "$instance/binding.json" ] || _pw_bound_helper owner "$instance" || return 1
+	# The caller's runtime context is independent of the instance's binding.
+	[ ! -e "$instance/binding.json" ] && [ ! -L "$instance/binding.json" ] ||
+		_pw_bound_helper owner "$instance" stop "$TMP_PATH" || return 1
 	core=$(sed -n '1p' "$instance/meta") || return 1
 	case "$core" in
 		Hysteria) lua "$HYSTERIA_RUNTIME" stop client "$instance/config.json" || return 1 ;;
@@ -84,19 +120,12 @@ _pw_global_instance_stop() {
 			if [ -s "$instance/process" ]; then
 				{ IFS= read -r pid; IFS= read -r birth; } < "$instance/process" || birth=
 			fi
-			if [ "${PW_GLOBAL_NEW_INSTANCE:-}" = "$instance" ] && [ -n "${PW_GLOBAL_NEW_PID:-}" ]; then
-				# Immediate rollback if writing the existing PID/birth record failed.
-				pid=$PW_GLOBAL_NEW_PID; birth=$PW_GLOBAL_NEW_BIRTH
-			fi
+			# Public stop uses only the instance record, never a creation receipt.
 			case "$pid:$birth" in *[!0-9:]*|:*)
-				[ ! -e "$instance/core" ] || return 1
+				[ ! -e "$instance/core" ] && [ ! -L "$instance/core" ] || return 1
 				;;
 			esac
-			if [ -n "$pid" ] && [ -z "$birth" ]; then
-				[ ! -e "/proc/$pid/stat" ] || return 1
-				pid=
-			fi
-			[ -z "$pid" ] || { [ -n "$birth" ] && _pw_global_ss_kill "$pid" "$birth"; } || return 1
+			[ -z "$pid" ] || _pw_global_ss_kill "$pid" "$birth" || return 1
 			;;
 		*) return 1 ;;
 	esac

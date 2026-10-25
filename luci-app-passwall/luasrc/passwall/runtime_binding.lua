@@ -299,31 +299,80 @@ function M.compatible(dir, snapshot_dir, preference, family, require_seal)
 		(b.family == family or (b.family == "dual" and (family == "4" or family == "6"))), "instance belongs to another binding/generation")
 	return M.verify(dir, false, nil, nil, nil, require_seal)
 end
+local function owned_process(dir, b, record)
+	local ok, pid, birth = pcall(process, dir, b.endpoint.original_node.type)
+	if not ok then
+		-- Only the Hysteria manager may already have removed its record in a
+		-- successful stop followed by a failed directory cleanup. Read/parse
+		-- errors are not proof of absence, nor of an exited owned process.
+		need(b.endpoint.original_node.type == "Hysteria", "unreadable process ownership; cleanup retained")
+		local manager = "/tmp/etc/passwall_hysteria1/" .. api.md5_string(dir .. "/config.json") .. ".json"
+		local st, errno = fs.stat(manager)
+		need(not st and errno == 2, "invalid/unreadable manager record; cleanup retained")
+		local proc = "/proc/" .. tostring(record.pid)
+		st, errno = fs.stat(proc)
+		if st then
+			local fields = {}; local rest = read(proc .. "/stat"):match("^%d+ %b() (.*)")
+			for value in (rest or ""):gmatch("%S+") do fields[#fields + 1] = value end
+			need(fields[1] and fields[20] and fields[20]:match("^%d+$"), "unreadable process identity; cleanup retained")
+			need(fields[1] == "Z" or fields[20] ~= tostring(record.birth), "live instance lost its ownership record; cleanup retained")
+		else need(errno == 2, "cannot establish process absence; cleanup retained") end
+		pid, birth = record.pid, record.birth
+	end
+	return pid, birth
+end
 function M.owner(dir)
 	local b = decode(dir .. "/binding.json")
 	if fs.access(dir .. "/bound.identity") then
 		local record = decode(dir .. "/bound.identity")
-		local ok, pid, birth = pcall(process, dir, b.endpoint.original_node.type)
-		if not ok then
-			-- Only the Hysteria manager may already have removed its record in a
-			-- successful stop followed by a failed directory cleanup. Read/parse
-			-- errors are not proof of absence, nor of an exited owned process.
-			need(b.endpoint.original_node.type == "Hysteria", "unreadable process ownership; cleanup retained")
-			local manager = "/tmp/etc/passwall_hysteria1/" .. api.md5_string(dir .. "/config.json") .. ".json"
-			local st, errno = fs.stat(manager)
-			need(not st and errno == 2, "invalid/unreadable manager record; cleanup retained")
-			local proc = "/proc/" .. tostring(record.pid)
-			st, errno = fs.stat(proc)
-			if st then
-				local fields = {}; local rest = read(proc .. "/stat"):match("^%d+ %b() (.*)")
-				for value in (rest or ""):gmatch("%S+") do fields[#fields + 1] = value end
-				need(fields[1] and fields[20] and fields[20]:match("^%d+$"), "unreadable process identity; cleanup retained")
-				need(fields[1] == "Z" or fields[20] ~= tostring(record.birth), "live instance lost its ownership record; cleanup retained")
-			else need(errno == 2, "cannot establish process absence; cleanup retained") end
-			pid, birth = record.pid, record.birth
-		end
+		local pid, birth = owned_process(dir, b, record)
 		endpoint.check_instance(decode(dir .. "/bound.identity"), b.endpoint, dir .. "/config.json", b.config_md5, pid, birth)
 	end
+	return true
+end
+
+-- Public stop only: require sealed ownership under the caller's runtime root.
+-- This is not a private unsealed rollback exception. A complete empty SS birth
+-- line may reach the stop observer, but never authorizes a signal or reclamation.
+function M.stop_owner(dir, runtime)
+	need(type(runtime) == "string" and runtime:match("^/[%w_./-]+$") and
+		fs.realpath(runtime) == runtime, "invalid expected stop runtime root")
+	local parent = dir:match("^(.*)/instance%.[%w_]+$")
+	need((parent == runtime .. "/acl/default/split" or parent == runtime .. "/acl/split-acl") and
+		fs.realpath(dir) == dir, "invalid stop responsibility directory")
+	local path = dir .. "/bound.identity"
+	local st, errno = fs.lstat(path)
+	if not st then
+		need(errno == 2, "cannot inspect stop identity; cleanup retained")
+		need(false, "missing stop identity; cleanup retained")
+	end
+	need(st.type == "reg", "invalid stop identity file type; cleanup retained")
+	local fd, _, open_errno = io.open(path, "r")
+	need(fd, "cannot open stop identity (errno " .. tostring(open_errno) .. "); cleanup retained")
+	local data = fd:read("*a"); local closed = fd:close()
+	need(type(data) == "string" and closed, "cannot read stop identity; cleanup retained")
+	local record = json.parse(data)
+	need(type(record) == "table", "invalid stop identity JSON; cleanup retained")
+	local b = binding(dir)
+	need(b.snapshot:match("^(.*)/contracts/generation%.[%w_]+$") == runtime, "stop snapshot runtime mismatch")
+	local core = b.endpoint.original_node.type
+	local meta_core, node = read(dir .. "/meta"):match("^([^\n]+)\n([^\n]+)\n")
+	need(b.gid == api.DIRECT_GID and meta_core == core and node == b.endpoint.node_id,
+		"stop instance metadata mismatch")
+	endpoint.check_instance(record, b.endpoint, dir .. "/config.json", b.config_md5, record.pid, record.birth)
+	local pid, birth
+	if core == "SS" then
+		local command
+		pid, birth, command = read(dir .. "/process"):match("^(%d+)\n(%d*)\n([^\n]+)\n$")
+		need(pid, "invalid stop process record")
+		local executable, config = quote(dir .. "/core"), quote(dir .. "/config.json")
+		need(command == executable .. " -c " .. config .. " -v" or
+			command == executable .. " " .. quote("-c") .. " " .. config .. " " .. quote("-v"), "invalid stop process command")
+		if birth == "" then birth = record.birth end -- comparison only; never write or signal with this birth
+	else
+		pid, birth = owned_process(dir, b, record)
+	end
+	endpoint.check_instance(record, b.endpoint, dir .. "/config.json", b.config_md5, pid, birth)
 	return true
 end
 
@@ -336,7 +385,11 @@ if arg and arg[0] and arg[0]:match("runtime_binding%.lua$") then
 		elseif action == "verify" or action == "seal" then return M.verify(arg[2],action == "seal",arg[3],arg[4],arg[5])
 		elseif action == "compatible" then return M.compatible(arg[2],arg[3],arg[4],arg[5])
 		elseif action == "reference" then return M.compatible(arg[2],arg[3],arg[4],arg[5],true)
-		elseif action == "owner" then return M.owner(arg[2]) end
+		elseif action == "owner" then
+			if arg[3] == "stop" then return M.stop_owner(arg[2], arg[4]) end
+			need(arg[3] == nil, "invalid owner mode")
+			return M.owner(arg[2])
+		end
 		error("invalid bound runtime action")
 	end)
 	if not ok then io.stderr:write(tostring(result) .. "\n"); os.exit(1) end

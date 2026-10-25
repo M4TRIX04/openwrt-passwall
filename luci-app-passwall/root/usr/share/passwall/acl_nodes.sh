@@ -124,33 +124,39 @@ _pw_acl_launch() {
 	fi
 	birth=$(get_process_start_time "$pid")
 	PW_ACL_NEW_DIR=$dir; PW_ACL_NEW_PID=$pid; PW_ACL_NEW_BIRTH=$birth
-	{
-		printf '%s\n' "$pid" "$birth" && printf '%s' "$(shell_quote "$dir/core")" || return 1
-		for arg in "$@"; do printf ' %s' "$(shell_quote "$arg")" || return 1; done
-		printf '\n'
-	} > "$dir/process" || return 1
+	# A record that cannot be written must not orphan the just-launched process:
+	# reclaim it with the same PID/birth rule the Global start path already uses.
+	local cmdline=''
+	for arg in "$@"; do cmdline="$cmdline $(shell_quote "$arg")"; done
+	if ! {
+		printf '%s\n' "$pid" "$birth" &&
+		printf '%s%s\n' "$(shell_quote "$dir/core")" "$cmdline"
+	} > "$dir/process"; then
+		_pw_global_ss_kill "$pid" "$birth" || return 1
+		return 1
+	fi
 }
 
 _pw_acl_stop_process() {
 	local dir="$1" pid= birth=
-	if [ "${PW_ACL_NEW_DIR:-}" = "$dir" ]; then
-		pid=$PW_ACL_NEW_PID; birth=$PW_ACL_NEW_BIRTH
-	elif [ -e "$dir/process" ]; then
-		{ IFS= read -r pid; IFS= read -r birth; } < "$dir/process" || return 1
-	elif [ ! -e "$dir/core" ]; then return 0
+	# Public stop uses only the instance record, never a creation receipt.
+	if [ -e "$dir/process" ]; then
+		# A partial record still carries a usable PID. The shared observer below
+		# decides exited/unknown, so a missing birth is never reported as success.
+		{ IFS= read -r pid; IFS= read -r birth; } < "$dir/process" || birth=
+	elif [ ! -e "$dir/core" ] && [ ! -L "$dir/core" ]; then return 0
 	else return 1
 	fi
 	case "$pid:$birth" in *[!0-9:]*|:*) return 1 ;; esac
-	if [ -z "$birth" ]; then [ ! -e "/proc/$pid" ]; return; fi
-	# An unreadable identity is not proof that the owned process has exited.
-	if [ -d "/proc/$pid" ] && [ -z "$(get_process_start_time "$pid")" ]; then return 1; fi
+	# The shared stop observer also protects every TERM/KILL polling step.
 	_pw_global_ss_kill "$pid" "$birth"
 }
 
 _pw_acl_instance_stop() {
 	local instance="$1" status=0
 	_pw_acl_path "$instance" || return 1
-	[ ! -f "$instance/binding.json" ] || _pw_bound_helper owner "$instance" || return 1
+	[ ! -e "$instance/binding.json" ] && [ ! -L "$instance/binding.json" ] ||
+		_pw_bound_helper owner "$instance" stop "$TMP_PATH" || return 1
 	case "$instance" in "$GLOBAL_ACL_PATH"/split/*) _pw_global_instance_stop "$instance"; return ;; esac
 	case "$(sed -n '1p' "$instance/meta")" in
 		Hysteria) _pw_global_instance_stop "$instance" ;;

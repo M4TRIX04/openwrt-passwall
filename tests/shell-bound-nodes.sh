@@ -24,7 +24,7 @@ TCP_PROXY_WAY=redirect; PROXY_IPV6=0
 fail() { echo "FAIL bound: $*" >&2; find "$work" -name node.log -exec tail -n 10 '{}' \; >&2; exit 1; }
 echolog() { echo "$*" >&2; }
 status_is() { local expect=$1 rc=0;shift;"$@" || rc=$?;[ "$rc" = "$expect" ] || fail "$*: expected $expect got $rc"; }
-lua() { command lua5.1 "$PW_BOUND_REPO/tests/bound-api.lua" "$@"; }
+lua() { if [ "$1" = - ]; then command lua5.1 "$@"; else command lua5.1 "$PW_BOUND_REPO/tests/bound-api.lua" "$@"; fi; }
 uci() {
 	local conf="$work/live" delta="$work/state" override= flags= option
 	while [ "$#" -gt 0 ];do

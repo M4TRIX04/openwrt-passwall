@@ -8,8 +8,9 @@ for(const p of ['luci-app-passwall/root/usr/share/passwall/app.sh','luci-app-pas
  'luci-app-passwall/root/usr/share/passwall/iptables.sh','luci-app-passwall/root/etc/init.d/passwall'])
  assert(!/acl_nodes\.sh|passwall_(?:start|stop)_acl_nodes|passwall_acl_node_ready/.test(read(p)),'B3.1 activated: '+p);
 const image=process.env.PASSWALL_B3_DOCKER;
-if(!image){console.log('SKIP native B3.1 (set PASSWALL_B3_DOCKER to existing Alpine image)');process.exit(0);}
-let script='set -e\napk add --no-cache lua5.1 lua5.1-cjson lua5.1-socket dnsmasq >&2\n';
+const container=process.env.PASSWALL_B3_CONTAINER;
+if(!image&&!container){console.log('SKIP native B3.1 (set PASSWALL_B3_DOCKER or prepared PASSWALL_B3_CONTAINER)');process.exit(0);}
+let script=container?'set -e\n':'set -e\napk add --no-cache lua5.1 lua5.1-cjson lua5.1-socket dnsmasq >&2\n';
 const files={
  '/tmp/b2-api.lua':'tests/b2-api.lua',
  '/tmp/node_config.sh':'luci-app-passwall/root/usr/share/passwall/node_config.sh',
@@ -26,5 +27,11 @@ const helpers=['shell_quote','del_cache_var','set_cache_var','set_cache_vars','g
 const setup=read('tests/shell-global-nodes.sh').split('[ -z "${PW_B2_TRACE:-}" ] || set -x')[0];
 assert(setup.includes('config_is()'));
 script+=setup.replace('# PRODUCTION_HELPERS',()=>helpers)+read('tests/shell-acl-nodes.sh');
-cp.execFileSync('docker',['run','--rm','--pull=never','--cap-add','SYS_PTRACE','-i','--env','PW_B3_TRACE','--entrypoint','/bin/ash',image],{input:script,stdio:['pipe','inherit','inherit']});
+if(container){
+ assert(/^[a-f0-9]{64}$/.test(container),'full task-owned container ID required');
+ const info=JSON.parse(cp.execFileSync('docker',['inspect',container],{encoding:'utf8'}))[0];
+ assert(!['host','container'].some(x=>info.HostConfig.NetworkMode.startsWith(x))&&!info.HostConfig.PidMode&&!info.HostConfig.Privileged);
+ assert(info.Mounts.length===1&&info.Mounts[0].Destination==='/workspace'&&!info.Mounts[0].RW);
+ cp.execFileSync('docker',['exec','-i',container,'/bin/ash'],{input:script,stdio:['pipe','inherit','inherit']});
+}else cp.execFileSync('docker',['run','--rm','--pull=never','--cap-add','SYS_PTRACE','-i','--env','PW_B3_TRACE','--entrypoint','/bin/ash',image],{input:script,stdio:['pipe','inherit','inherit']});
 console.log('PASS inactive B3.1: native Lua 5.1 / actual processes and TCP/UDP socket ownership; proxy/xtables/lock boundaries remain fixtures');

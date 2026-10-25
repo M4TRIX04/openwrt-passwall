@@ -11,8 +11,9 @@ assert(!/global_nodes\.sh|passwall_(?:start|stop)_global_nodes/.test(app),'B2 ac
 for(const p of ['luci-app-passwall/root/usr/share/passwall/nftables.sh','luci-app-passwall/root/usr/share/passwall/iptables.sh',
  'luci-app-passwall/root/etc/init.d/passwall'])assert(!/global_nodes\.sh|passwall_(?:start|stop)_global_nodes/.test(read(p)),p);
 const image=process.env.PASSWALL_B2_DOCKER;
-if(!image){console.log('SKIP native B2 integration (set PASSWALL_B2_DOCKER to an existing Alpine image)');process.exit(0);}
-let script='set -e\napk add --no-cache lua5.1 lua5.1-cjson dnsmasq >&2\n';
+const container=process.env.PASSWALL_B2_CONTAINER;
+if(!image&&!container){console.log('SKIP native B2 integration (set PASSWALL_B2_DOCKER or prepared PASSWALL_B2_CONTAINER)');process.exit(0);}
+let script=container?'set -e\n':'set -e\napk add --no-cache lua5.1 lua5.1-cjson dnsmasq >&2\n';
 const files={
  '/tmp/b2-api.lua':'tests/b2-api.lua',
  '/tmp/global_nodes.sh':'luci-app-passwall/root/usr/share/passwall/global_nodes.sh',
@@ -26,5 +27,11 @@ const helpers=['shell_quote','del_cache_var','set_cache_var','set_cache_vars','g
  ['check_node_supported','gen_ss_config','gen_hysteria_config','start_hysteria'].map(n=>func(app,n)).join('\n');
 script+=read('tests/shell-global-nodes.sh').replace('# PRODUCTION_HELPERS',()=>helpers);
 // dnsmasq hardens /proc inspection; this capability stays inside the test PID namespace.
-cp.execFileSync('docker',['run','--rm','--pull=never','--cap-add','SYS_PTRACE','-i','--env','PW_B2_TRACE','--entrypoint','/bin/ash',image],{input:script,stdio:['pipe','inherit','inherit']});
+if(container){
+ assert(/^[a-f0-9]{64}$/.test(container),'full task-owned container ID required');
+ const info=JSON.parse(cp.execFileSync('docker',['inspect',container],{encoding:'utf8'}))[0];
+ assert(!['host','container'].some(x=>info.HostConfig.NetworkMode.startsWith(x))&&!info.HostConfig.PidMode&&!info.HostConfig.Privileged);
+ assert(info.Mounts.length===1&&info.Mounts[0].Destination==='/workspace'&&!info.Mounts[0].RW);
+ cp.execFileSync('docker',['exec','-i',container,'/bin/ash'],{input:script,stdio:['pipe','inherit','inherit']});
+}else cp.execFileSync('docker',['run','--rm','--pull=never','--cap-add','SYS_PTRACE','-i','--env','PW_B2_TRACE','--entrypoint','/bin/ash',image],{input:script,stdio:['pipe','inherit','inherit']});
 console.log('PASS inactive B2 integration: native Lua + real process/socket ownership; DNSMASQ is a listener fixture, not a proxy core');

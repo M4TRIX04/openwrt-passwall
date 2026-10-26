@@ -16,8 +16,15 @@ for (const p of ['app.sh', 'nftables.sh', 'iptables.sh']) {
 }
 assert(!/bound_nodes|runtime_binding|passwall_start_bound|_pw_bound_reference/.test(read('luci-app-passwall/root/etc/init.d/passwall')));
 console.log('PASS static: no production bound/reference entry');
-assert(!/local_socks_|socks_tcp_socket|ss-local/.test(func(read('luci-app-passwall/root/usr/share/passwall/global_nodes.sh'), '_pw_global_start_redir')),
-  'this stage must not enable Global SOCKS');
+const global = read('luci-app-passwall/root/usr/share/passwall/global_nodes.sh');
+const start = func(global, '_pw_global_start_redir');
+assert(start.includes('[ -n "${PW_BOUND_SNAPSHOT:-}" ] && [ -n "$tcp" ]'),
+  'Global SOCKS creation requires a frozen TCP-capable instance');
+assert(start.includes('ss_socks_tcp_socket') && start.includes('local_socks_address 127.0.0.1') &&
+  start.includes('_pw_global_ss_socks_start'), 'F1 must bind SS auxiliary and Hysteria native SOCKS');
+assert(!/\b(run_socks|ln_run|GLOBAL_SOCKS_server)\b/.test(start.replace(/#.*$/gm, '')),
+  'F1 must not use live-UCI SOCKS launchers or publish the production SOCKS cache');
+console.log('PASS static: frozen Global SOCKS contract; production entry remains inactive');
 const helpers = ['shell_quote', 'del_cache_var', 'set_cache_var', 'set_cache_vars', 'get_cache_var',
   'get_new_port', 'check_port_exists', 'get_process_start_time'].map(n => func(utils, n)).join('\n') + '\n' +
   ['check_node_supported', 'gen_ss_config', 'gen_hysteria_config', 'start_hysteria'].map(n => func(app, n)).join('\n');

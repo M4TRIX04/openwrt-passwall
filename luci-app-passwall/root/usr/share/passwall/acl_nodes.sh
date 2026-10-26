@@ -128,6 +128,18 @@ _pw_acl_launch() {
 	# reclaim it with the same PID/birth rule the Global start path already uses.
 	local cmdline=''
 	for arg in "$@"; do cmdline="$cmdline $(shell_quote "$arg")"; done
+	# Creation-local evidence only. The second SS launch must not overwrite
+	# the first launch's PID/birth/command receipt needed after a failed seal.
+	if [ -n "${PW_ACL_PRIVATE_DIRECTORY:-}" ]; then
+		case "$dir" in
+			"$PW_ACL_CREATED") PW_ACL_PRIVATE_MAIN="$pid
+$birth
+$(shell_quote "$dir/core")$cmdline" ;;
+			"$PW_ACL_CREATED/relay") PW_ACL_PRIVATE_RELAY="$pid
+$birth
+$(shell_quote "$dir/core")$cmdline" ;;
+		esac
+	fi
 	if ! {
 		printf '%s\n' "$pid" "$birth" &&
 		printf '%s%s\n' "$(shell_quote "$dir/core")" "$cmdline"
@@ -294,8 +306,115 @@ _pw_acl_publish() {
 	return 1
 }
 
+# A receipt for this call's mktemp directory, optionally including immutable
+# inputs. No seal/public-stop exception is persisted or reconstructed later.
+_pw_acl_private_seal_receipt() {
+	local instance="$1"
+	shift
+	lua - "$TMP_PATH" "$instance" "$@" <<'LUA' || return 1
+require "nixio"
+local fs = require "nixio.fs"
+local root, dir = arg[1], arg[2]
+assert(fs.realpath(root) == root and fs.realpath(dir) == dir and
+ dir:match("^(.*)/instance%.[%w_]+$") == root .. "/acl/split-acl", "invalid private ACL directory")
+local st = assert(fs.lstat(dir))
+assert(st.type == "dir" and type(st.dev) == "number" and type(st.ino) == "number" and type(st.uid) == "number")
+for i = 3, #arg do
+ local path = dir .. "/" .. arg[i]; local file = assert(fs.lstat(path))
+ assert(file.type == "reg" and fs.realpath(path) == path, "invalid private ACL input: " .. path)
+end
+print(st.dev .. ":" .. st.ino .. ":" .. st.uid)
+LUA
+	[ "$#" = 0 ] || (cd "$instance" && md5sum "$@")
+}
+
+_pw_acl_private_seal_files() {
+	local instance="$1"
+	set -- meta context node.snapshot socks_port binding.json config.json
+	_pw_acl_private_seal_receipt "$instance" "$@"
+}
+
+_pw_acl_private_prepare() {
+	_pw_bound_prepare "$@" || return
+	# Pin prepared inputs before launching either process. An unavailable
+	# receipt prevents private rollback only; a normal successful seal is unchanged.
+	PW_ACL_PRIVATE_FILES=$(_pw_acl_private_seal_files "$2") || PW_ACL_PRIVATE_FILES=
+}
+
+_pw_acl_private_seal_rollback() {
+	local instance="$1" core="$2" refs=0 pid birth status=0 observed
+	[ "${PW_ACL_PRIVATE_SEAL_FAILED:-0}" = 1 ] && [ -n "${PW_BOUND_SNAPSHOT:-}" ] &&
+		[ "$instance" = "$PW_ACL_CREATED" ] && [ -n "$PW_ACL_PRIVATE_DIRECTORY" ] &&
+		[ -n "$PW_ACL_PRIVATE_FILES" ] || return 1
+	observed=$(_pw_acl_private_seal_receipt "$instance") || return 1
+	[ "$observed" = "$PW_ACL_PRIVATE_DIRECTORY" ] || return 1
+	observed=$(_pw_acl_private_seal_files "$instance") || return 1
+	[ "$observed" = "$PW_ACL_PRIVATE_FILES" ] || return 1
+	case "$core" in
+		SS)
+			_pw_acl_private_seal_receipt "$instance" process relay/process > /dev/null || return 1
+			[ -n "$PW_ACL_PRIVATE_MAIN" ] && [ -n "$PW_ACL_PRIVATE_RELAY" ] || return 1
+			observed=$(cat "$instance/process") || return 1
+			[ "$observed" = "$PW_ACL_PRIVATE_MAIN" ] || return 1
+			observed=$(cat "$instance/relay/process") || return 1
+			[ "$observed" = "$PW_ACL_PRIVATE_RELAY" ] || return 1
+			;;
+		Hysteria)
+			[ -n "$PW_ACL_PRIVATE_HYSTERIA" ] || return 1
+			observed=$(_pw_bound_helper private-hysteria "$instance") || return 1
+			[ "$observed" = "$PW_ACL_PRIVATE_HYSTERIA" ] || return 1
+			# Extract only the numeric string fields emitted by the trusted
+			# private-hysteria receipt above; never search for a process by name.
+			observed=$(lua - "$observed" <<'LUA'
+local pid = arg[1]:match('"pid"%s*:%s*"(%d+)"')
+local birth = arg[1]:match('"birth"%s*:%s*"(%d+)"')
+assert(pid and tonumber(pid) > 0 and birth, "incomplete private Hysteria receipt")
+print(pid); print(birth)
+LUA
+) || return 1
+			{ IFS= read -r pid; IFS= read -r birth; } <<EOF
+$observed
+EOF
+			;;
+		*) return 1 ;;
+	esac
+	# Reuse the full unsealed verifier: frozen configuration, PID/birth,
+	# executable and live listener ownership for every component. Unknown is
+	# retained, even if the receipt alone would permit a weaker stop check.
+	_pw_bound_ready "$instance" || return 1
+	_pw_global_instance_referenced "$instance" || refs=$?
+	[ "$refs" = 1 ] || return 1
+	case "$core" in
+		SS)
+			{ IFS= read -r pid; IFS= read -r birth; } <<EOF
+$PW_ACL_PRIVATE_RELAY
+EOF
+			_pw_global_ss_kill "$pid" "$birth" || status=1
+			{ IFS= read -r pid; IFS= read -r birth; } <<EOF
+$PW_ACL_PRIVATE_MAIN
+EOF
+			_pw_global_ss_kill "$pid" "$birth" || status=1
+			;;
+		Hysteria)
+			if lua "$HYSTERIA_RUNTIME" stop client "$instance/config.json"; then
+				case "$(_pw_global_ss_state "$pid" "$birth")" in
+					exited|reused|zombie) ;;
+					*) status=1 ;;
+				esac
+			else status=1; fi
+			;;
+	esac
+	[ "$status" = 0 ] || return 1
+	observed=$(_pw_acl_private_seal_receipt "$instance") || return 1
+	[ "$observed" = "$PW_ACL_PRIVATE_DIRECTORY" ] || return 1
+	rm -rf "$instance" || return 1
+	PW_ACL_CREATED= PW_ACL_NEW_DIR= PW_ACL_NEW_PID= PW_ACL_NEW_BIRTH=
+}
+
 _pw_acl_create() {
 	local sid="$1" node="$2" tcp="$3" udp="$4" log="$5" level="$6" core port socks mode bin i logfile
+	local PW_ACL_PRIVATE_DIRECTORY= PW_ACL_PRIVATE_FILES= PW_ACL_PRIVATE_MAIN= PW_ACL_PRIVATE_RELAY= PW_ACL_PRIVATE_HYSTERIA=
+	PW_ACL_PRIVATE_SEAL_FAILED=0
 	PW_ACL_CREATED= PW_ACL_NEW_DIR= PW_ACL_NEW_PID= PW_ACL_NEW_BIRTH=
 	_pw_acl_node_supported "$node" || return 2
 	core=$(_pw_split_node_get "$node" type)
@@ -312,6 +431,9 @@ _pw_acl_create() {
 	mkdir -p "$TMP_ACL_PATH/split-acl" || return 1
 	PW_ACL_CREATED=$(mktemp -d "$TMP_ACL_PATH/split-acl/instance.XXXXXX") || return 1
 	local instance=$PW_ACL_CREATED
+	if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then
+		PW_ACL_PRIVATE_DIRECTORY=$(_pw_acl_private_seal_receipt "$instance") || PW_ACL_PRIVATE_DIRECTORY=
+	fi
 	if ! {
 		printf '%s\n' "$core" "$node" "$( [ "$tcp" = 1 ] && echo "$port" )" "$( [ "$udp" = 1 ] && echo "$port" )" "$sid" > "$instance/meta" &&
 		printf '%s\n' "$TCP_PROXY_WAY" "${PROXY_IPV6:-0}" "$log" "$level" > "$instance/context" &&
@@ -331,13 +453,13 @@ _pw_acl_create() {
 			json_add_string local_socks_address 127.0.0.1; json_add_string local_socks_port "$socks"
 			json_add_string tcp_proxy_way "$TCP_PROXY_WAY"; json_add_string proxy_ipv6 "${PROXY_IPV6:-0}"
 			if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then
-				_pw_bound_prepare "$node" "$instance" "$(json_dump)" && _pw_bound_hysteria "$instance" "$logfile" "$level"
+				_pw_acl_private_prepare "$node" "$instance" "$(json_dump)" && _pw_bound_hysteria "$instance" "$logfile" "$level"
 			else gen_hysteria_config "$(json_dump)" "$instance/config.json" && start_hysteria "$instance/config.json" "$logfile" "$level"; fi || return 2
 			;;
 		SS)
 			mode=tcp_only; [ "$udp" = 0 ] || mode=tcp_and_udp
 			json_add_string local_addr 127.0.0.1; json_add_string local_port "$socks"; json_add_string mode "$mode"
-			if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then _pw_bound_prepare "$node" "$instance" "$(json_dump)"
+			if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then _pw_acl_private_prepare "$node" "$instance" "$(json_dump)"
 			else gen_ss_config "$(json_dump)" "$instance/config.json"; fi || return 2
 			bin=$(first_type ss-local) && _pw_acl_launch "$instance" "$logfile" "$bin" -c "$instance/config.json" -v || return 2
 			mkdir "$instance/relay" || return 1
@@ -351,8 +473,18 @@ _pw_acl_create() {
 	for i in $(seq 1 100); do
 		if _pw_acl_instance_ready "$instance"; then
 			sleep 0.1
-			_pw_acl_instance_ready "$instance" && { [ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_seal "$instance"; }
-			return
+			_pw_acl_instance_ready "$instance" || return
+			[ -n "${PW_BOUND_SNAPSHOT:-}" ] || return 0
+			# Receipt failures affect rollback permission only, not a successful
+			# seal. No publication has been attempted anywhere in this function.
+			if [ "$core" = Hysteria ]; then
+				PW_ACL_PRIVATE_HYSTERIA=$(_pw_bound_helper private-hysteria "$instance") || PW_ACL_PRIVATE_HYSTERIA=
+			fi
+			_pw_bound_seal "$instance" && return 0
+			PW_ACL_PRIVATE_SEAL_FAILED=1
+			_pw_acl_private_seal_rollback "$instance" "$core" && return 2
+			echolog "Split ACL $sid private seal rollback pending: $instance"
+			return 1
 		fi
 		sleep 0.1
 	done
@@ -361,6 +493,7 @@ _pw_acl_create() {
 
 _pw_acl_acquire() {
 	local sid="$1" node="$2" tcp="$3" udp="$4" log="$5" level="$6" found=0 result=0 instance refs=0
+	local PW_ACL_PRIVATE_SEAL_FAILED=0
 	_pw_acl_node_supported "$node" || return 2
 	_pw_acl_find "$node" "$tcp" "$udp" "$log" "$level" || found=$?
 	case "$found" in
@@ -368,6 +501,9 @@ _pw_acl_acquire() {
 		1) return 1 ;;
 	esac
 	_pw_acl_create "$sid" "$node" "$tcp" "$udp" "$log" "$level" || result=$?
+	# The creation-local seal failure path has already reclaimed or retained
+	# responsibility. Never retry it through public stop or publish a reference.
+	[ "$PW_ACL_PRIVATE_SEAL_FAILED" != 1 ] || return "$result"
 	instance=$PW_ACL_CREATED
 	if [ "$result" = 0 ]; then _pw_acl_publish "$sid" "$instance" "$tcp" "$udp" '' || result=$?; fi
 	[ "$result" != 0 ] || { PW_ACL_NEW_DIR= PW_ACL_NEW_PID= PW_ACL_NEW_BIRTH=; return 0; }

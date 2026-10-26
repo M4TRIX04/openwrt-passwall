@@ -1,4 +1,4 @@
-# B3.3-2：冻结端点、核心身份与监听地址族
+# 冻结运行适配层：B3.3-2、B1 与 Global SOCKS F1
 
 本阶段是未接入生产入口的 B2/B3.1 适配层。`app.sh::start()`、
 `acl_app()`、init、LuCI、DNS、正式 nftables/iptables hook 和服务端均未切换。
@@ -96,11 +96,10 @@ owner 检查不依赖仍然新鲜的 UCI，因此可清理已过期代次，但�
 
 ## B3.3-3C-1B-A：可选 SOCKS TCP socket 声明
 
-本节是共同核验基础，**没有启用 Global SOCKS**，没有 SS 附属进程或双进程身份结构。
-Global 创建参数没有新增 SOCKS 字段；生成器与进程管理器未改动。
-生产入口（`app.sh`、`init.d/passwall`、LuCI）未修改。`global_nodes.sh` 调整了冻结实例
-首次 seal 和只读 reference 的调用时序；新增调用仅在 `PW_BOUND_SNAPSHOT` 定义的路径下执行。
-未新增或启用 Global SOCKS listener。
+本节记录 A 阶段建立的共同 socket 核验基础。当前工作区的 F1 已使用该基础
+在冻结 Global 路径中实现 SOCKS：Hysteria 使用主进程，SS 使用附属 ss-local，
+具体身份与回收边界见下文 F1。正式生产入口（`app.sh`、`init.d/passwall`、LuCI）
+仍未接入冻结运行路径；不能将工作区实现等同于生产已启用或运行验收通过。
 
 `prepare` 的参数 JSON 可显式带 `socks_tcp_socket`。它在生成前被移出生成器输入，
 只作为冻结绑定元数据；**不会自动配置或启动 listener**。格式固定为：
@@ -127,13 +126,111 @@ Global 创建参数没有新增 SOCKS 字段；生成器与进程管理器未改
 
 此记录只证明 TCP socket，**不证明 SOCKS5 方法协商、外层连接或真实 DNS 转发**；
 3B 的真实协商与精确连接归属探针保持不变，不产生 `dep_ready`。
-未来 Global Hysteria SOCKS 和 SS 双进程接入需要另行授权，不能给已发布实例追加声明。
+F1 仅在新建冻结实例时加入声明，不能给已发布实例追加声明或升级其格式。
 
 隔离测试仍使用 `tests/passwall-bound-immutability.cjs`，其新增
-`tests/shell-bound-socket.sh` 仅在测试夹具中声明能力；夹具中的 socket 成功
-不能描述为 Global SOCKS 已运行成功。静态检查、原生隔离测试和目标设备验收须分别报告。
+`tests/shell-bound-socket.sh` 保留显式声明的 ACL 夹具，并补充 F1 冻结 Global
+路径的覆盖。夹具 socket 成功不能替代 Global 路径的证据；静态检查、原生隔离
+测试和目标设备验收须分别报告。本轮仅更新测试代码，未执行这些检查或测试。
+
+## B3.3-3C-1B-B1：严格引用与有限回滚修复
+
+B1 提供严格引用与有限回滚基础；当前工作区同时包含下文 F1 的 Global SOCKS
+实现。两者均未接入正式生产入口，不涉及 DNS helper 的创建或 `dep_ready` 发布。
+
+- 3B 在 SOCKS5 协商前后均调用 `compatible(..., true)`，与 CLI `reference`
+  使用同一完整封存核验；仍保留按 TCP 端口/family 的实时核验和真实方法协商。
+  缺失、损坏或不匹配的 `bound.capabilities` 返回 `1 / dns_dep_identity`，
+  失败时不保留候选 state、不补 seal。旧格式不要求新增 SOCKS 声明。
+  严格引用提前发现的既有 `socks_port` 缺失/不一致仍映射为
+  `2 / dns_dep_socks`；身份或能力封存错误不因此降级。
+- Global 创建函数用局部标志区分私有创建与已经进入 publish 的尝试。
+  私有失败沿用精确实例回收；进入 publish 后，必须得到既有引用扫描的
+  “确认无引用”结果才可终止。共享引用、引用读取失败、缓存类型/语法异常
+  或悬空链接均保留实例并返回 `1`；撤销失败的私有 `3` 仍转公开 `1`。
+  不改原子协议元组、不撤销 ACL 或另一独立协议、不增加持久状态机。
+- SS stop 不再用布尔 alive 的失败证明退出。专用只读 Lua 5.1 观察使用
+  `io.open` 的独立 errno，区分同一活 PID/birth、确认 ENOENT、PID 重用、
+  僵尸和未知；检查前先确认当前 `/proc` 视图可读。未知或读/解析失败时
+  返回停止失败，保留责任。每次 TERM/KILL 前及轮询中使用相同观察，
+  PID 重用不发送信号，等待次数和 sleep 时长不增加。
+  ACL 继续共用该 stop/kill 路径；不修改启动命令、process 或封存格式。
+
+创建期 process 记录部分写失败，仍只可使用本次启动的内存 PID/birth 回滚。
+PID 回执完全丢失时，现有启动路径不能证明精确 PID 已归属或已清理；返回 `1`
+并保留责任目录，不按进程名猜测或误报成功。隔离测试可由测试观察者清理，
+不代表产品已具备该故障的自动恢复。PID 检查与发信号仍有既有非原子窗口。
+
+测试复用 DNS、bound、immutability 入口；`PASSWALL_BOUND_B1=rollback|stop`
+选择 `tests/shell-bound-b1.sh` 的专用故障组。读取失败在实际 I/O 边界注入并
+检查命中，不以 root 下无效的 chmod 作为证据。隔离结果不替代 OpenWrt 目标
+设备验收、完整 DNS/helper 验收或生产入口接入。
+
+B1 历史隔离记录（2026-10-23，不代表当前 B1+F1 候选通过）：专项 rollback/stop、完整 DNS dependency、
+immutability/socket、完整 bound 运行回归及非 bound Global/ACL 回归最终均
+退出 `0`。当时使用从官方 Alpine 3.24 准备的依赖，测试容器网络为 `none`、
+仓库只读挂载、PID/网络命名空间独立，无生产配置挂载。非 bound 回归新增
+`PASSWALL_B2_CONTAINER` / `PASSWALL_B3_CONTAINER` 入口复用已准备容器，
+避免测试期联网安装，原测试逻辑不变。完整 bound 回归包含私有命名空间内
+真实 SOCKS TCP/UDP 与 IPv4 REDIRECT 数据转发；DNS 组仅验证候选/方法协商，
+未运行 DNS helper、dnsmasq L1/L2/L3 或目标设备验收。
+
+## Global SOCKS F1 与 B1+F1-C1 配套修正
+
+**已验证事实（源码）**：当前工作区在 `PW_BOUND_SNAPSHOT` 非空且实例具有透明
+TCP 角色时分配独立的内部 IPv4 loopback TCP SOCKS 端口。UDP-only 不声明该
+能力；不写生产 `GLOBAL_SOCKS_server`，不调用 live-UCI `run_socks`。
+
+- Hysteria 的 `socks_tcp_socket` 对应同一冻结配置中的 `socks5.listen`，复用主
+  进程身份。SS 保持 ss-redir 主进程，在同一实例的 `socks/` 下生成冻结的
+  `tcp_only` ss-local 配置，使用相同冻结节点、端点、认证和 GID 9911。
+- SS 的 `binding.json.ss_socks` 记录 socket 声明及附属配置摘要，
+  `socks/process` 与 `socks/bound.identity` 绑定该附属 PID/birth、配置路径和
+  同一代次。它不形成独立引用或资源生命周期。
+- 首次 seal 和只读 reference 均核验主/附属身份、配置摘要、实际 executable、
+  全线程与 FD GID，以及精确属于该进程的 `127.0.0.1` TCP LISTEN。
+  封存能力仍为 `socks_tcp_socket={"4":true}`，不替代透明 TCP/UDP 能力。
+- Global/继承 ACL 继续共享同一封存实例。停止先检查既有所有权和引用边界，
+  SS 先停止附属进程再停止主进程；不确定时保留责任，最后一个引用释放才回收。
+- DNS dependency 只读查询可产生 Global 或继承 Global 的 `dep_resolved` /
+  `dep_validated` 候选；SS 候选额外绑定附属配置/身份摘要，真实 SOCKS5 无认证
+  协商使用附属 PID，Hysteria 使用主 PID。仍未实现 DNS helper、dnsmasq 衔接
+  或 `dep_ready`，也不以方法协商证明外层连接、真实 DNS 查询或数据转发。
+
+**失败回收分析（源码，尚待故障实测）**：`_pw_global_ss_socks_start` 在调用
+spawn 前设置 `PW_GLOBAL_NEW_SOCKS_STARTED=1`，含义是“已尝试启动”。取得有效
+PID/birth 后的 process 写失败可使用本次内存回执停止附属进程，再由既有私有
+owner 门禁核验并回收主进程和目录，不改变正常成功路径。
+
+spawn 可能在子进程已经启动后丢失回执；此时附属 PID/birth 未取得，现有
+`private-owner` 拒绝回滚，返回 `1` 并保留责任目录，主/附属进程可能留存。
+仅把 STARTED 移到 spawn 成功之后会错误允许“未启动”清理，不能安全解决该
+路径。要区分确定未启动与已启动但回执丢失，需扩展启动器回执契约，涉及
+`runtime_binding.lua` / 启动器边界，超出本轮生产代码授权，因此 C1 未修改
+`global_nodes.sh`。此限制不得记为已自动回收；测试观察者的精确 PID 清理也
+不得作为产品恢复能力。
+
+C1 复用 `tests/passwall-bound-immutability.cjs`（包含 socket 组）和
+`tests/passwall-dns-dependency.cjs`：更新过时断言，扩展原 JSON 夹具以支持 F1
+嵌套声明，保留不可变性、严格引用和未接生产入口检查。新增 SS 附属身份、
+Global TCP-only/UDP-only 边界、共享与停止保护、首次 seal 失败时双进程回收、
+附属 process 部分写失败以及 spawn 回执丢失时的责任保留断言。
+
+**本轮未执行测试、语法检查、构建、容器启动或部署**。后续需另行授权，在
+仓库只读挂载、独立 PID/网络命名空间的一次性已准备容器内运行上述两入口；
+不可仅凭没有设置容器变量时的 SKIP 判断通过。历史 B1 结果不能替代本候选
+验证。当前具备进入定向测试的代码准备条件，尚非通过验证的提交结论。
+
+**范围外的夹具限制（源码已确认）**：完整 bound / B1 专项入口
+`tests/passwall-bound-nodes.cjs` 直接使用 `tests/shell-bound-nodes.sh` 的平铺 JSON
+夹具，未提供 F1 所需的 `json_add_object` / `json_add_int` / `json_close_object`。
+C1 只在获准修改的 immutability 与 DNS 测试中扩展该夹具；未修改上述共用
+文件或 B1 专项。完整入口仍需先补齐夹具再回归，不能据两项定向入口的准备
+情况宣布整个提交候选已自洽。
 
 ## 真实测试证据与地址族矩阵
+
+本节为既有阶段的历史运行记录，不是本轮 B1+F1-C1 的验证结果。
 
 入口：`PASSWALL_BOUND_DOCKER=doocs/md:latest node tests/passwall-bound-nodes.cjs`。
 测试只写一次性容器，仓库只读挂载，独立 PID/网络命名空间，不使用宿主网络。

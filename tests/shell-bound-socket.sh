@@ -1,6 +1,6 @@
 #!/bin/sh
-# Sourced by the existing immutability runner. Only isolated fixtures declare
-# this capability; the Global adapters still create no SOCKS listeners.
+# Sourced by the existing immutability runner. Retain the explicit ACL socket
+# fixtures and cover F1's real frozen Global listeners in the same container.
 /bin/ash -n "$PW_BOUND_REPO/tests/shell-bound-socket.sh"
 cat > "$work/socket-prepare.lua" <<'LUA'
 local api = require "luci.passwall.api"
@@ -178,4 +178,139 @@ end
 print("REJECT malformed SOCKS declarations: address/protocol/family/port/type/unknown PID; no instance records written")
 LUA
 status_is 0 lua "$work/socket-invalid.lua" "$snapshot" "$work"
-echo 'SKIP new Global SOCKS / SS auxiliary / Global Hysteria SOCKS: not enabled in this stage; fixtures prove socket evidence only'
+
+# F1 Global TCP-only: exact socket evidence and SS subordinate identity belong
+# to one frozen instance. The combined/shared path is covered by the caller.
+uci set passwall.a.use_global_config=0; uci set passwall.b.use_global_config=0
+uci -q delete passwall.settings.udp_node || :
+for core in ss hy; do
+	uci set "passwall.settings.tcp_node=$core"
+	capture
+	status_is 0 passwall_start_bound_global_nodes "$snapshot" ipv4 4
+	config=$(global_config TCP); instance=${config%/*}
+	[ -z "$(global_config UDP)$(get_cache_var GLOBAL_SOCKS_server)" ] || fail f1-published-unrequested-role
+	status_is 0 _pw_bound_helper reference "$instance" "$snapshot" ipv4 4
+	status_is 1 _pw_bound_helper verify "$instance" 4 socks_tcp_socket
+	python3 - "$instance" "$core" <<'PY'
+import hashlib,json,sys
+d,core=sys.argv[1:];load=lambda name:json.load(open(d+'/'+name))
+b=load('binding.json');c=load('bound.capabilities');main=load('bound.identity')
+assert c=={'tcp':{'4':True},'socks_tcp_socket':{'4':True}}
+s=b['ss_socks']['socket'] if core=='ss' else b['socks_tcp_socket']
+assert s=={'address':'127.0.0.1','protocol':'tcp','family':'4','port':int(open(d+'/socks_port').read())}
+if core=='ss':
+ aux=load('socks/bound.identity');cfg=load('socks/config.json');primary=load('config.json')
+ assert str(aux['pid'])!=str(main['pid']) and cfg['mode']=='tcp_only' and not cfg.get('tcp_tproxy')
+ assert cfg['local_address']=='127.0.0.1' and cfg['local_port']==s['port']
+ assert cfg['server']==primary['server']==b['endpoint']['address'] and cfg['server_port']==primary['server_port']==b['endpoint']['port']
+ assert aux['generation']==main['generation']==b['endpoint']['generation']
+ assert b['ss_socks']['config_md5']==hashlib.md5(open(d+'/socks/config.json','rb').read()).hexdigest()
+ for sub,record in [('',main),('socks/',aux)]:
+  lines=open(d+'/'+sub+'process').read().splitlines()
+  assert lines[:2]==[str(record['pid']),str(record['birth'])]
+  stat=open('/proc/'+lines[0]+'/stat').read().rsplit(') ',1)[1].split()
+  assert stat[0]!='Z' and stat[19]==lines[1]
+else:
+ assert load('config.json')['socks5']['listen']=='127.0.0.1:'+str(s['port'])
+PY
+	# Missing or forged subordinate identity cannot be repaired by reference.
+	if [ "$core" = ss ]; then
+		cp -p "$instance/socks/bound.identity" "$work/f1-identity"
+		for fault in missing wrong_birth; do
+			if [ "$fault" = missing ]; then rm "$instance/socks/bound.identity"
+			else
+				python3 - "$instance/socks/bound.identity" <<'PY'
+import json,sys
+p=sys.argv[1];r=json.load(open(p));r['birth']=str(int(r['birth'])+1);json.dump(r,open(p,'w'))
+PY
+			fi
+			files "$instance" > "$work/rejected"
+			status_is 1 _pw_bound_helper reference "$instance" "$snapshot" ipv4 4
+			status_is 1 _pw_global_instance_stop "$instance"
+			unchanged "$instance" "$work/rejected"
+			_pw_global_ss_ready "$instance" && _pw_global_ss_socks_ready "$instance" || fail f1-rejection-killed-process
+			cp -p "$work/f1-identity" "$instance/socks/bound.identity"
+		done
+	fi
+	status_is 0 passwall_stop_global_nodes
+	[ ! -d "$instance" ] || fail f1-tcp-only-stop
+	echo "PASS F1 Global $core TCP-only: frozen loopback socket/identity; no UDP or production SOCKS cache"
+	# UDP-only must never obtain an auxiliary or native SOCKS declaration.
+	uci -q delete passwall.settings.tcp_node || :
+	uci set "passwall.settings.udp_node=$core"
+	capture; status_is 0 passwall_start_bound_global_nodes "$snapshot" ipv4 4
+	config=$(global_config UDP); instance=${config%/*}
+	python3 - "$instance" <<'PY'
+import json,os,sys
+d=sys.argv[1];b=json.load(open(d+'/binding.json'));c=json.load(open(d+'/bound.capabilities'))
+assert 'ss_socks' not in b and 'socks_tcp_socket' not in b
+assert c=={'udp':{'4':True}} and not os.path.exists(d+'/socks_port') and not os.path.exists(d+'/socks')
+PY
+	status_is 0 passwall_stop_global_nodes
+	uci -q delete passwall.settings.udp_node || :
+done
+
+# Real ss-local launch, then a partial process-receipt write (e.g. ENOSPC).
+# Keep an unrelated live ACL to detect accidental cross-instance cleanup.
+uci set passwall.settings.tcp_node=ss; uci set passwall.settings.udp_node=tcp
+uci set passwall.a.tcp_node=ss; uci set passwall.a.udp_node=tcp
+capture; status_is 0 passwall_start_bound_acl_nodes "$snapshot" a ipv4 4 0 warn
+keep_config=$(acl_config a tcp); keep_instance=${keep_config%/*}
+files "$keep_instance" > "$work/f1-keep"
+printf() {
+	if [ "$#" = 2 ] && [ "$1" = '%s' ] && [ -n "${PW_GLOBAL_NEW_SOCKS_PROCESS:-}" ] &&
+		[ "$2" = "$PW_GLOBAL_NEW_SOCKS_PROCESS" ]; then
+		command printf '%s\n' "$PW_GLOBAL_NEW_SOCKS_PID"
+		command printf '%s\n' "$PW_GLOBAL_NEW_PID" "$PW_GLOBAL_NEW_BIRTH" \
+			"$PW_GLOBAL_NEW_SOCKS_PID" "$PW_GLOBAL_NEW_SOCKS_BIRTH" > "$work/f1-write-hit"
+		return 1
+	fi
+	command printf "$@"
+}
+status_is 2 passwall_start_bound_global_nodes "$snapshot" ipv4 4
+unset -f printf
+[ -s "$work/f1-write-hit" ] || fail f1-write-fault-not-hit
+python3 - "$work/f1-write-hit" > "$work/f1-processes" <<'PY'
+import json,sys
+v=open(sys.argv[1]).read().splitlines();assert len(v)==4 and all(x.isdigit() for x in v)
+json.dump([v[:2],v[2:]],sys.stdout)
+PY
+processes_gone "$work/f1-processes"
+[ -z "$(global_config TCP)$(global_config UDP)" ] &&
+	[ -z "$(find "$GLOBAL_ACL_PATH/split" -maxdepth 1 -name 'instance.*' -print)" ] || fail f1-failed-write-leaked
+passwall_acl_node_ready a tcp && passwall_acl_node_ready a udp || fail f1-rollback-killed-unrelated-ACL
+unchanged "$keep_instance" "$work/f1-keep"
+echo 'REJECT F1 SS auxiliary partial process write: rc=2, both owned PIDs reclaimed; unrelated ACL preserved'
+
+# A spawn may have launched a child before its PID reply is lost. The creating
+# caller must retain responsibility, never infer no-launch from an empty reply.
+# Restore the helper after this scenario; only the test observer knows the PID.
+eval "$(sed -n '/^_pw_bound_helper() {/,/^}/p' "$PW_BOUND_REPO/tests/shell-bound-immutability.sh" | sed '1s/_pw_bound_helper/f1_real_helper/')"
+_pw_bound_helper() {
+	if [ "$1" = spawn ]; then
+		case "$3" in */socks/core)
+			local observed_pid observed_birth
+			observed_pid=$(f1_real_helper "$@") || return 1
+			observed_birth=$(get_process_start_time "$observed_pid")
+			printf '%s\n' "$PW_GLOBAL_NEW_PID" "$PW_GLOBAL_NEW_BIRTH" "$observed_pid" "$observed_birth" > "$work/f1-lost-hit"
+			return 1 ;;
+		esac
+	fi
+	f1_real_helper "$@"
+}
+status_is 1 passwall_start_bound_global_nodes "$snapshot" ipv4 4
+instance=$PW_GLOBAL_NEW_INSTANCE
+eval "$(sed -n '/^_pw_bound_helper() {/,/^}/p' "$PW_BOUND_REPO/tests/shell-bound-immutability.sh")"
+[ -d "$instance" ] && [ -s "$instance/process" ] && [ ! -e "$instance/socks/process" ] &&
+	[ ! -e "$instance/bound.capabilities" ] && [ -z "$(global_config TCP)$(global_config UDP)" ] || fail f1-lost-reply-claimed-clean
+{ IFS= read -r main_pid; IFS= read -r main_birth; IFS= read -r socks_pid; IFS= read -r socks_birth; } < "$work/f1-lost-hit"
+_pw_global_ss_alive "$main_pid" "$main_birth" && _pw_global_ss_alive "$socks_pid" "$socks_birth" || fail f1-lost-reply-guessed-identity
+passwall_acl_node_ready a tcp && passwall_acl_node_ready a udp || fail f1-lost-reply-killed-unrelated-ACL
+unchanged "$keep_instance" "$work/f1-keep"
+# Test observer cleanup only, using the exact identities captured above.
+status_is 0 _pw_global_ss_kill "$socks_pid" "$socks_birth"
+status_is 0 _pw_global_ss_kill "$main_pid" "$main_birth"
+case "$instance" in "$GLOBAL_ACL_PATH"/split/instance.*) rm -rf "$instance" ;; *) fail f1-observer-cleanup-path ;; esac
+status_is 0 passwall_stop_acl_nodes a
+echo 'REJECT F1 SS auxiliary lost spawn reply: rc=1, responsibility retained; observer cleanup only, automatic recovery NOT claimed'
+echo 'SKIP F1 outer connection/data forwarding/DNS helper/dnsmasq L1-L3/dep_ready and production/device integration'

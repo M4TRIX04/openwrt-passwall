@@ -21,40 +21,154 @@ local function identity(pid)
 	return fields[20]
 end
 local function alive(r) return r.pid and r.birth and identity(r.pid) == r.birth end
-local function entries()
+local function entries(strict)
 	local t = {}
 	for name in fs.dir(registry) do
+		if strict then assert(not name:match("%.json%.new$"), "pending Hysteria ownership record") end
 		if name:match("%.json$") then
 			local r = json.parse(read(registry .. "/" .. name) or "")
+			if strict then
+				local st = fs.lstat(registry .. "/" .. name)
+				assert(st and st.type == "reg", "invalid Hysteria ownership record type")
+				assert(type(r) == "table" and type(r.config) == "string" and
+					name == api.md5_string(r.config) .. ".json" and
+					(r.scope == "client" or r.scope == "server") and type(r.rules) == "table" and
+					(r.released == nil or type(r.released) == "table"), "ambiguous Hysteria rule ownership")
+				for k, rule in pairs(r.rules) do
+					assert(type(k) == "number" and k >= 1 and k <= #r.rules and k % 1 == 0 and
+						type(rule) == "string", "invalid Hysteria rule ownership")
+				end
+				for rule, released in pairs(r.released or {}) do
+					assert(type(rule) == "string" and type(released) == "boolean", "invalid Hysteria release record")
+				end
+			end
 			if r then t[#t+1] = {path=registry .. "/" .. name, value=r} end
 		end
 	end
 	return t
 end
-local function release(path, r, keep_config)
- local term_status, kill_status
- if alive(r) then
-  term_status = api.sys.call("kill -TERM " .. r.pid)
-  for _=1,10 do if not alive(r) then break end; nixio.nanosleep(0,100000000) end
-  if alive(r) then kill_status = api.sys.call("kill -KILL " .. r.pid) end
-  for _=1,10 do if not alive(r) then break end; nixio.nanosleep(0,100000000) end
+-- Used only by the opted-in private Global call. Missing state is not exit
+-- evidence; ENOENT in a working proc view and an observed zombie are distinct.
+local function private_stat(pid)
+	assert((read("/proc/self/stat") or ""):match("^%d+ "), "cannot establish Hysteria proc view")
+	local f, _, errno = io.open("/proc/" .. tostring(pid) .. "/stat", "r")
+	if not f then assert(errno == 2, "cannot inspect Hysteria process"); return "absent" end
+	local data = f:read("*a"); local closed = f:close()
+	assert(data and closed, "cannot read Hysteria process")
+	local actual, rest = data:match("^(%d+) .*%) (.*)$")
+	local fields = {}; for v in (rest or ""):gmatch("%S+") do fields[#fields+1] = v end
+	assert(actual == tostring(pid) and fields[1] and fields[1]:match("^[A-Za-z]$") and
+		fields[20] and fields[20]:match("^%d+$"), "invalid Hysteria process stat")
+	return fields[1], fields[20]
+end
+local function private_state(r, proof)
+	if not proof.attempted then assert(not r.pid and not r.birth, "unexpected Hysteria process"); return "not_started" end
+	assert(proof.launched and type(r.pid) == "number" and r.pid > 0 and r.pid % 1 == 0,
+		"missing Hysteria launch receipt")
+	local function observe()
+		local state, birth = private_stat(r.pid)
+		if state == "absent" then return state end
+		assert(r.birth and birth == r.birth, "Hysteria process identity conflict")
+		return state == "Z" and "zombie" or "running"
+	end
+	local state = observe()
+	if state ~= "running" then return state end
+	-- Recheck once on disappearance; a live process with incomplete evidence
+	-- remains unsafe. Never route an observed identity conflict through here.
+	local function disappeared(reason)
+		local current = observe()
+		assert(current ~= "running", reason)
+		return current
+	end
+	local function proc_read(path)
+		local f, _, errno = io.open(path, "r")
+		if not f then assert(errno == 2, "cannot open Hysteria proc file: " .. path); return nil end
+		local data = f:read("*a"); local closed = f:close()
+		assert(data and closed, "cannot read Hysteria proc file: " .. path)
+		return data
+	end
+	local exe, errno = fs.readlink("/proc/" .. r.pid .. "/exe")
+	if not exe then
+		assert(errno == 2, "cannot inspect Hysteria executable")
+		return disappeared("Hysteria executable disappeared")
+	end
+	assert(exe == proof.bin, "Hysteria executable changed")
+	local command = proc_read("/proc/" .. r.pid .. "/cmdline")
+	-- A zombie can expose an empty cmdline before its stat was observed as Z.
+	if not command or command == "" then return disappeared("Hysteria command disappeared") end
+	local argv = {}; for v in command:gmatch("([^%z]+)%z") do argv[#argv+1] = v end
+	assert(#argv == 7 and argv[1] == proof.link and argv[2] == "--no-check" and argv[3] == "--log-level" and
+		argv[5] == "-c" and argv[6] == r.config and argv[7] == "client", "Hysteria command changed")
+	local iterator, errno = fs.dir("/proc/" .. r.pid .. "/task")
+	if not iterator then
+		assert(errno == 2, "cannot enumerate Hysteria tasks")
+		return disappeared("Hysteria tasks disappeared")
+	end
+	local tasks = 0
+	while true do
+		local task, errno = iterator()
+		if not task then
+			if errno == 2 then return disappeared("Hysteria tasks disappeared") end
+			assert(not errno, "cannot enumerate Hysteria tasks")
+			break
+		end
+		tasks = tasks + 1
+		local status = proc_read("/proc/" .. r.pid .. "/task/" .. task .. "/status")
+		if not status then return disappeared("Hysteria task disappeared") end
+		local groups = status:match("\nGid:%s*([^\n]+)")
+		assert(groups, "cannot read Hysteria GIDs")
+		local count = 0
+		for gid in groups:gmatch("%d+") do count=count+1; assert(tonumber(gid) == api.DIRECT_GID, "Hysteria GID changed") end
+		assert(count == 4, "incomplete Hysteria GIDs")
+	end
+	-- Bound all successful observations to the same PID/birth, including an
+	-- empty/short enumeration caused by process exit. This is not a retry loop.
+	state = observe()
+	if state ~= "running" then return state end
+	assert(tasks > 0, "missing Hysteria tasks")
+	return "running"
+end
+local function private_absent(path)
+	local st, errno = fs.lstat(path)
+	assert(not st and errno == 2, "cannot establish Hysteria absence: " .. path)
+end
+local function release(path, r, keep_config, proof)
+ local owned_alive = alive
+ if proof then
+  entries(true) -- Refuse ambiguous shared ownership before releasing any resource.
+  assert(api.md5_file(r.config) == proof.config_md5, "Hysteria configuration changed")
+  owned_alive = function() return private_state(r, proof) == "running" end
  end
- assert(not alive(r), "Hysteria 1: cannot stop owned process (pid=" .. tostring(r.pid) ..
+ local term_status, kill_status
+ if owned_alive(r) then
+  term_status = api.sys.call("kill -TERM " .. r.pid)
+  for _=1,10 do if not owned_alive(r) then break end; nixio.nanosleep(0,100000000) end
+  if owned_alive(r) then kill_status = api.sys.call("kill -KILL " .. r.pid) end
+  for _=1,10 do if not owned_alive(r) then break end; nixio.nanosleep(0,100000000) end
+ end
+ assert(not owned_alive(r), "Hysteria 1: cannot stop owned process (pid=" .. tostring(r.pid) ..
   " birth=" .. tostring(r.birth) .. " current=" .. tostring(r.pid and identity(r.pid)) ..
   " TERM=" .. tostring(term_status) .. " KILL=" .. tostring(kill_status) .. ")")
  r.released = r.released or {}
  write(path, json.stringify(r))
- local errors = {}
+ local errors, dispositions = {}, {}
  for _, rule in ipairs(r.rules or {}) do
   if not r.released[rule] then
    local used = false
-   for _, other in ipairs(entries()) do
+   for _, other in ipairs(entries(proof ~= nil)) do
     if other.path ~= path and not (other.value.released or {})[rule] then
      for _, v in ipairs(other.value.rules or {}) do if v == rule then used = true end end
     end
    end
    local marker = registry .. "/rule_" .. api.md5_string(rule)
-   local done = used or not fs.access(marker)
+   local marked = fs.access(marker)
+   if proof then
+    local st, errno = fs.lstat(marker)
+    assert((st and st.type == "reg" and read(marker) == rule) or (not st and errno == 2), "ambiguous Hysteria rule marker")
+    marked = st ~= nil
+    private_absent(marker .. ".new")
+   end
+   local done = used or not marked
    if not done then
     local status = api.sys.call(rule:gsub(" %-A OUTPUT ", " -D OUTPUT ", 1))
     if status == 0 then done = true
@@ -67,15 +181,36 @@ local function release(path, r, keep_config)
     if not used and fs.access(marker) then
      assert(fs.remove(marker), "cannot release Hysteria rule ownership")
     end
+    if proof and not used and marked then private_absent(marker) end
     r.released[rule] = true
     write(path, json.stringify(r))
+    dispositions[#dispositions+1] = {rule=rule, disposition=used and "shared" or (marked and "removed" or "unowned")}
    else errors[#errors+1] = "cannot remove/verify " .. rule end
   end
  end
  if #errors > 0 then error(table.concat(errors, "; "), 0) end
- if not keep_config then fs.remove(r.config) end
- if r.link then fs.remove(r.link) end
+ local released_process = proof and private_state(r, proof)
+ if proof then
+  assert(not keep_config and fs.remove(r.config), "cannot remove private Hysteria configuration")
+  private_absent(r.config)
+  private_absent(r.config .. ".new")
+  local st, errno = fs.lstat(proof.link)
+  if st then
+   assert(st.type == "lnk" and fs.realpath(proof.link) == proof.bin and
+    fs.remove(proof.link), "cannot remove private Hysteria link")
+  else assert(errno == 2, "cannot inspect private Hysteria link") end
+  private_absent(proof.link)
+ else
+  if not keep_config then fs.remove(r.config) end
+  if r.link then fs.remove(r.link) end
+ end
  assert(fs.remove(path), "cannot remove Hysteria instance record")
+ if proof then
+  private_absent(path); private_absent(path .. ".new")
+  return {config=r.config, config_md5=proof.config_md5, manager=path, link=proof.link,
+   launch_attempted=proof.attempted, pid=r.pid, birth=r.birth, process=released_process,
+   rules=dispositions, config_removed=true, link_removed=true, manager_removed=true}
+ end
 end
 local function locked(fn)
  assert(call("mkdir -p " .. quote(registry)), "cannot create Hysteria registry")
@@ -123,6 +258,16 @@ function start(var)
 			assert(var.bound_endpoint == true and var.gid ~= nil, "bound endpoint requires explicit client identity")
 		end
 		local path = registry .. "/" .. api.md5_string(var.config) .. ".json"
+		local proof
+		if var.private_release then
+			assert(var.bound_endpoint == true and var.scope == "client" and var.mode == "client" and
+				type(var.private_release) == "table", "invalid private Hysteria release request")
+			proof = {attempted=false, config_md5=var.private_release.config_md5,
+				bin=assert(fs.realpath(var.bin)), link=var.bin_dir .. "/hysteria1_" .. api.md5_string(var.config)}
+			assert(type(proof.config_md5) == "string" and #proof.config_md5 == 32 and
+				api.md5_file(var.config) == proof.config_md5, "invalid private Hysteria configuration")
+			private_absent(path); private_absent(path .. ".new"); private_absent(proof.link)
+		end
 		local previous = json.parse(read(path) or "")
 		if previous then release(path, previous, true) end
 		local r = {config=var.config, scope=var.scope, rules={}}
@@ -193,12 +338,15 @@ function start(var)
 			fs.remove(link); assert(fs.symlink(var.bin,link), "cannot link Hysteria")
 			r.link=link
 			local command=quote(link).." --no-check --log-level "..quote(var.loglevel or "warn").." -c "..quote(var.config).." "..quote(var.mode).." >"..quote(var.log or "/dev/null").." 2>&1 & echo $!"
+			if proof then proof.attempted = true end
 			if var.gid ~= nil then
 				local status, output = api.exec_call_as_gid(command, api.DIRECT_GID)
 				assert(status == 0 and output:match("^%d+$"), "cannot launch Hysteria with client GID")
 				r.pid=tonumber(output); r.gid=api.DIRECT_GID
+				if proof then proof.launched = true end
 			else r.pid=tonumber(api.sys.exec(command)) end
-			r.birth=identity(r.pid)
+			if proof then local _, birth = private_stat(r.pid); r.birth = birth
+			else r.birth=identity(r.pid) end
 			write(path,json.stringify(r))
 			local ready=false
 			for _=1,100 do
@@ -213,8 +361,9 @@ function start(var)
 			assert(alive(r), "Hysteria 1: process exited during startup")
 		end)
 		if not ok then
-            local cleaned, cleanup_error = pcall(release,path,r)
+            local cleaned, cleanup_error = pcall(release,path,r,nil,proof)
             if not cleaned then err=tostring(err).."; cleanup pending: "..tostring(cleanup_error) end
+            if proof then return {started=false, release_complete=cleaned, receipt=cleaned and cleanup_error or nil, reason=tostring(err)} end
             error(err,0)
         end
 		return true

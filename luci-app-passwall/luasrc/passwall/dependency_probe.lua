@@ -18,6 +18,11 @@ local function existing(fn, ...)
 	-- its family/options/identity algorithms or expose raw errors/credentials.
 	local reason = "dns_dep_identity"
 	if type(value) == "string" then
+		-- Strict reference reaches this existing SOCKS-sidecar check before
+		-- the probe's own check. Preserve its established isolated rejection;
+		-- missing/corrupt capabilities and all identity failures remain rc=1.
+		if value:find("sealed SOCKS port changed", 1, true) or
+			(value:find("cannot read ", 1, true) and value:match("/socks_port$")) then reject(2, "dns_dep_socks") end
 		for _, marker in ipairs({"instance belongs to another binding/generation", "listener/options unavailable",
 			"requested protocol/family unavailable", "requested protocol unavailable", "missing socket option evidence",
 			"missing V6ONLY evidence", "ss/inet socket diagnostics unavailable"}) do
@@ -50,7 +55,7 @@ end
 
 -- This checks SOCKS socket ownership only. PID/birth/executable/GID identity
 -- and all transparent/options evidence remain exclusively in bound.verify.
--- Current B3.1 listeners bind 127.0.0.1. Other SOCKS binds are explicitly
+-- B3.1 and frozen Global listeners bind 127.0.0.1. Other binds are explicitly
 -- rejected until a caller has a supported, verified local endpoint contract.
 local function socket_inode(pid, p, peer)
 	local owned, found = {}, nil
@@ -134,7 +139,7 @@ function M.check(action, snapshot, node, dir, transparent_port, preference, fami
 		need(b.snapshot == snapshot and b.endpoint.generation == snapshot:match("([^/]+)$"), 1, "dns_dep_stale_generation")
 		need(b.endpoint.node_id == node and identity.generation == b.endpoint.generation, 1, "dns_dep_identity")
 		existing(bound.owner, dir)
-		existing(bound.compatible, dir, snapshot, preference, family)
+		existing(bound.compatible, dir, snapshot, preference, family, true)
 		for _, f in ipairs(family == "dual" and {"4", "6"} or {family}) do
 			existing(bound.verify, dir, false, f, "tcp", transparent_port)
 		end
@@ -145,8 +150,17 @@ function M.check(action, snapshot, node, dir, transparent_port, preference, fami
 		need(socks_port, 2, "dns_dep_socks")
 		socks_port = port(socks_port:gsub("\n$", ""))
 		need(socks_port, 2, "dns_dep_socks")
+		local socks_identity, socks_identity_path = identity, dir .. "/bound.identity"
 		if n.type == "SS" then
-			need(fs.access(dir .. "/relay/process") and c.local_address == "127.0.0.1" and c.local_port == socks_port and c.mode ~= "udp_only", 2, "dns_dep_socks")
+			if b.ss_socks then
+				-- The strict bound verifier above has checked this subordinate
+				-- config, seal and live process against the same frozen endpoint.
+				need(b.ss_socks.socket.port == socks_port, 2, "dns_dep_socks")
+				socks_identity_path = dir .. "/socks/bound.identity"
+				socks_identity = decode(socks_identity_path)
+			else
+				need(fs.access(dir .. "/relay/process") and c.local_address == "127.0.0.1" and c.local_port == socks_port and c.mode ~= "udp_only", 2, "dns_dep_socks")
+			end
 		else
 			need(c.socks5 and c.socks5.listen == "127.0.0.1:" .. socks_port and not c.socks5.user and not c.socks5.password, 2, "dns_dep_socks")
 		end
@@ -157,11 +171,20 @@ function M.check(action, snapshot, node, dir, transparent_port, preference, fami
 			endpoint_port = b.endpoint.port, config_md5 = b.config_md5,
 			identity_md5 = api.md5_file(dir .. "/bound.identity"), state = "dep_resolved"}
 		need(type(candidate.identity_md5) == "string" and #candidate.identity_md5 == 32 and candidate.identity_md5:match("^%x+$"), 1, "dns_dep_identity")
+		if b.ss_socks then
+			candidate.socks_config_md5 = b.ss_socks.config_md5
+			candidate.socks_identity_md5 = api.md5_file(socks_identity_path)
+			need(type(candidate.socks_identity_md5) == "string" and #candidate.socks_identity_md5 == 32 and
+				candidate.socks_identity_md5:match("^%x+$"), 1, "dns_dep_identity")
+		end
 		if action == "validate" then
-			M.probe_socks(identity.pid, socks_port)
+			M.probe_socks(socks_identity.pid, socks_port)
 			existing(bound.owner, dir)
-			existing(bound.compatible, dir, snapshot, preference, family)
+			existing(bound.compatible, dir, snapshot, preference, family, true)
 			need(api.md5_file(dir .. "/bound.identity") == candidate.identity_md5, 1, "dns_dep_identity")
+			if b.ss_socks then
+				need(api.md5_file(socks_identity_path) == candidate.socks_identity_md5, 1, "dns_dep_identity")
+			end
 			candidate.state = "dep_validated"
 		end
 	end)

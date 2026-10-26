@@ -1,4 +1,212 @@
 #!/bin/sh
+# B1 failure boundaries, sourced after the existing native bound preamble.
+# All mutations and processes stay in the task-owned offline container.
+b1_rollback() {
+	uci set passwall.settings.tcp_node=ss; uci set passwall.settings.udp_node=tcp
+	uci set passwall.hy.hysteria_lazy_start=1
+	capture
+	# Keep the original publisher, including its atomic rename and withdrawal.
+	eval "$(sed -n '/^_pw_global_publish() {/,/^}/p' "$PW_BOUND_REPO/luci-app-passwall/root/usr/share/passwall/global_nodes.sh" | sed '1s/_pw_global_publish/b1_real_publish/')"
+	eval "$(sed -n '/^_pw_global_instance_ready() {/,/^}/p' "$PW_BOUND_REPO/luci-app-passwall/root/usr/share/passwall/global_nodes.sh" | sed '1s/_pw_global_instance_ready/b1_real_ready/')"
+	eval "$(sed -n '/^get_cache_var() {/,/^}/p' "$PW_BOUND_REPO/luci-app-passwall/root/usr/share/passwall/utils.sh" | sed '1s/get_cache_var/b1_real_cache/')"
+	_pw_global_publish() {
+		b1_instance=$4; b1_ready_calls=0
+		b1_real_publish "$@"
+	}
+	_pw_global_instance_ready() {
+		if [ "${b1_fault:-}" != '' ]; then
+			b1_ready_calls=$((b1_ready_calls + 1))
+			if [ "$b1_ready_calls" = 2 ]; then
+				case "$b1_fault" in
+					shared) set_cache_vars ACL_keep_tcp_node "$b1_core" ACL_keep_tcp_redir_port "$tcp" ACL_keep_tcp_instance "$1/config.json" || return 1 ;;
+				esac
+				return 1
+			fi
+		fi
+		b1_real_ready "$@"
+	}
+	get_cache_var() {
+		[ "${b1_fault:-}:$1" != unreadable:ACL_keep_tcp_instance ] || return 1
+		b1_real_cache "$@"
+	}
+	for b1_core in ss hy; do
+	uci set "passwall.settings.tcp_node=$b1_core"; capture
+	for b1_fault in shared unreadable none; do
+		# Unrelated references must survive exact-attempt rollback.
+		set_cache_vars ACL_keep_tcp_node keep ACL_keep_tcp_redir_port 19999 ACL_keep_tcp_instance "$work/keep/config.json"
+		expect=2; [ "$b1_fault" = none ] || expect=1
+		status_is "$expect" passwall_start_bound_global_nodes "$snapshot" ipv4 4
+		[ -z "$(global_config TCP)$(global_config UDP)" ] || fail b1-rollback-global-tuple
+		if [ "$b1_fault" = none ]; then
+			[ ! -d "$b1_instance" ] || fail b1-unreferenced-not-reclaimed
+			[ "$(b1_real_cache ACL_keep_tcp_instance)" = "$work/keep/config.json" ] || fail b1-other-cache-changed
+		else
+			[ -s "$b1_instance/bound.identity" ] && [ -s "$b1_instance/bound.capabilities" ] || fail b1-responsibility-lost
+			status_is 0 _pw_bound_helper owner "$b1_instance"
+			pid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$b1_instance/bound.identity")
+			kill -0 "$pid" || fail b1-referenced-process-killed
+		fi
+		echo "REJECT B1-2 $b1_core post-publish=$b1_fault rc=$expect: exact tuple withdrawn; shared/unknown ownership retained"
+		b1_fault=
+		set_cache_vars ACL_keep_tcp_node '' ACL_keep_tcp_redir_port '' ACL_keep_tcp_instance ''
+		status_is 0 passwall_stop_global_nodes
+		[ ! -d "$b1_instance" ] || fail b1-rollback-retry
+	done
+	done
+	# The scanner itself must reject bad cache shapes and actual I/O failures.
+	set_cache_vars ACL_keep_tcp_instance "$work/keep/config.json"
+	cp -p "$TMP_PATH/var" "$work/b1-cache"
+	rm "$TMP_PATH/var"; ln -s "$work/absent-cache" "$TMP_PATH/var"
+	status_is 2 _pw_global_instance_referenced "$work/keep"
+	rm "$TMP_PATH/var"; mkdir "$TMP_PATH/var"
+	status_is 2 _pw_global_instance_referenced "$work/keep"
+	rmdir "$TMP_PATH/var"; mkfifo "$TMP_PATH/var"
+	status_is 2 _pw_global_instance_referenced "$work/keep"
+	rm "$TMP_PATH/var"; printf "broken='" > "$TMP_PATH/var"
+	status_is 2 _pw_global_instance_referenced "$work/keep"
+	cp -p "$work/b1-cache" "$TMP_PATH/var"
+	# Root chmod would not deny reading. Fail the actual scanner read boundary.
+	sed() { case "$*" in *"$TMP_PATH/var") touch "$work/b1-cache-read-hit"; return 1 ;; esac; command sed "$@"; }
+	status_is 2 _pw_global_instance_referenced "$work/keep"
+	[ -e "$work/b1-cache-read-hit" ] || fail b1-cache-fault-not-hit
+	unset -f sed
+	status_is 0 _pw_global_instance_referenced "$work/keep"
+	echo 'REJECT B1-2 dangling/directory/FIFO/malformed/read-error caches; restored scanner finds reference'
+	# A private pre-publish failure never needs the unrelated reference cache.
+	_pw_bound_helper() { [ "$1" != seal ] || return 1; lua "$PW_BOUND_HELPER" "$@"; }
+	_pw_global_instance_referenced() { touch "$work/b1-unexpected-scan"; return 2; }
+	status_is 2 passwall_start_bound_global_nodes "$snapshot" ipv4 4
+	[ ! -e "$work/b1-unexpected-scan" ] || fail b1-private-scanned-cache
+	[ -z "$(find "$GLOBAL_ACL_PATH/split" -maxdepth 1 -name 'instance.*' -print)" ] || fail b1-private-leak
+	echo 'PASS B1-2 private first-seal failure safely reclaimed without consulting unrelated cache'
+}
+
+b1_stop() {
+	# Observe real processes; inject I/O errors at io.open/read, including as root.
+	lua() {
+		if [ "$1" != - ]; then command lua5.1 "$PW_BOUND_REPO/tests/bound-api.lua" "$@"; return; fi
+		if [ "${b1_io_fault:-}" = '' ]; then command lua5.1 "$@"; return; fi
+		{
+			cat <<'LUA'
+local open=io.open; local target=arg[1]
+io.open=function(path,...)
+ if path=='/proc/'..target..'/stat' then
+  local f=assert(open(os.getenv('B1_FAULT_MARKER'),'a')); f:write('hit\n'); f:close()
+  if os.getenv('B1_IO_FAULT')=='read' then return {read=function() return nil end,close=function() return true end} end
+  if os.getenv('B1_IO_FAULT')=='malformed' then return {read=function() return target..' (broken) R 0' end,close=function() return true end} end
+  return nil,'injected permission denied',13
+ end
+ return open(path,...)
+end
+LUA
+			cat
+		} | B1_IO_FAULT="$b1_io_fault" command lua5.1 "$@"
+	}
+	export B1_FAULT_MARKER="$work/b1-io-hit"
+	command sleep 120 & pid=$!
+	birth=$(get_process_start_time "$pid")
+	[ "$(_pw_global_ss_state "$pid" "$birth")" = alive ] || fail b1-alive-state
+	[ "$(_pw_global_ss_state "$pid" "$((birth + 1))")" = reused ] || fail b1-reused-state
+	status_is 0 _pw_global_ss_kill "$pid" "$((birth + 1))"
+	kill -0 "$pid" || fail b1-reused-pid-killed
+	[ "$(_pw_global_ss_state "$pid" '')" = unknown ] || fail b1-missing-birth
+	for b1_io_fault in open read malformed; do
+		rm -f "$B1_FAULT_MARKER"
+		status_is 1 _pw_global_ss_kill "$pid" "$birth"
+		[ -s "$B1_FAULT_MARKER" ] && kill -0 "$pid" || fail b1-ineffective-io-fault
+	done
+	b1_io_fault=
+	# Unknown during the TERM poll must retain ownership, even if TERM returned 0.
+	kill() { [ "$1" != -TERM ] || { b1_io_fault=open; return 0; }; command kill "$@"; }
+	status_is 1 _pw_global_ss_kill "$pid" "$birth"
+	command kill -0 "$pid" || fail b1-poll-fault-killed
+	b1_io_fault=
+	kill() { case "$1" in -TERM) return 0 ;; -KILL) b1_io_fault=read; return 0 ;; *) command kill "$@" ;; esac; }
+	status_is 1 _pw_global_ss_kill "$pid" "$birth"
+	command kill -0 "$pid" || fail b1-kill-poll-fault-killed
+	b1_io_fault=
+	# Both signals fail: same live birth after the original polling windows.
+	kill() { case "$1" in -TERM|-KILL) return 1 ;; *) command kill "$@" ;; esac; }
+	status_is 1 _pw_global_ss_kill "$pid" "$birth"
+	command kill -0 "$pid" || fail b1-failed-kill-false-exit
+	unset -f kill
+	status_is 0 _pw_global_ss_kill "$pid" "$birth"
+	wait "$pid" 2>/dev/null || :
+	[ "$(_pw_global_ss_state "$pid" "$birth")" = exited ] || fail b1-exited-state
+	echo 'PASS B1-3 real alive/exited/reused/missing-birth; REJECT root I/O and polling faults, TERM/KILL failure; retry stops owned PID'
+	python3 - "$work/b1-zombie" <<'PY' &
+import os,sys,time
+pid=os.fork()
+if not pid: os._exit(0)
+open(sys.argv[1],'w').write(str(pid))
+time.sleep(120)
+PY
+	zombie_parent=$!
+	for i in $(seq 1 100); do [ ! -s "$work/b1-zombie" ] || break; sleep .01; done
+	pid=$(cat "$work/b1-zombie"); birth=$(get_process_start_time "$pid")
+	for i in $(seq 1 100); do [ "$(_pw_global_ss_state "$pid" "$birth")" != zombie ] || break; sleep .01; done
+	[ "$(_pw_global_ss_state "$pid" "$birth")" = zombie ] || fail b1-zombie-state
+	status_is 0 _pw_global_ss_kill "$pid" "$birth"
+	command kill "$zombie_parent"; wait "$zombie_parent" 2>/dev/null || :
+	echo 'PASS B1-3 actual zombie distinguished from unreadable/live processes'
+	# The real Global and ACL stop paths must retain records on unknown state.
+	uci set passwall.settings.tcp_node=ss; uci set passwall.settings.udp_node=tcp
+	uci set passwall.a.tcp_node=ss; uci set passwall.a.udp_node=tcp
+	capture; status_is 0 passwall_start_bound_global_nodes "$snapshot" ipv4 4
+	config=$(global_config TCP); instance=${config%/*}
+	b1_io_fault=open
+	status_is 1 passwall_stop_global_nodes
+	[ -s "$instance/process" ] && [ -s "$instance/bound.identity" ] || fail b1-global-record-loss
+	command kill -0 "$(head -n 1 "$instance/process")" || fail b1-global-unknown-killed
+	b1_io_fault=; status_is 0 passwall_stop_global_nodes
+	[ ! -d "$instance" ] || fail b1-global-stop-retry
+	status_is 0 passwall_start_bound_acl_nodes "$snapshot" a ipv4 4 0 warn
+	config=$(acl_config a tcp); instance=${config%/*}
+	b1_io_fault=read
+	status_is 1 passwall_stop_acl_nodes a
+	[ -s "$instance/process" ] && [ -s "$instance/relay/process" ] && [ -s "$TMP_ACL_PATH/split-acl/release.a" ] || fail b1-acl-record-loss
+	b1_io_fault=; status_is 0 passwall_stop_acl_nodes a
+	[ ! -d "$instance" ] || fail b1-acl-stop-retry
+	echo 'PASS B1-3 Global/ACL unknown stop retains process/seal/release responsibility; restored I/O permits cleanup'
+	for fault in missing malformed; do
+		status_is 0 passwall_start_bound_global_nodes "$snapshot" ipv4 4
+		config=$(global_config TCP); instance=${config%/*}; cp -p "$instance/process" "$work/b1-process"
+		if [ "$fault" = missing ]; then rm "$instance/process"; else printf 'invalid\n' > "$instance/process"; fi
+		status_is 1 passwall_stop_global_nodes
+		[ -d "$instance" ] && command kill -0 "$(head -n 1 "$work/b1-process")" || fail b1-bad-record-cleaned
+		cp -p "$work/b1-process" "$instance/process"
+		status_is 0 passwall_stop_global_nodes
+		echo "REJECT B1-3 $fault process record retained; restore permits safe retry"
+	done
+	printf() {
+		if [ "$1" = '%s\n' ] && [ "$#" = 3 ]; then
+			command printf '%s\n' "$2" "$3" > "$work/b1-write-failed-pid"
+			command printf '%s\n' "$2"; return 1
+		fi
+		command printf "$@"
+	}
+	status_is 2 passwall_start_bound_global_nodes "$snapshot" ipv4 4
+	unset -f printf
+	{ IFS= read -r pid; IFS= read -r birth; } < "$work/b1-write-failed-pid"
+	case "$(_pw_global_ss_state "$pid" "$birth")" in exited|reused|zombie) ;; *) fail b1-write-failure-leaked ;; esac
+	echo 'REJECT B1-3 partial process write: in-memory PID/birth safely reclaimed, public rc=2'
+	_pw_bound_helper() {
+		if [ "$1" = spawn ]; then
+			pid=$(lua "$PW_BOUND_HELPER" "$@") || return 1
+			command printf '%s\n' "$pid" > "$work/b1-lost-receipt"
+			return 1
+		fi
+		lua "$PW_BOUND_HELPER" "$@"
+	}
+	status_is 1 passwall_start_bound_global_nodes "$snapshot" ipv4 4
+	instance=$PW_GLOBAL_NEW_INSTANCE; pid=$(cat "$work/b1-lost-receipt")
+	[ -d "$instance" ] && [ ! -s "$instance/process" ] && command kill -0 "$pid" || fail b1-lost-receipt-claimed-clean
+	# Only the test observer knows this PID. No production recovery is claimed.
+	birth=$(get_process_start_time "$pid"); status_is 0 _pw_global_ss_kill "$pid" "$birth"
+	case "$instance" in "$GLOBAL_ACL_PATH"/split/instance.*) rm -rf "$instance" ;; *) fail b1-cleanup-path ;; esac
+	echo 'REJECT B1-3 lost PID receipt: rc=1, responsibility directory retained; test observer cleanup only'
+}
+
 # D1-A: one explicitly selected scenario per fresh, offline native container.
 # 0=driver complete/behavior PASS, 10=driver complete/behavior FAIL; other exits
 # are infrastructure/precondition failures, never proof of a production defect.

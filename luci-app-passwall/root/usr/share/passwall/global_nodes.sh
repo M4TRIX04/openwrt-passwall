@@ -117,6 +117,14 @@ _pw_global_instance_stop() {
 	case "$core" in
 		Hysteria) lua "$HYSTERIA_RUNTIME" stop client "$instance/config.json" || return 1 ;;
 		SS)
+			# The existing owner/stop gate above checks both sealed identities.
+			# Stop the dependent listener first; any unknown result retains both records.
+			if [ -e "$instance/socks" ] || [ -L "$instance/socks" ]; then
+				[ -f "$instance/binding.json" ] || return 1
+				{ IFS= read -r pid; IFS= read -r birth; } < "$instance/socks/process" || return 1
+				_pw_global_ss_kill "$pid" "$birth" || return 1
+				pid= birth=
+			fi
 			if [ -s "$instance/process" ]; then
 				{ IFS= read -r pid; IFS= read -r birth; } < "$instance/process" || birth=
 			fi
@@ -135,7 +143,11 @@ _pw_global_instance_stop() {
 # 0=in use, 1=unreferenced, 2=cannot establish ownership safely.
 _pw_global_instance_referenced() {
 	local instance="$1" keys key value
+	[ -d "$TMP_PATH" ] && [ -r "$TMP_PATH" ] && [ -x "$TMP_PATH" ] || return 2
+	[ ! -L "$TMP_PATH/var" ] || return 2
 	[ -e "$TMP_PATH/var" ] || return 1
+	[ -f "$TMP_PATH/var" ] && [ -r "$TMP_PATH/var" ] || return 2
+	/bin/sh -n "$TMP_PATH/var" 2>/dev/null || return 2
 	keys=$(sed -n 's/^\([A-Za-z0-9_]*_instance\)=.*/\1/p' "$TMP_PATH/var") || return 2
 	for key in $keys; do
 		value=$(get_cache_var "$key") || return 2
@@ -202,6 +214,7 @@ _pw_global_ss_start() {
 	local instance="$1" log="$2" bin pid birth i
 	bin=$(first_type ss-redir) || return 1
 	[ -x "$bin" ] && ln -s "$bin" "$instance/core" || return 1
+	PW_GLOBAL_NEW_STARTED=1
 	if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then
 		pid=$(_pw_bound_helper spawn "$log" "$instance/core" -c "$instance/config.json" -v) || return 1
 	else
@@ -210,11 +223,13 @@ _pw_global_ss_start() {
 	fi
 	birth=$(get_process_start_time "$pid")
 	PW_GLOBAL_NEW_PID=$pid; PW_GLOBAL_NEW_BIRTH=$birth
-	if ! {
-		printf '%s\n' "$pid" "$birth" &&
-		printf '%s -c %s -v\n' "$(shell_quote "$instance/core")" "$(shell_quote "$instance/config.json")"
-	} > "$instance/process"; then
-		_pw_global_ss_kill "$pid" "$birth" || return 1
+	PW_GLOBAL_NEW_PROCESS="$pid
+$birth
+$(shell_quote "$instance/core") -c $(shell_quote "$instance/config.json") -v
+"
+	if ! printf '%s' "$PW_GLOBAL_NEW_PROCESS" > "$instance/process"; then
+		PW_GLOBAL_NEW_WRITE_FAILED=1
+		_pw_global_ss_kill "$pid" "$birth" || { PW_GLOBAL_PRIVATE_STOP_FAILED=1; return 1; }
 		return 1
 	fi
 	for i in $(seq 1 100); do
@@ -229,9 +244,150 @@ _pw_global_ss_start() {
 	return 1
 }
 
+# Internal TCP SOCKS only, attached to the same frozen Global SS instance.
+# Keep the existing PID/birth/command receipt and stop observer, not ln_run's
+# unrelated process registry or the live-UCI run_socks path.
+_pw_global_ss_socks_ready() {
+	local instance="$1" pid birth port
+	{ IFS= read -r pid; IFS= read -r birth; } < "$instance/socks/process" || return 1
+	port=$(cat "$instance/socks_port") || return 1
+	_pw_global_ss_alive "$pid" "$birth" && _pw_global_ss_socket "$pid" tcp "$port" 4
+}
+
+_pw_global_ss_socks_start() {
+	local instance="$1" log="$2" bin pid birth i
+	bin=$(first_type ss-local) || return 1
+	[ -x "$bin" ] && ln -s "$bin" "$instance/socks/core" || return 1
+	[ "$log" = /dev/null ] || log="$instance/socks/node.log"
+	PW_GLOBAL_NEW_SOCKS_STARTED=1
+	pid=$(_pw_bound_helper spawn "$log" "$instance/socks/core" -c "$instance/socks/config.json" -v) || return 1
+	birth=$(get_process_start_time "$pid")
+	PW_GLOBAL_NEW_SOCKS_PID=$pid; PW_GLOBAL_NEW_SOCKS_BIRTH=$birth
+	PW_GLOBAL_NEW_SOCKS_PROCESS="$pid
+$birth
+$(shell_quote "$instance/socks/core") -c $(shell_quote "$instance/socks/config.json") -v
+"
+	if ! printf '%s' "$PW_GLOBAL_NEW_SOCKS_PROCESS" > "$instance/socks/process"; then
+		PW_GLOBAL_NEW_SOCKS_WRITE_FAILED=1
+		_pw_global_ss_kill "$pid" "$birth" || { PW_GLOBAL_PRIVATE_STOP_FAILED=1; return 1; }
+		return 1
+	fi
+	for i in $(seq 1 100); do
+		_pw_global_ss_ready "$instance" && _pw_global_ss_alive "$pid" "$birth" || break
+		if _pw_global_ss_socks_ready "$instance"; then
+			sleep 0.1
+			if _pw_global_ss_ready "$instance" && _pw_global_ss_socks_ready "$instance"; then return 0; fi
+			break
+		fi
+		sleep 0.1
+	done
+	# This receipt belongs only to this private launch, before any publication.
+	_pw_global_ss_kill "$pid" "$birth" || { PW_GLOBAL_PRIVATE_STOP_FAILED=1; return 1; }
+	return 1
+}
+
+_pw_global_prepare_private() {
+	# Capture the directory created by this call before configuration/receipt
+	# preparation. This carries no process ownership or stop permission.
+	PW_GLOBAL_PRIVATE_DIRECTORY=$(_pw_bound_helper private-directory "$2" "$TMP_PATH" "$PW_BOUND_SNAPSHOT") || return 1
+	[ -n "$PW_GLOBAL_PRIVATE_DIRECTORY" ] || return 1
+	_pw_bound_prepare "$@" || return 1
+	# Held only in this creation call, before either launch or publication.
+	if ! PW_GLOBAL_PRIVATE_RECEIPT=$(_pw_bound_helper private-receipt "$2" "$TMP_PATH" "$PW_BOUND_SNAPSHOT") ||
+		[ -z "$PW_GLOBAL_PRIVATE_RECEIPT" ]; then
+		PW_GLOBAL_PRIVATE_RECEIPT_FAILED=1
+		return 1
+	fi
+}
+
+_pw_global_hysteria_private() {
+	local result status=0
+	PW_GLOBAL_NEW_STARTED=1
+	# A failed start already ran the manager's own cleanup. Do not retry it.
+	result=$(PW_BOUND_PRIVATE_CREATION="$PW_GLOBAL_PRIVATE_RECEIPT" \
+		PW_BOUND_PRIVATE_DIRECTORY="$PW_GLOBAL_PRIVATE_DIRECTORY" _pw_bound_hysteria "$@") || status=$?
+	case "$status" in
+		0) ;;
+		2)
+			[ -n "$result" ] || { PW_GLOBAL_PRIVATE_STOP_FAILED=1; return 1; }
+			PW_GLOBAL_HYSTERIA_RELEASE=$result
+			return 2
+			;;
+		*) PW_GLOBAL_PRIVATE_STOP_FAILED=1; return 1 ;;
+	esac
+	# Capture only a successful launch. A missing/unreadable manager receipt
+	# cannot authorize this caller to stop or reclaim the instance.
+	PW_GLOBAL_HYSTERIA_RECEIPT=$(_pw_bound_helper private-hysteria "$1") || return 1
+}
+
+_pw_global_private_hysteria_released() {
+	local instance="$1"
+	[ "${publish:-1}" = 0 ] && [ "$PW_GLOBAL_NEW_INSTANCE" = "$instance" ] &&
+		[ "$PW_GLOBAL_NEW_STARTED:$PW_GLOBAL_NEW_SOCKS_STARTED:$PW_GLOBAL_PRIVATE_STOP_FAILED" = 1:0:0 ] &&
+		[ -n "$PW_GLOBAL_PRIVATE_RECEIPT" ] && [ -n "$PW_GLOBAL_PRIVATE_DIRECTORY" ] &&
+		[ -n "$PW_GLOBAL_HYSTERIA_RELEASE" ] || return 1
+	_pw_bound_helper private-hysteria-released-owner "$instance" "$TMP_PATH" "$PW_GLOBAL_PRIVATE_RECEIPT" \
+		"$PW_GLOBAL_PRIVATE_DIRECTORY" "$PW_GLOBAL_HYSTERIA_RELEASE" || return 1
+	# The manager already released this call. No second stop or shared cleanup.
+	rm -rf "$instance" || return 1
+	PW_GLOBAL_NEW_INSTANCE=
+	return 0
+}
+
+_pw_global_private_rollback() {
+	local instance="$1" core
+	# publish is the creating caller's local flag. A later stop/retry cannot
+	# acquire this exception by observing a missing seal or an empty cache.
+	[ "${publish:-1}" = 0 ] && [ "$PW_GLOBAL_NEW_INSTANCE" = "$instance" ] &&
+		[ "${PW_GLOBAL_PRIVATE_STOP_FAILED:-1}" = 0 ] && [ -n "${PW_GLOBAL_PRIVATE_RECEIPT:-}" ] || return 1
+	_pw_bound_helper private-owner "$instance" "$TMP_PATH" "$PW_GLOBAL_PRIVATE_RECEIPT" \
+		"$PW_GLOBAL_NEW_STARTED" "$PW_GLOBAL_NEW_PID" "$PW_GLOBAL_NEW_BIRTH" \
+		"$PW_GLOBAL_NEW_SOCKS_STARTED" "$PW_GLOBAL_NEW_SOCKS_PID" "$PW_GLOBAL_NEW_SOCKS_BIRTH" \
+		"$PW_GLOBAL_HYSTERIA_RECEIPT" "$PW_GLOBAL_NEW_PROCESS" "$PW_GLOBAL_NEW_WRITE_FAILED" \
+		"$PW_GLOBAL_NEW_SOCKS_PROCESS" "$PW_GLOBAL_NEW_SOCKS_WRITE_FAILED" || return 1
+	core=$(sed -n '1p' "$instance/meta") || return 1
+	case "$core" in
+		SS)
+			[ "$PW_GLOBAL_NEW_SOCKS_STARTED" = 0 ] ||
+				_pw_global_ss_kill "$PW_GLOBAL_NEW_SOCKS_PID" "$PW_GLOBAL_NEW_SOCKS_BIRTH" || return 1
+			[ "$PW_GLOBAL_NEW_STARTED" = 0 ] ||
+				_pw_global_ss_kill "$PW_GLOBAL_NEW_PID" "$PW_GLOBAL_NEW_BIRTH" || return 1
+			;;
+		Hysteria)
+			[ "$PW_GLOBAL_NEW_STARTED" = 0 ] ||
+				lua "$HYSTERIA_RUNTIME" stop client "$instance/config.json" || return 1
+			;;
+		*) return 1 ;;
+	esac
+	rm -rf "$instance" || return 1
+	PW_GLOBAL_NEW_INSTANCE= PW_GLOBAL_NEW_PID= PW_GLOBAL_NEW_BIRTH=
+	return 0
+}
+
+_pw_global_private_discard() {
+	local instance="$1"
+	# Positive no-launch facts from this creation call are required in addition
+	# to the directory check. A missing receipt alone never reaches deletion.
+	[ "${publish:-1}" = 0 ] && [ "$PW_GLOBAL_NEW_INSTANCE" = "$instance" ] &&
+		[ "$PW_GLOBAL_PRIVATE_RECEIPT_FAILED" = 1 ] && [ -n "$PW_GLOBAL_PRIVATE_DIRECTORY" ] &&
+		[ "$PW_GLOBAL_NEW_STARTED:$PW_GLOBAL_NEW_SOCKS_STARTED:$PW_GLOBAL_PRIVATE_STOP_FAILED" = 0:0:0 ] &&
+		[ "$PW_GLOBAL_NEW_WRITE_FAILED:$PW_GLOBAL_NEW_SOCKS_WRITE_FAILED" = 0:0 ] &&
+		[ -z "$PW_GLOBAL_NEW_PID$PW_GLOBAL_NEW_BIRTH$PW_GLOBAL_NEW_SOCKS_PID$PW_GLOBAL_NEW_SOCKS_BIRTH$PW_GLOBAL_HYSTERIA_RECEIPT$PW_GLOBAL_NEW_PROCESS$PW_GLOBAL_NEW_SOCKS_PROCESS" ] || return 1
+	_pw_bound_helper private-discard-owner "$instance" "$TMP_PATH" "$PW_GLOBAL_PRIVATE_DIRECTORY" "$PW_BOUND_SNAPSHOT" || return 1
+	# No process stop, manager call or shared snapshot removal on this path.
+	rm -rf "$instance" || return 1
+	PW_GLOBAL_NEW_INSTANCE=
+	return 0
+}
+
 # 0=published; 2=failed attempt safely reclaimed; 1=cleanup/state unsafe.
 _pw_global_start_redir() {
-	local node="$1" proto="$2" base="$3" core port instance tcp= udp= mode log failure=0
+	local node="$1" proto="$2" base="$3" core port instance tcp= udp= socks= socks_key mode log failure=0 publish=0 refs=0
+	local PW_GLOBAL_PRIVATE_RECEIPT= PW_GLOBAL_NEW_STARTED=0 PW_GLOBAL_NEW_SOCKS_STARTED=0
+	local PW_GLOBAL_NEW_SOCKS_PID= PW_GLOBAL_NEW_SOCKS_BIRTH= PW_GLOBAL_HYSTERIA_RECEIPT= PW_GLOBAL_PRIVATE_STOP_FAILED=0
+	local PW_GLOBAL_NEW_PROCESS= PW_GLOBAL_NEW_WRITE_FAILED=0 PW_GLOBAL_NEW_SOCKS_PROCESS= PW_GLOBAL_NEW_SOCKS_WRITE_FAILED=0
+	local PW_GLOBAL_PRIVATE_DIRECTORY= PW_GLOBAL_PRIVATE_RECEIPT_FAILED=0
+	local PW_GLOBAL_HYSTERIA_RELEASE=
 	PW_GLOBAL_NEW_INSTANCE= PW_GLOBAL_NEW_PID= PW_GLOBAL_NEW_BIRTH=
 	case "$node" in ''|*[!a-zA-Z0-9_-]*) echolog 'Split global: invalid node ID.'; return 2 ;; esac
 	if ! _pw_split_node_supported "$node"; then
@@ -249,6 +405,16 @@ _pw_global_start_redir() {
 	[ "$port" -gt 0 ] && [ "$port" -le 65535 ] || return 2
 	[ "$proto" = UDP ] || tcp=$port
 	[ "$proto" = TCP ] || udp=$port
+	# Only new frozen TCP-capable instances get an internal loopback SOCKS
+	# listener. No production GLOBAL_SOCKS_server or UDP TCP capability is published.
+	if [ -n "${PW_BOUND_SNAPSHOT:-}" ] && [ -n "$tcp" ]; then
+		[ "$core" != SS ] || { [ -x "$(first_type ss-local)" ] || return 2; }
+		socks=$(get_new_port 1070 tcp) || return 2
+		case "$socks" in ''|*[!0-9]*) return 2 ;; esac
+		if [ "$socks" = "$port" ]; then socks=$(get_new_port "$((socks + 1))" tcp) || return 2; fi
+		case "$socks" in ''|*[!0-9]*) return 2 ;; esac
+		[ "$socks" -gt 0 ] && [ "$socks" -le 65535 ] && [ "$socks" != "$port" ] || return 2
+	fi
 	mkdir -p "$GLOBAL_ACL_PATH/split" || return 1
 	instance=$(mktemp -d "$GLOBAL_ACL_PATH/split/instance.XXXXXX") || return 1
 	PW_GLOBAL_NEW_INSTANCE=$instance
@@ -260,16 +426,27 @@ _pw_global_start_redir() {
 	[ "$(config_n_get @global[0] log_node 1)" != 1 ] || log="$instance/node.log"
 	json_init
 	json_add_string node "$node"
+	if [ -n "$socks" ]; then
+		printf '%s\n' "$socks" > "$instance/socks_port" || return 1
+		socks_key=socks_tcp_socket; [ "$core" != SS ] || socks_key=ss_socks_tcp_socket
+		json_add_object "$socks_key"
+		json_add_string address 127.0.0.1
+		json_add_string protocol tcp
+		json_add_string family 4
+		json_add_int port "$socks"
+		json_close_object
+	fi
 	case "$core" in
 		SS)
 			json_add_string local_addr 0.0.0.0
 			json_add_string local_port "$port"
 			json_add_string mode "$mode"
 			[ -z "$tcp" ] || [ "$TCP_PROXY_WAY" != tproxy ] || json_add_string tcp_tproxy true
-			if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then _pw_bound_prepare "$node" "$instance" "$(json_dump)"
+			if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then _pw_global_prepare_private "$node" "$instance" "$(json_dump)"
 			else gen_ss_config "$(json_dump)" "$instance/config.json"; fi && _pw_global_ss_start "$instance" "$log" &&
+				{ [ -z "$socks" ] || _pw_global_ss_socks_start "$instance" "$log"; } &&
 				{ [ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_seal "$instance"; } &&
-				_pw_global_publish "$node" "$tcp" "$udp" "$instance" && return 0
+				{ publish=1; _pw_global_publish "$node" "$tcp" "$udp" "$instance"; } && return 0
 			failure=$?
 			;;
 		Hysteria)
@@ -277,18 +454,37 @@ _pw_global_start_redir() {
 			[ -z "$udp" ] || json_add_string local_udp_redir_port "$udp"
 			json_add_string tcp_proxy_way "$TCP_PROXY_WAY"
 			json_add_string proxy_ipv6 "${PROXY_IPV6:-0}"
+			if [ -n "$socks" ]; then
+				json_add_string local_socks_address 127.0.0.1
+				json_add_string local_socks_port "$socks"
+			fi
 			if [ -n "${PW_BOUND_SNAPSHOT:-}" ]; then
-				_pw_bound_prepare "$node" "$instance" "$(json_dump)" && _pw_bound_hysteria "$instance" "$log" "$(config_n_get @global[0] loglevel warn)"
+				_pw_global_prepare_private "$node" "$instance" "$(json_dump)" && _pw_global_hysteria_private "$instance" "$log" "$(config_n_get @global[0] loglevel warn)"
 			else gen_hysteria_config "$(json_dump)" "$instance/config.json" &&
 				start_hysteria "$instance/config.json" "$log" "$(config_n_get @global[0] loglevel warn)"; fi &&
 				{ [ -z "${PW_BOUND_SNAPSHOT:-}" ] || _pw_bound_seal "$instance"; } &&
-				_pw_global_publish "$node" "$tcp" "$udp" "$instance" && return 0
+				{ publish=1; _pw_global_publish "$node" "$tcp" "$udp" "$instance"; } && return 0
 			failure=$?
 			;;
 	esac
 	# Publication succeeded but its subsequent readiness check failed, and the
 	# published tuple could not be withdrawn. Retain ownership records for retry.
 	[ "$failure" != 3 ] || { echolog "Split global unpublish pending: $instance"; return 1; }
+	# A private attempt has never exposed its unique directory. Once publish
+	# was entered, only a trusted no-reference result permits rollback killing.
+	if [ "$publish" = 1 ]; then
+		_pw_global_instance_referenced "$instance" || refs=$?
+		[ "$refs" = 1 ] || { echolog "Split global rollback references pending: $instance"; return 1; }
+	elif [ -n "${PW_BOUND_SNAPSHOT:-}" ] && [ "$PW_GLOBAL_PRIVATE_RECEIPT_FAILED" = 1 ]; then
+		_pw_global_private_discard "$instance" || { echolog "Split global pre-launch discard pending: $instance"; return 1; }
+		return 2
+	elif [ -n "${PW_BOUND_SNAPSHOT:-}" ] && [ -n "$PW_GLOBAL_HYSTERIA_RELEASE" ]; then
+		_pw_global_private_hysteria_released "$instance" || { echolog "Split global Hysteria release pending: $instance"; return 1; }
+		return 2
+	elif [ -n "${PW_BOUND_SNAPSHOT:-}" ] && [ -n "$PW_GLOBAL_PRIVATE_RECEIPT" ]; then
+		_pw_global_private_rollback "$instance" || { echolog "Split global private rollback pending: $instance"; return 1; }
+		return 2
+	fi
 	echolog "Split global $node/$proto failed; reclaiming only $instance."
 	_pw_global_instance_stop "$instance" || { echolog "Split global rollback pending: $instance"; return 1; }
 	return 2

@@ -18,9 +18,19 @@ uci set passwall.a.dns_cache=1
 # existing lazy-start option instead of inventing a server/data-plane fixture.
 uci set passwall.hy.hysteria_lazy_start=1
 
+# Extend the preamble's fixed-value JSON fixture for F1's nested declaration.
+json_init() { request=; json_separator=; }
+json_add_string() { request="$request$json_separator\"$1\":\"$2\""; json_separator=,; }
+json_add_int() { request="$request$json_separator\"$1\":$2"; json_separator=,; }
+json_add_object() { request="$request$json_separator\"$1\":{"; json_separator=; }
+json_close_object() { request="$request}"; json_separator=,; }
+
 # Production adapters must not write persistent files or invoke lifecycle APIs.
 # Snapshot freshness uses its existing transient check file and removes it.
-manifest() { find "$TMP_PATH" -type f -exec md5sum '{}' \; | sort; }
+# A live proxy appends its own connection log while a probe negotiates; that log
+# is operational output, not a frozen record. Exclude exactly that file so the
+# manifest still covers every config, binding, identity and capability record.
+manifest() { find "$TMP_PATH" -type f ! -path '*/socks/node.log' -exec md5sum '{}' \; | sort; }
 probe() {
 	local expect=$1 reason=$2 before after; shift 2
 	before=$(manifest)
@@ -45,13 +55,16 @@ local d=require"cjson".decode(io.read"*a");assert(d.state==nil and d.reason==os.
 validate() { passwall_validate_dns_dependency "$snapshot" "$@"; }
 resolve() { passwall_resolve_dns_dependency "$snapshot" "$@"; }
 assert_record() {
-	printf '%s' "$PW_DNS_DEP_JSON" | EXPECT_STATE="$1" EXPECT_NODE="$2" command lua5.1 -e '
+	printf '%s' "$PW_DNS_DEP_JSON" | EXPECT_STATE="$1" EXPECT_NODE="$2" EXPECT_SOURCE="${3:-acl}" command lua5.1 -e '
 local j=require"cjson";local d=j.decode(io.read"*a")
 assert(d.state==os.getenv("EXPECT_STATE") and d.node_id==os.getenv("EXPECT_NODE"));assert(not d.helper_port)
 assert(not d.password and not d.original_node and not d.generator_node)
 assert(d.reason==nil)
 assert(d.socks_addr=="127.0.0.1" and d.socks_port>0)
-assert(d.remote_dns=="[2001:db8:0:0:0:0:0:53]#5353" and d.dns_cache==1)
+if os.getenv("EXPECT_SOURCE")=="global" then
+ assert(d.remote_dns=="1.1.1.1#5353" and d.dns_cache==0)
+else assert(d.remote_dns=="[2001:db8:0:0:0:0:0:53]#5353" and d.dns_cache==1) end
+assert(d.state~="dep_ready" and not d.helper_pid and not d.helper_identity)
 '
 }
 # Independent SS ACL, real ss-local + ipt2socks, frozen no-auth negotiation.
@@ -63,10 +76,59 @@ probe 0 '' validate acl a ipv4 4
 assert_record dep_validated ss
 echo 'PASS ACL SS TCP: dep_resolved/dep_validated, real SOCKS5 greeting + exact owned listener/connection'
 
-# Global has no native SOCKS. Never grow a listener to satisfy the dependency.
+# B1-1: the live core and identity remain valid while ONLY the seal is damaged.
+instance=$(acl_config a tcp); instance=${instance%/*}
+cp -p "$instance/bound.capabilities" "$work/b1-caps"
+for fault in missing invalid empty missing_family extra_field; do
+	python3 - "$instance/bound.capabilities" "$fault" <<'PY'
+import json,os,sys
+p,fault=sys.argv[1:];c=json.load(open(p))
+if fault=='missing': os.remove(p)
+elif fault=='invalid': open(p,'w').write('invalid JSON')
+else:
+ if fault=='empty': c={}
+ if fault=='missing_family': del c['tcp']['4']
+ if fault=='extra_field': c['undeclared']={'4':True}
+ json.dump(c,open(p,'w'))
+PY
+	probe 1 dns_dep_identity resolve acl a ipv4 4
+	probe 1 dns_dep_identity validate acl a ipv4 4
+	cp -p "$work/b1-caps" "$instance/bound.capabilities"
+	probe 0 '' validate acl a ipv4 4
+	echo "REJECT B1-1 seal=$fault: rc=1 dns_dep_identity, no public state/writes; restored seal validates"
+done
+cat > "$work/b1-negotiation-fault.lua" <<'LUA'
+local api=require('luci.passwall.api')
+local probe=dofile(os.getenv('PW_BOUND_REPO')..'/luci-app-passwall/luasrc/passwall/dependency_probe.lua')
+local greeting=probe.probe_socks
+probe.probe_socks=function(pid,p)
+ greeting(pid,p)
+ assert(api.fs.writefile(arg[4]..'/bound.capabilities','{}')==2)
+end
+local rc,reason,candidate=probe.check(unpack(arg))
+assert(rc==1 and reason=='dns_dep_identity' and candidate and not candidate.state)
+print(reason);print('');print(api.jsonc.stringify(candidate));os.exit(rc)
+LUA
+original_helper=$PW_DEPENDENCY_HELPER
+PW_DEPENDENCY_HELPER="$work/b1-negotiation-fault.lua"
+status_is 1 validate acl a ipv4 4
+[ "$PW_DNS_DEP_REASON" = dns_dep_identity ] && [ -z "$PW_DNS_DEP_STATE" ] || fail b1-post-greeting-state
+printf '%s' "$PW_DNS_DEP_JSON" | command lua5.1 -e 'local d=require"cjson".decode(io.read"*a");assert(d.state==nil and d.reason=="dns_dep_identity")'
+PW_DEPENDENCY_HELPER=$original_helper
+cp -p "$work/b1-caps" "$instance/bound.capabilities"
+probe 0 '' validate acl a ipv4 4
+echo 'REJECT B1-1 seal changed AFTER real greeting: strict post-check clears candidate state; retry succeeds'
+
+# F1 supplies frozen Global SOCKS before a read-only dependency query.
 status_is 0 passwall_start_bound_global_nodes "$snapshot" ipv4 4
-probe 2 dns_dep_socks validate global GLOBAL ipv4 4
-echo 'REJECT global SS native SOCKS absent: rc=2 dns_dep_socks'
+probe 0 '' resolve global GLOBAL ipv4 4
+assert_record dep_resolved ss global
+probe 0 '' validate global GLOBAL ipv4 4
+assert_record dep_validated ss global
+printf '%s' "$PW_DNS_DEP_JSON" | command lua5.1 -e '
+local d=require"cjson".decode(io.read"*a")
+assert(d.socks_config_md5 and #d.socks_config_md5==32 and d.socks_identity_md5 and #d.socks_identity_md5==32)'
+echo 'PASS Global SS auxiliary SOCKS: frozen candidate + owned method negotiation; no DNS helper/dep_ready'
 
 # Inherited ACL must not even read its ignored selectors (boundary probe).
 status_is 0 passwall_stop_acl_nodes a
@@ -81,10 +143,11 @@ _pw_snapshot_option() {
 	case "$2:$3" in a:tcp_node|a:udp_node) echo forbidden-selector-read >> "$work/forbidden"; return 1 ;; esac
 	_dep_original_option "$@"
 }
-probe 2 dns_dep_socks validate acl a ipv4 4
+probe 0 '' validate acl a ipv4 4
+assert_record dep_validated ss global
 [ ! -e "$work/forbidden" ] || fail inherited-selector-read
 eval "$(sed -n '/^_pw_snapshot_option() {/,/^}/p' "$PW_BOUND_REPO/luci-app-passwall/root/usr/share/passwall/runtime_snapshot.sh")"
-echo 'REJECT inherited global SOCKS absent, ignored ACL selectors never read'
+echo 'PASS inherited frozen Global SOCKS candidate; ignored ACL selectors never read; no helper/dep_ready'
 status_is 0 passwall_stop_acl_nodes a
 status_is 0 passwall_stop_global_nodes
 # A real failed global TCP start leaves a ready UDP instance. Inheritance must
@@ -212,11 +275,15 @@ cp "$work/identity.saved" "$instance/bound.identity"
 cp "$instance/socks_port" "$work/socks.saved"
 echo 1 > "$instance/socks_port"
 probe 2 dns_dep_socks validate acl a ipv4 4
+rm "$instance/socks_port"
+probe 2 dns_dep_socks validate acl a ipv4 4
+printf 'invalid\n' > "$instance/socks_port"
+probe 2 dns_dep_socks validate acl a ipv4 4
 cp "$work/socks.saved" "$instance/socks_port"
 mv "$instance/bound.identity" "$work/identity.absent"
 probe 1 dns_dep_unbound_instance validate acl a ipv4 4
 mv "$work/identity.absent" "$instance/bound.identity"
-echo 'REJECT stale live input/new generation/wrong birth/tampered SOCKS port; runtime unchanged by probes'
+echo 'REJECT stale live input/new generation/wrong birth/tampered/missing/malformed SOCKS port; runtime unchanged by probes'
 
 # Malformed cache and absent cache differ. UDP cache is never a fallback.
 saved_port=$(get_cache_var ACL_a_tcp_redir_port)
@@ -306,12 +373,15 @@ for transport in udp wechat-video faketcp; do
 	assert_record dep_validated hy
 	echo "PASS Hysteria $transport method negotiation/identity only; outer connection NOT verified"
 	status_is 0 passwall_stop_acl_nodes a
-	# Global H1 deliberately still lacks native SOCKS; do not extend it.
+	# F1 Global H1 binds SOCKS to the same frozen primary identity.
 	uci set passwall.settings.tcp_node=hy
 	capture; status_is 0 passwall_start_bound_global_nodes "$snapshot" ipv4 4
-	probe 2 dns_dep_socks validate global GLOBAL ipv4 4
+	probe 0 '' resolve global GLOBAL ipv4 4
+	assert_record dep_resolved hy global
+	probe 0 '' validate global GLOBAL ipv4 4
+	assert_record dep_validated hy global
 	status_is 0 passwall_stop_global_nodes
-	echo "REJECT global Hysteria $transport native SOCKS absent: rc=2 dns_dep_socks"
+	echo "PASS Global Hysteria $transport frozen SOCKS candidate/method only; no outer/DNS/helper/dep_ready"
 done
 
 # Both families and dual transparent TCP options use unchanged B3.3-2 verifier.
@@ -325,5 +395,32 @@ for core in ss hy; do
 		status_is 0 passwall_stop_acl_nodes a
 	done
 done
+# Retain the explicit A-format ACL fixture alongside F1 Global coverage.
+TCP_PROXY_WAY=redirect
+uci set passwall.a.tcp_node=hy; uci set passwall.a.udp_node=tcp; capture
+cat > "$work/b1-declared-prepare.lua" <<'LUA'
+local api=require('luci.passwall.api');local p=assert(api.jsonc.parse(arg[6]))
+p.socks_tcp_socket={address='127.0.0.1',protocol='tcp',family='4',port=tonumber(p.local_socks_port)}
+require('luci.passwall.runtime_binding').prepare(arg[1],arg[2],arg[3],arg[4],arg[5],api.jsonc.stringify(p))
+LUA
+_pw_bound_helper() {
+	if [ "$1" = prepare ]; then shift; lua "$work/b1-declared-prepare.lua" "$@"
+	else lua "$PW_BOUND_HELPER" "$@"; fi
+}
+status_is 0 passwall_start_bound_acl_nodes "$snapshot" a ipv4 4 0 warn
+probe 0 '' resolve acl a ipv4 4
+probe 0 '' validate acl a ipv4 4
+instance=$(acl_config a tcp); instance=${instance%/*}
+cp -p "$instance/bound.capabilities" "$work/b1-declared-caps"
+python3 - "$instance/bound.capabilities" <<'PY'
+import json,sys
+p=sys.argv[1];c=json.load(open(p));assert c.pop('socks_tcp_socket')=={'4':True};json.dump(c,open(p,'w'))
+PY
+probe 1 dns_dep_identity resolve acl a ipv4 4
+probe 1 dns_dep_identity validate acl a ipv4 4
+cp -p "$work/b1-declared-caps" "$instance/bound.capabilities"
+probe 0 '' validate acl a ipv4 4
+status_is 0 passwall_stop_acl_nodes a
+echo 'PASS B1-1 A-format ACL fixture: strict resolve/validate; legacy ACL and F1 Global candidates covered'
 echo 'SKIP helper identity/outer connection/DNS/dnsmasq L1-L3: outside B3.3-3B; no dep_ready'
 echo 'PASS read-only probes: per-call runtime manifest unchanged; no helper ports/cache/instance writes'

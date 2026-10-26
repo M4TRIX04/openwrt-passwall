@@ -8,7 +8,7 @@ for(const p of ['app.sh','nftables.sh','iptables.sh'])assert(!/bound_nodes|runti
 let script=read('tests/shell-bound-nodes.sh').replace('# PRODUCTION_HELPERS',()=>helpers);
 const b1=process.env.PASSWALL_BOUND_B1;
 if(b1){
- assert(['empty_birth','stop_owner'].includes(b1),'unknown B1 group');
+ assert(['rollback','stop','empty_birth','stop_owner'].includes(b1),'unknown B1 group');
  let argument='';
  if(b1==='empty_birth'){
   const scenario=process.env.PASSWALL_BOUND_B1_CASE;

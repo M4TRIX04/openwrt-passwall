@@ -8,12 +8,22 @@
 . /usr/share/libubox/jshn.sh
 
 . /usr/share/passwall/utils.sh
+# B3.3-3C stop adapter. Definitions only: loading it starts nothing, creates no
+# record and touches no helper. The ACL failure paths and stop() below use it to
+# stop a scope's helper before that scope's runtime directory is removed.
+. /usr/share/passwall/global_nodes.sh
+. /usr/share/passwall/dns_helper.sh
 GLOBAL_ACL_PATH=${TMP_ACL_PATH}/default
 LUA_UTIL_PATH=/usr/lib/lua/luci/passwall
 UTIL_SS=$LUA_UTIL_PATH/util_shadowsocks.lua
 UTIL_NAIVE=$LUA_UTIL_PATH/util_naiveproxy.lua
 UTIL_HYSTERIA=$LUA_UTIL_PATH/util_hysteria.lua
 HYSTERIA_RUNTIME=$LUA_UTIL_PATH/hysteria_runtime.lua
+# The DNS helper adapter runs this Lua probe for every identity check. An
+# explicit caller value wins; otherwise use the installed module path. A
+# missing or broken probe is never substituted here, so the identity check
+# stays fail-closed instead of guessing another location.
+PW_DNS_HELPER_PROBE=${PW_DNS_HELPER_PROBE:-$LUA_UTIL_PATH/dns_helper_probe.lua}
 
 check_run_environment() {
 	local prefer_nft=$(config_n_get @global_forwarding[0] prefer_nft 1)
@@ -181,13 +191,49 @@ check_dns_config() {
 	return 1
 }
 
+# Stop the DNS helper owned by exactly one scope, before that scope's runtime
+# directory is removed. Scope-local and idempotent: no record means nothing is
+# owned here, and the adapter never claims a process by name or port. Returns
+# non-zero only when a recorded helper could not be confirmed stopped, in which
+# case the caller must keep the record instead of deleting it.
+stop_scope_dns_helper() {
+	command -v passwall_stop_dns_helper >/dev/null 2>&1 || return 0
+	local scope_dir
+	# A scope name the adapter cannot represent never owns a record, so it must
+	# not turn an ordinary ACL cleanup into a failure.
+	case "${1:-}" in
+		global) scope_dir=${TMP_ACL_PATH:-}/default ;;
+		acl)
+			case "${2:-}" in ''|*[!A-Za-z0-9_]*) return 0 ;; esac
+			scope_dir=${TMP_ACL_PATH:-}/$2
+			;;
+		*) return 0 ;;
+	esac
+	# Nothing owned: without a runtime root, or without this scope's own
+	# directory, no record exists that could authorize a stop. This keeps a
+	# cold stop/restart (empty /tmp, never started) successful, exactly like a
+	# directory that exists but holds no record. An existing directory is always
+	# handed to the adapter, which decides by identity alone.
+	[ -n "${TMP_ACL_PATH:-}" ] && [ -d "$TMP_ACL_PATH" ] || return 0
+	[ -e "$scope_dir" ] || [ -L "$scope_dir" ] || return 0
+	passwall_stop_dns_helper "" "$1" "${2:-}"
+}
+
 fail_acl() {
 	local failed_sid="$1" key cleanup_status=0
 	for key in node redir_port dns_port default fakedns; do
 		del_cache_var "ACL_${failed_sid}_${key}" || cleanup_status=1
 	done
 	set_cache_var "ACL_${failed_sid}_failed" 1 || cleanup_status=1
-	rm -rf "${TMP_ACL_PATH:?}/${failed_sid}" || cleanup_status=1
+	# Contract 5.2 item 5: never drop the identity record before the process is
+	# confirmed stopped. An unconfirmed stop keeps this ACL's records and fails
+	# the cleanup instead of deleting them.
+	if stop_scope_dns_helper acl "$failed_sid"; then
+		rm -rf "${TMP_ACL_PATH:?}/${failed_sid}" || cleanup_status=1
+	else
+		cleanup_status=1
+		echolog "ACL $failed_sid: DNS helper stop unconfirmed; runtime records retained."
+	fi
 	echolog "ACL $failed_sid rejected: $2"
 	[ "$cleanup_status" = 0 ] || echolog "ACL $failed_sid cache cleanup failed; firewall initialization must stop."
 	return "$cleanup_status"
@@ -221,7 +267,11 @@ fail_ss_acl() {
 		rm -f "$TMP_PATH/$failed_config" "$TMP_PATH/${failed_config}.error"
 	fi
 	set_cache_var "ACL_${failed_sid}_failed" 1
-	rm -rf "${TMP_ACL_PATH:?}/${failed_sid}"
+	if stop_scope_dns_helper acl "$failed_sid"; then
+		rm -rf "${TMP_ACL_PATH:?}/${failed_sid}"
+	else
+		echolog "ACL ${failed_sid}: DNS helper stop unconfirmed; runtime records retained."
+	fi
 	echolog "ACL ${failed_sid}: SS node ${failed_node} rejected; skipping this ACL."
 }
 
@@ -270,7 +320,12 @@ fail_hysteria_acl() {
 	fi
 	for key in node redir_port dns_port default fakedns; do del_cache_var "ACL_${1}_${key}"; done
 	set_cache_var "ACL_${1}_failed" 1
-	rm -rf "${TMP_ACL_PATH:?}/$1"
+	if stop_scope_dns_helper acl "$1"; then
+		rm -rf "${TMP_ACL_PATH:?}/$1"
+	else
+		cleanup_status=1
+		echolog "ACL $1: DNS helper stop unconfirmed; runtime records retained."
+	fi
 	echolog "ACL $1: Hysteria 1 node $2 failed; skipping this ACL."
 	return "$cleanup_status"
 }
@@ -1389,7 +1444,20 @@ start() {
 }
 
 stop() {
-	local hysteria_cleanup_status=0
+	local hysteria_cleanup_status=0 dns_helper_cleanup_status=0 acl_dir acl_sid
+	# Contract 5.2 item 4: stop every scope's DNS helper before the instances it
+	# depends on and the scope directories are released. Scope-local and
+	# idempotent, so a stop with no helper records changes nothing here.
+	stop_scope_dns_helper global || dns_helper_cleanup_status=1
+	if [ -n "${TMP_ACL_PATH:-}" ] && [ -d "$TMP_ACL_PATH" ]; then
+		for acl_dir in "$TMP_ACL_PATH"/*; do
+			[ -d "$acl_dir" ] && [ ! -L "$acl_dir" ] || continue
+			acl_sid=${acl_dir##*/}
+			case "$acl_sid" in default|*[!A-Za-z0-9_]*) continue ;; esac
+			stop_scope_dns_helper acl "$acl_sid" || dns_helper_cleanup_status=1
+		done
+	fi
+	[ "$dns_helper_cleanup_status" = 0 ] || echolog "DNS helper cleanup pending; runtime records retained."
 	[ ! -f "$HYSTERIA_RUNTIME" ] || lua "$HYSTERIA_RUNTIME" stop client || hysteria_cleanup_status=1
 	[ "$hysteria_cleanup_status" = 0 ] || echolog "Hysteria cleanup pending; retry stop after resolving the error."
 	clean_log
@@ -1429,8 +1497,15 @@ stop() {
 		[ -n "${bak_bridge_nf_ipt}" ] && sysctl -w net.bridge.bridge-nf-call-iptables=${bak_bridge_nf_ipt} >/dev/null 2>&1
 		[ -n "${bak_bridge_nf_ip6t}" ] && sysctl -w net.bridge.bridge-nf-call-ip6tables=${bak_bridge_nf_ip6t} >/dev/null 2>&1
 	}
-	rm -rf $TMP_PATH
+	# Removing the runtime tree would also delete any identity record a helper
+	# still needs to be stopped later, so it is skipped while one is unconfirmed.
+	if [ "$dns_helper_cleanup_status" = 0 ]; then
+		rm -rf $TMP_PATH
+	else
+		echolog "Runtime cache kept: an unstopped DNS helper still needs its records."
+	fi
 	echolog "清空并关闭相关程序和缓存完成。"
+	[ "$dns_helper_cleanup_status" = 0 ] || hysteria_cleanup_status=1
 	exit "$hysteria_cleanup_status"
 }
 

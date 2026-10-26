@@ -7,6 +7,14 @@
 --   dns_helper.sh's fresh 3B checks; standalone observation cannot replace them.
 -- check CANDIDATE_JSON PID BIRTH DNS2SOCKS_ABSOLUTE_PATH PORT OBSERVATION_JSON:
 --   repeats observation and rejects any identity/listener/binding change.
+-- bind CANDIDATE_JSON: emit the frozen scope binding as key=value lines so the
+--   shell adapter never re-parses JSON. Values are candidate-validated.
+-- identity PID BIRTH DNS2SOCKS_ABSOLUTE_PATH CMDLINE_MD5: re-verify an existing
+--   helper against a stored command-line digest without a candidate. Read-only;
+--   a failure means the caller must not signal that PID.
+-- outbound CANDIDATE_JSON PID BIRTH: require the helper to hold an established
+--   TCP connection to the candidate's SOCKS endpoint. Helper-to-SOCKS ownership
+--   evidence only; never a dep_ready proof and never a substitute for L3.
 local api = require "luci.passwall.api"
 local fs, json = api.fs, api.jsonc
 local M = {}
@@ -48,7 +56,7 @@ function M.candidate(old, fresh)
 	return c
 end
 
-local function identity(pid, birth, bin, command)
+local function identity(pid, birth, bin, command, cmdline_md5)
 	need(type(pid) == "string" and pid:match("^%d+$") and tonumber(pid) > 0)
 	need(type(birth) == "string" and birth:match("^%d+$"))
 	local proc = "/proc/" .. pid
@@ -63,7 +71,8 @@ local function identity(pid, birth, bin, command)
 	local executable, expected = need(fs.stat(proc .. "/exe")), need(fs.stat(bin))
 	need(executable.type == "reg" and type(executable.dev) == "number" and type(executable.ino) == "number" and
 		executable.dev == expected.dev and executable.ino == expected.ino)
-	need(read(proc .. "/cmdline") == command)
+	-- A stored record has no argv text, so it is compared through its digest.
+	if command ~= nil then need(read(proc .. "/cmdline") == command) end
 	local tasks = 0
 	for task in need(fs.dir(proc .. "/task")) do
 		tasks = tasks + 1
@@ -75,9 +84,11 @@ local function identity(pid, birth, bin, command)
 	need(tasks > 0)
 	local md5 = digest(api.md5_file(proc .. "/exe"))
 	need(md5 == digest(api.md5_file(bin)))
+	local cmdline = digest(api.md5_file(proc .. "/cmdline"))
+	if cmdline_md5 ~= nil then need(cmdline == digest(cmdline_md5)) end
 	return {pid = pid, birth = birth, executable = bin, executable_md5 = md5,
 		executable_dev = executable.dev, executable_ino = executable.ino,
-		cmdline_md5 = digest(api.md5_file(proc .. "/cmdline")), gid = api.DIRECT_GID,
+		cmdline_md5 = cmdline, gid = api.DIRECT_GID,
 		network_namespace = namespace}
 end
 local function listener(pid, p)
@@ -122,14 +133,75 @@ function M.check(value, pid, birth, bin, listen_port, expected)
 	need(equal(observation, need(json.parse(expected))))
 	return observation
 end
+
+-- Key=value form of the frozen candidate so the shell adapter never parses
+-- JSON. Only candidate-validated fields are emitted, in a stable order.
+function M.bind(value)
+	local c = candidate(value)
+	return table.concat({
+		"scope=" .. c.scope,
+		"generation=" .. c.generation,
+		"instance_dir=" .. c.instance_dir,
+		"socks_addr=" .. c.socks_addr,
+		"socks_port=" .. string.format("%d", c.socks_port),
+		"remote_dns=" .. c.remote_dns,
+		"dns_cache=" .. string.format("%d", c.dns_cache),
+		"identity_md5=" .. c.identity_md5,
+		"config_md5=" .. c.config_md5,
+	}, "\n")
+end
+
+function M.recheck(pid, birth, bin, cmdline_md5)
+	need(type(bin) == "string" and bin:sub(1, 1) == "/" and fs.realpath(bin) == bin)
+	return identity(pid, birth, bin, nil, cmdline_md5)
+end
+
+-- Sockets of one PID whose fd carries the direct GID. The GID requirement keeps
+-- this from attributing another process's socket to the helper.
+local function owned_sockets(pid)
+	local owned = {}
+	for fd in need(fs.dir("/proc/" .. pid .. "/fd")) do
+		local path = "/proc/" .. pid .. "/fd/" .. fd
+		local inode = (fs.readlink(path) or ""):match("^socket:%[(%d+)%]$")
+		local st = inode and fs.stat(path)
+		if st and st.gid == api.DIRECT_GID then owned[inode] = true end
+	end
+	return owned
+end
+
+function M.outbound(value, pid, birth)
+	local c = candidate(value)
+	need(type(pid) == "string" and pid:match("^%d+$") and tonumber(pid) > 0)
+	need(type(birth) == "string" and birth:match("^%d+$"))
+	-- Never attribute sockets to a reused PID: the birth must still match.
+	local actual, rest = read("/proc/" .. pid .. "/stat"):match("^(%d+) .*%) (.*)$")
+	local fields = {}; for v in (rest or ""):gmatch("%S+") do fields[#fields + 1] = v end
+	need(actual == pid and fields[1] and fields[1] ~= "Z" and fields[20] == birth)
+	local sockets, seen, count = owned_sockets(pid), {}, 0
+	for row in read("/proc/net/tcp"):gmatch("[^\n]+") do
+		local f = {}; for word in row:gmatch("%S+") do f[#f + 1] = word end
+		local address, port_number = (f[3] or ""):match("^(%x+):(%x+)$")
+		if address and (address == "0100007F" or address == "7F000001") and
+			tonumber(port_number, 16) == c.socks_port and f[4] == "01" and
+			sockets[f[10]] and not seen[f[10]] then
+			seen[f[10]] = true; count = count + 1
+		end
+	end
+	need(count > 0)
+	return {scope = c.scope, generation = c.generation, socks_addr = c.socks_addr,
+		socks_port = c.socks_port, connections = count}
+end
 if arg and arg[0] and arg[0]:match("dns_helper_probe%.lua$") then
-	local ok, result = pcall(function()
+	local ok, result, plain = pcall(function()
 		if arg[1] == "candidate" and #arg == 3 then return M.candidate(arg[2], arg[3]) end
+		if arg[1] == "bind" and #arg == 3 then return M.bind(arg[2]), true end
 		if arg[1] == "observe" and #arg == 6 then return M.observe(unpack(arg, 2)) end
 		if arg[1] == "check" and #arg == 7 then return M.check(unpack(arg, 2)) end
+		if arg[1] == "identity" and #arg == 5 then return M.recheck(unpack(arg, 2)) end
+		if arg[1] == "outbound" and #arg == 4 then return M.outbound(unpack(arg, 2)) end
 		error("invalid DNS helper diagnostic arguments")
 	end)
-	if not ok then io.stderr:write("dns_dep_helper_identity\n"); os.exit(1) end
-	print(json.stringify(result))
+	if not ok then io.stderr:write("dns_dep_identity\n"); os.exit(1) end
+	if plain then print(result) else print(json.stringify(result)) end
 end
 return M

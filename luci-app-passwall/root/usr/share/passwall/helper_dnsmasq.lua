@@ -4,6 +4,297 @@ local fs = api.fs
 local datatypes = api.datatypes
 local TMP = {}
 
+-- DNS-H3: these helpers are local to this generator. Never replace api's UCI
+-- cursor, cache root or process-wide functions. Production callers use none of
+-- this path unless they explicitly select isolated_capture/isolated_generate.
+local quote = require("luci.util").shellquote
+local function isolated_need(v, why)
+	assert(v, "DNS isolated configuration: " .. why)
+	return v
+end
+local function isolated_read(path) return isolated_need(fs.readfile(path), "unreadable input " .. path) end
+local function isolated_type(path) return (fs.lstat(path) or {}).type end
+local function isolated_md5(path)
+	local d = api.md5_file(path)
+	isolated_need(type(d) == "string" and #d == 32 and d:match("^%x+$"), "cannot hash input")
+	return d
+end
+local function isolated_write(path, text)
+	local f = isolated_need(io.open(path, "w"), "cannot create private file")
+	isolated_need(f:write(text), "private write failed")
+	isolated_need(f:close(), "private close failed")
+end
+local function isolated_snapshot(path)
+	isolated_need(type(path) == "string" and path:match("^/[%w_./-]+/contracts/generation%.[%w_]+$") and
+		fs.realpath(path) == path, "invalid snapshot directory")
+	local package = isolated_read(path .. "/package"):gsub("\n$", "")
+	isolated_need(package == "passwall_contract_" .. path:match("%.([%w_]+)$"), "snapshot package mismatch")
+	local manifest = {}
+	for _, name in ipairs({"source", "package", "view", "global", "acls", "source.md5", "config.md5", "config/" .. package}) do
+		isolated_need(isolated_type(path .. "/" .. name) == "reg", "invalid snapshot file")
+		manifest[#manifest + 1] = isolated_md5(path .. "/" .. name) .. "  " .. name .. "\n"
+	end
+	isolated_need(table.concat(manifest) == isolated_read(path .. "/sealed"), "incomplete/changed snapshot seal")
+	-- runtime_snapshot.sh writes bare digests; accept one optional trailing LF.
+	isolated_need(isolated_md5(path .. "/source") == isolated_read(path .. "/source.md5"):gsub("\n$", "") and
+		isolated_md5(path .. "/config/" .. package) == isolated_read(path .. "/config.md5"):gsub("\n$", ""), "snapshot digest mismatch")
+	for _, dir in ipairs({"config", "state"}) do
+		isolated_need(fs.realpath(path .. "/" .. dir) == path .. "/" .. dir, "invalid snapshot cursor directory")
+	end
+	-- The generation state directory is empty by contract. Refuse unsealed UCI
+	-- deltas rather than consuming them or falling back to /etc/config.
+	for _ in isolated_need(fs.dir(path .. "/state"), "missing snapshot state") do
+		isolated_need(false, "snapshot contains unsealed UCI state")
+	end
+	local cursor = require("uci").cursor(path .. "/config", path .. "/state")
+	isolated_need(cursor:load(package), "cannot load frozen package")
+	local function section_id(section)
+		local kind, index = section:match("^@([%w_]+)%[(%d+)%]$")
+		if not kind then return section end
+		local found, n = nil, 0
+		cursor:foreach(package, kind, function(s)
+			if n == tonumber(index) then found = s[".name"] end
+			n = n + 1
+		end)
+		return found
+	end
+	return {
+		get = function(section, option)
+			section = section_id(section)
+			if not section then return nil end
+			if option then return cursor:get(package, section, option) end
+			return cursor:get_all(package, section)
+		end,
+		foreach = function(kind, fn) cursor:foreach(package, kind, fn) end,
+		package = package, seal = isolated_md5(path .. "/sealed")
+	}
+end
+
+local isolated_rule_sources = {
+	["/etc/passwall/rules/block_host"] = "-USE_BLOCK_LIST",
+	["/etc/passwall/rules/direct_host"] = "-USE_DIRECT_LIST",
+	["/etc/passwall/rules/proxy_host"] = "-USE_PROXY_LIST",
+	["/usr/share/passwall/rules/gfwlist"] = "-USE_GFW_LIST",
+	["/usr/share/passwall/rules/chnlist"] = "-CHN_LIST"
+}
+local function isolated_context(var)
+	local root, snapshot = var["-ISOLATED_ROOT"], var["-SNAPSHOT"]
+	local frozen = isolated_snapshot(snapshot)
+	isolated_need(type(root) == "string" and root:match("^(.*)/dns%-helper%.[%w_]+$") ==
+		snapshot:match("^(.*)/contracts/generation%.[%w_]+$") and fs.realpath(root) == root,
+		"private directory is outside generation runtime")
+	for _, dir in ipairs({"input", "cache"}) do
+		isolated_need(fs.realpath(root .. "/" .. dir) == root .. "/" .. dir, "missing private input/cache directory")
+	end
+	local request_md5 = isolated_md5(root .. "/request.json")
+	local args = isolated_need(api.jsonc.parse(isolated_read(root .. "/request.json")), "invalid generation request")
+	isolated_need(isolated_md5(root .. "/request.json") == request_md5, "request changed while reading")
+	local keys = {"FLAG", "NODE", "LISTEN_PORT", "DEFAULT_DNS", "LOCAL_DNS", "TUN_DNS", "USE_DEFAULT_DNS",
+		"CHINADNS_DNS", "USE_DIRECT_LIST", "USE_PROXY_LIST", "USE_BLOCK_LIST", "USE_GFW_LIST", "CHN_LIST",
+		"DEFAULT_PROXY_MODE", "NO_PROXY_IPV6", "NFTFLAG", "NO_LOGIC_LOG"}
+	local allowed = {}; for _, key in ipairs(keys) do allowed["-" .. key] = true end
+	isolated_need(type(args) == "table", "request must be an object")
+	for k, v in pairs(args) do
+		isolated_need(allowed[k] and type(v) == "string" and not v:find("[%z\r\n]"), "invalid generation argument")
+	end
+	for _, key in ipairs(keys) do isolated_need(args["-" .. key] ~= nil, "missing generation argument " .. key) end
+	local flag = args["-FLAG"]
+	isolated_need(flag == "default" or flag:match("^[%w_]+$"), "invalid scope")
+	local source = flag == "default" and isolated_read(snapshot .. "/global"):gsub("\n$", "") or flag
+	local section = isolated_need(frozen.get(source), "scope missing from snapshot")
+	isolated_need(section[".type"] == (flag == "default" and "global" or "acl_rule"), "invalid scope section")
+	if flag ~= "default" and section.use_global_config == "1" then
+		source = isolated_read(snapshot .. "/global"):gsub("\n$", "")
+		section = isolated_need(frozen.get(source), "missing inherited scope")
+	end
+	isolated_need((section.dns_shunt or "dnsmasq") == "dnsmasq" and
+		(section.dns_mode or (section[".type"] == "global" and "tcp" or "dns2socks")) == "dns2socks",
+		"unsupported frozen DNS combination")
+	local node = frozen.get(args["-NODE"])
+	isolated_need(args["-NODE"] == section.tcp_node and node and node[".type"] == "nodes" and
+		(node.type == "SS" or node.type == "Hysteria") and node.protocol ~= "_shunt", "node differs from supported frozen TCP scope")
+	for _, key in ipairs({"-USE_DIRECT_LIST", "-USE_PROXY_LIST", "-USE_BLOCK_LIST", "-USE_GFW_LIST", "-NO_PROXY_IPV6", "-NFTFLAG"}) do
+		isolated_need(args[key] == "0" or args[key] == "1", "invalid switch")
+	end
+	isolated_need(args["-CHN_LIST"] == "0" or args["-CHN_LIST"] == "direct" or args["-CHN_LIST"] == "proxy", "invalid China list mode")
+	for key, option in pairs({["-USE_DIRECT_LIST"] = "use_direct_list", ["-USE_PROXY_LIST"] = "use_proxy_list",
+		["-USE_BLOCK_LIST"] = "use_block_list", ["-USE_GFW_LIST"] = "use_gfw_list"}) do
+		isolated_need(args[key] == (section[option] or "1"), "rule switch differs from frozen scope")
+	end
+	isolated_need(args["-CHN_LIST"] == (section.chn_list or "direct") and
+		args["-USE_DEFAULT_DNS"] == (section.use_default_dns or "direct") and
+		args["-NO_PROXY_IPV6"] == (section.filter_proxy_ipv6 or "0"), "DNS policy differs from frozen scope")
+	isolated_need(args["-DEFAULT_PROXY_MODE"] == (section.tcp_proxy_mode == "disable" and "disable" or "proxy"), "proxy mode differs from frozen scope")
+	isolated_need(args["-USE_DEFAULT_DNS"] == "direct" or args["-USE_DEFAULT_DNS"] == "remote", "unsupported default DNS mode")
+	isolated_need(args["-CHINADNS_DNS"] == "0", "ChinaDNS is outside isolated DNS-H3")
+	local function port(p) return p and p:match("^%d+$") and tonumber(p) >= 1 and tonumber(p) <= 65535 end
+	isolated_need(port(args["-LISTEN_PORT"]) and port(args["-TUN_DNS"]:match("^127%.0%.0%.1#(%d+)$")), "explicit prospective ports required")
+	isolated_need(tonumber(args["-LISTEN_PORT"]) ~= tonumber(args["-TUN_DNS"]:match("#(%d+)$")), "DNS/helper port collision")
+	-- LOCAL_DNS/DEFAULT_DNS are explicit, captured derived inputs, never read
+	-- from live cache here. Their runtime selection remains the caller's job.
+	local endpoint = require "luci.passwall.endpoint_contract"
+	for _, key in ipairs({"-LOCAL_DNS", "-DEFAULT_DNS"}) do
+		isolated_need(#args[key] > 0, "missing explicit DNS input")
+		for entry in (args[key] .. ","):gmatch("(.-),") do
+			local host, p = entry:match("^(.-)#(%d+)$")
+			host = host and (host:match("^%[([^%]]+)%]$") or host)
+			isolated_need(host and endpoint.ip(host) and port(p), "DNS inputs must be literal IP#port endpoints")
+		end
+	end
+	args["-NO_LOGIC_LOG"] = "1"
+	args["-TMP_DNSMASQ_PATH"] = root .. "/cache/dnsmasq_" .. flag
+	args["-DNSMASQ_CONF_FILE"] = root .. "/dnsmasq.conf"
+	return {root = root, snapshot = snapshot, frozen = frozen, args = args, request_md5 = request_md5}
+end
+
+-- Capture is deliberately DNS-specific. Includes are flattened BEFORE rule
+-- generation, hosts are copied, resolver/PID/log/DHCP paths are removed. Unknown
+-- directives and include filters fail explicitly instead of retaining live IO.
+local function isolated_capture(var)
+	local ctx = isolated_context(var)
+	local root, args = ctx.root, ctx.args
+	isolated_need(not fs.lstat(root .. "/inputs.json"), "inputs already captured")
+	local inputs = {snapshot = ctx.snapshot, snapshot_seal = ctx.frozen.seal, files = {}, rules = {}, sources = {}}
+	local count, copied = 0, {}
+	local function capture(source, optional)
+		local st, errno = fs.stat(source)
+		if not st and errno == 2 and not fs.lstat(source) and optional then return false end
+		isolated_need(st and st.type == "reg", "required/invalid input " .. source)
+		local real, before = fs.realpath(source), isolated_md5(source)
+		if copied[real] then
+			isolated_need(inputs.files[copied[real]] == before, "source changed between references")
+			return copied[real]
+		end
+		count = count + 1
+		local dest = root .. "/input/asset." .. count
+		isolated_need(not fs.lstat(dest), "private asset already exists")
+		local rc = api.exec_call("cp " .. quote(isolated_need(real, "unresolved source")) .. " " .. quote(dest))
+		isolated_need(rc == 0 and isolated_type(dest) == "reg" and fs.realpath(source) == real and
+			isolated_md5(source) == before and isolated_md5(dest) == before, "asset copy/digest failed")
+		inputs.files[dest] = before
+		inputs.sources[dest] = real
+		copied[real] = dest
+		return dest
+	end
+	local safe = {}
+	for word in ([[domain-needed bogus-priv filterwin2k localise-queries expand-hosts no-negcache strict-order
+		all-servers stop-dns-rebind rebind-localhost-ok clear-on-reload no-poll no-resolv no-hosts
+		cache-size neg-ttl local-ttl max-ttl max-cache-ttl min-cache-ttl edns-packet-max dns-forward-max
+		local-service domain local server rev-server address bogus-nxdomain rebind-domain-ok host-record
+		cname srv-host mx-host txt-record ptr-record naptr-record dns-rr mx-target filter-AAAA filter-A
+		filter-rr log-async dns-loop-detect dnssec dnssec-check-unsigned dnssec-no-timecheck trust-anchor]]):gmatch("%S+") do safe[word] = true end
+	local lines, stack, no_hosts = {}, {}, false
+	local parse
+	local function hosts(source)
+		isolated_need(source:sub(1, 1) == "/" and not source:find("[%z\r\n]"), "absolute hosts path required")
+		local st = isolated_need(fs.stat(source), "missing hosts input")
+		if st.type == "dir" then
+			local names = {}; for name in isolated_need(fs.dir(source), "unreadable hosts directory") do names[#names + 1] = name end
+			table.sort(names)
+			for _, name in ipairs(names) do
+				isolated_need(fs.stat(source .. "/" .. name, "type") == "reg", "unsupported hosts directory entry")
+				lines[#lines + 1] = "addn-hosts=" .. capture(source .. "/" .. name)
+			end
+		else lines[#lines + 1] = "addn-hosts=" .. capture(source) end
+	end
+	parse = function(source, depth)
+		isolated_need(depth <= 8, "include nesting limit")
+		isolated_need(source:sub(1, 1) == "/" and not source:find("[%z\r\n]"), "absolute base/include path required")
+		local real = isolated_need(fs.realpath(source), "missing base/include")
+		isolated_need(not stack[real], "recursive DNS include")
+		stack[real] = true
+		local copy = capture(source)
+		for raw in (isolated_read(copy) .. "\n"):gmatch("([^\n]*)\n") do
+			local line = raw:match("^%s*(.-)%s*$")
+			if line ~= "" and line:sub(1, 1) ~= "#" then
+				local key, value = line:match("^([%w_-]+)%s*=%s*(.-)%s*$")
+				key = key or line
+				isolated_need(key:match("^[%w_-]+$"), "malformed base directive")
+				if key == "conf-file" or key == "servers-file" then parse(isolated_need(value, "missing include path"), depth + 1)
+				elseif key == "conf-dir" then
+					isolated_need(value and not value:find(",", 1, true), "conf-dir filters need explicit adaptation")
+					local names = {}; for name in isolated_need(fs.dir(value), "missing conf-dir") do names[#names + 1] = name end
+					table.sort(names)
+					for _, name in ipairs(names) do
+						if name:sub(1, 1) ~= "." and not name:find("passwall", 1, true) and not name:match("~$") then
+							isolated_need(fs.stat(value .. "/" .. name, "type") == "reg", "unsupported conf-dir entry")
+							parse(value .. "/" .. name, depth + 1)
+						end
+					end
+				elseif key == "addn-hosts" or key == "hostsdir" then hosts(isolated_need(value, "missing hosts path"))
+				elseif key == "no-hosts" then no_hosts = true
+				elseif key:match("^dhcp") or key:match("^ra%-") or key:match("tftp") or key:match("ubus") or
+					key == "enable-dbus" or key == "pid-file" or key == "log-facility" or key == "log-queries" or
+					key == "resolv-file" or key == "port" or key == "interface" or key == "except-interface" or
+					key == "listen-address" or key == "bind-interfaces" or key == "bind-dynamic" or
+					key == "user" or key == "group" or key == "min-cache-ttl" then
+					-- Process/service settings are supplied by the future isolated runner.
+				elseif key == "server" and not (value or ""):find("/", 1, true) then
+					-- Default upstream is supplied by the captured generation request.
+				else
+					isolated_need(safe[key], "unsupported base directive " .. key)
+					lines[#lines + 1] = line
+				end
+			end
+		end
+		stack[real] = nil
+	end
+	parse(isolated_need(var["-BASE_CONF"], "explicit dnsmasq base required"), 1)
+	if not no_hosts then hosts("/etc/hosts") end
+	local dhcp_hosts = capture(api.CACHE_PATH .. "/dhcp-hosts", true)
+	if dhcp_hosts then lines[#lines + 1] = "addn-hosts=" .. dhcp_hosts end
+	lines[#lines + 1] = "no-hosts"
+	lines[#lines + 1] = "no-resolv"
+	lines[#lines + 1] = "listen-address=127.0.0.1"
+	lines[#lines + 1] = "bind-interfaces"
+	lines[#lines + 1] = "pid-file=" .. root .. "/dnsmasq.pid"
+	lines[#lines + 1] = "log-facility=" .. root .. "/dnsmasq.log"
+	isolated_write(root .. "/input/base.conf", table.concat(lines, "\n") .. "\n")
+	inputs.files[root .. "/input/base.conf"] = isolated_md5(root .. "/input/base.conf")
+	local needs_geo = false
+	for source, option in pairs(isolated_rule_sources) do
+		local active = option == "-CHN_LIST" and args[option] ~= "0" or args[option] == "1"
+		local copy = active and capture(source, true) or false
+		inputs.rules[source] = copy
+		if copy and source:match("_host$") then
+			for line in isolated_read(copy):gmatch("[^\r\n]+") do
+				if not line:find("#", 1, true) and line:find("geosite:", 1, true) then needs_geo = true end
+			end
+		end
+	end
+	inputs.geosite, inputs.geoview = false, false
+	if needs_geo and ctx.frozen.get("@global_rules[0]", "enable_geoview") == "1" then
+		local location = ctx.frozen.get("@global_rules[0]", "v2ray_location_asset") or "/usr/share/v2ray/"
+		inputs.geosite = capture(isolated_need(location:match("^(.*)/"), "invalid geosite directory") .. "/geosite.dat")
+		inputs.geoview = capture(ctx.frozen.get("@global_app[0]", "geoview_file") or "/usr/bin/geoview")
+		local rc = api.exec_call("chmod 700 " .. quote(inputs.geoview))
+		isolated_need(rc == 0, "cannot make private geoview executable")
+	end
+	isolated_need(isolated_md5(root .. "/request.json") == ctx.request_md5, "request changed during capture")
+	inputs.files[root .. "/request.json"] = ctx.request_md5
+	isolated_need(isolated_snapshot(ctx.snapshot).seal == ctx.frozen.seal, "snapshot changed while capturing")
+	isolated_write(root .. "/inputs.json", api.jsonc.stringify(inputs))
+end
+
+local function isolated_inputs(ctx)
+	local inputs = isolated_need(api.jsonc.parse(isolated_read(ctx.root .. "/inputs.json")), "missing capture manifest")
+	isolated_need(inputs.snapshot == ctx.snapshot and inputs.snapshot_seal == ctx.frozen.seal and
+		type(inputs.files) == "table" and type(inputs.rules) == "table", "capture generation mismatch")
+	for path, md5 in pairs(inputs.files) do
+		isolated_need((path == ctx.root .. "/request.json" or path:sub(1, #ctx.root + 7) == ctx.root .. "/input/") and
+			fs.realpath(path) == path and isolated_type(path) == "reg" and isolated_md5(path) == md5, "private input digest mismatch")
+	end
+	isolated_need(inputs.files[ctx.root .. "/request.json"] and inputs.files[ctx.root .. "/input/base.conf"], "incomplete capture manifest")
+	for source in pairs(isolated_rule_sources) do
+		local path = inputs.rules[source]
+		isolated_need(path == false or type(path) == "string" and inputs.files[path], "missing captured rule/absence")
+	end
+	for _, key in ipairs({"geosite", "geoview"}) do
+		isolated_need(inputs[key] == false or type(inputs[key]) == "string" and inputs.files[inputs[key]], "incomplete geosite capture")
+	end
+	return inputs
+end
+
 local function tinsert(table_name, val)
 	if table_name and type(table_name) == "table" then
 		if not TMP[table_name] then
@@ -117,6 +408,13 @@ function copy_instance(var)
 	local LISTEN_PORT = var["-LISTEN_PORT"]
 	local TMP_DNSMASQ_PATH = var["-TMP_DNSMASQ_PATH"]
 	local conf_lines = {}
+	if var._isolated then
+		-- Includes/hosts were captured before add_rule, so there is no late
+		-- live conf-dir copy capable of overwriting generated files.
+		for line in io.lines(var._isolated.root .. "/input/base.conf") do tinsert(conf_lines, line) end
+		tinsert(conf_lines, "port=" .. LISTEN_PORT)
+		return conf_lines
+	end
 	local DEFAULT_DNSMASQ_CFGID = sys.exec("echo -n $(uci -q show dhcp.@dnsmasq[0] | awk 'NR==1 {split($0, conf, /[.=]/); print conf[2]}')")
 	local conf_file = "/var/etc/dnsmasq.conf." .. DEFAULT_DNSMASQ_CFGID
 
@@ -168,6 +466,24 @@ function copy_instance(var)
 end
 
 function add_rule(var)
+	local iso = var._isolated
+	local get = iso and iso.frozen.get or api.uci_get_c
+	local foreach = iso and iso.frozen.foreach or api.uci_foreach_c
+	local function open_rule(path)
+		if not iso then return io.open(path) end
+		local copy = iso.inputs.rules[path]
+		if copy == false then return nil end
+		return isolated_need(io.open(isolated_need(copy, "uncaptured rule")), "unreadable captured rule")
+	end
+	local function output(path, mode)
+		local file = io.open(path, mode)
+		if not iso then return file end
+		isolated_need(file, "cannot open generated output")
+		return {
+			write = function(_, ...) isolated_need(file:write(...), "generated write failed") end,
+			close = function() isolated_need(file:close(), "generated close failed") end
+		}
+	end
 	local FLAG = var["-FLAG"]
 	local TMP_DNSMASQ_PATH = var["-TMP_DNSMASQ_PATH"]
 	local DNSMASQ_CONF_FILE = var["-DNSMASQ_CONF_FILE"]
@@ -187,18 +503,20 @@ function add_rule(var)
 	local NO_PROXY_IPV6 = var["-NO_PROXY_IPV6"]
 	local NO_LOGIC_LOG = var["-NO_LOGIC_LOG"]
 	local NFTFLAG = var["-NFTFLAG"]
-	local CACHE_PATH = api.CACHE_PATH
+	local CACHE_PATH = iso and (iso.root .. "/cache") or api.CACHE_PATH
 	local CACHE_FLAG = "dnsmasq_" .. FLAG
 	local CACHE_DNS_PATH = CACHE_PATH .. "/" .. CACHE_FLAG
 	local CACHE_TEXT_FILE = CACHE_DNS_PATH .. ".txt"
 	local USE_CHINADNS_NG = "0"
-	local IS_SHUNT_NODE = api.uci_get_c(NODE, "protocol") == "_shunt"
-	local USE_GEOVIEW = api.uci_get_c("@global_rules[0]", "enable_geoview")
+	local IS_SHUNT_NODE = get(NODE, "protocol") == "_shunt"
+	local USE_GEOVIEW = get("@global_rules[0]", "enable_geoview")
 
 	local list1 = {}
 	local excluded_domain = {}
 
-	if not api.is_finded("geoview") then
+	if iso then
+		USE_GEOVIEW = iso.inputs.geoview and "1" or "0"
+	elseif not api.is_finded("geoview") then
 		USE_GEOVIEW = "0"
 	end
 
@@ -319,12 +637,19 @@ function add_rule(var)
 	end
 
 	local function foreach_geosite(list_arg, callback)
-		local geosite_path = api.uci_get_c("@global_rules[0]", "v2ray_location_asset") or "/usr/share/v2ray/"
-		geosite_path = geosite_path:match("^(.*)/") .. "/geosite.dat"
+		local geosite_path
+		if iso then geosite_path = isolated_need(iso.inputs.geosite, "geosite was not captured")
+		else
+			geosite_path = get("@global_rules[0]", "v2ray_location_asset") or "/usr/share/v2ray/"
+			geosite_path = geosite_path:match("^(.*)/") .. "/geosite.dat"
+		end
 		if not fs.access(geosite_path) then return 1, "File geosite.dat not found" end
 		if not list_arg or list_arg == "" then return 1, "Site list cannot be empty" end
-		local bin = api.finded_com("geoview")
+		local bin
+		if iso then bin = isolated_need(iso.inputs.geoview, "geoview was not captured")
+		else bin = api.finded_com("geoview") end
 		local cmd = string.format("%q -type geosite -action extract -input %q -list %q -lowmem=true", bin, geosite_path, list_arg)
+		if iso then cmd = quote(bin) .. " -type geosite -action extract -input " .. quote(geosite_path) .. " -list " .. quote(list_arg) .. " -lowmem=true" end
 		local code, out = api.exec_call(cmd)
 		if code ~= 0 then return code, out end
 		for line in out:gmatch("[^\r\n]+") do
@@ -334,6 +659,7 @@ function add_rule(var)
 	end
 
 	local function get_dns_config_key()
+		if iso then return isolated_md5(iso.root .. "/inputs.json") end
 		local address_md5 = api.md5_string(sys.exec([[uci show passwall | grep -E '\.(address|download_address)=' | cut -d "'" -f 2 | sort -u]]))
 		local new_rules = sys.exec([[
 		for f in \
@@ -348,8 +674,8 @@ function add_rule(var)
 		]])
 		local SHUNT_LIST = ""
 		if IS_SHUNT_NODE then
-			local t = api.uci_get_c(NODE)
-			api.uci_foreach_c("shunt_rules", function(s)
+			local t = get(NODE)
+			foreach("shunt_rules", function(s)
 				local _node_id = t[s[".name"]]
 				if _node_id and t["shunt_group"] == s.group then
 					SHUNT_LIST = SHUNT_LIST .. (s.domain_list or "") .. (_node_id:sub(1, 1) == "_" and "not-node" or "node")
@@ -397,20 +723,21 @@ function add_rule(var)
 		end
 		new_text = get_dns_config_key()
 		if cache_text == "" or new_text == "" or cache_text ~= new_text then
-			api.remove(CACHE_DNS_PATH .. "*")
+			if not iso then api.remove(CACHE_DNS_PATH .. "*") end
 		end
 	else
-		api.remove(CACHE_DNS_PATH .. "*")
+		if not iso then api.remove(CACHE_DNS_PATH .. "*") end
 	end
 
 	if not fs.access(CACHE_DNS_PATH) then
-		fs.mkdir(CACHE_DNS_PATH)
+		local made = fs.mkdir(CACHE_DNS_PATH)
+		if iso then isolated_need(made, "cannot create private rule directory") end
 		local GEO_SUCCESS = true
 
 		--屏蔽列表
 		if USE_CHINADNS_NG == "0" and USE_BLOCK_LIST == "1" then
 			local geosite_arg = ""
-			local f = io.open("/etc/passwall/rules/block_host")
+			local f = open_rule("/etc/passwall/rules/block_host")
 			if f then
 				for line in f:lines() do
 					if not line:find("#") and line:find("geosite:") then
@@ -459,7 +786,7 @@ function add_rule(var)
 						set_domain_ipset(address, table.concat(sets, ","))
 					end
 				end
-				api.uci_foreach_c("nodes", function(t)
+				foreach("nodes", function(t)
 					process_address(t.address)
 					process_address(t.download_address)
 				end)
@@ -480,7 +807,7 @@ function add_rule(var)
 				}
 				--始终用国内DNS解析直连（白名单）列表
 				local geosite_arg = ""
-				local f = io.open("/etc/passwall/rules/direct_host")
+				local f = open_rule("/etc/passwall/rules/direct_host")
 				if f then
 					for line in f:lines() do
 						if not line:find("#") and line:find("geosite:") then
@@ -535,7 +862,7 @@ function add_rule(var)
 				end
 				--始终使用远程DNS解析代理（黑名单）列表
 				local geosite_arg = ""
-				local f = io.open("/etc/passwall/rules/proxy_host")
+				local f = open_rule("/etc/passwall/rules/proxy_host")
 				if f then
 					for line in f:lines() do
 						if not line:find("#") and line:find("geosite:") then
@@ -594,7 +921,7 @@ function add_rule(var)
 				if NO_PROXY_IPV6 ~= "1" then
 					table.insert(sets, setflag_6 .. set6_name)
 				end
-				local f = io.open("/usr/share/passwall/rules/gfwlist")
+				local f = open_rule("/usr/share/passwall/rules/gfwlist")
 				if f then
 					for line in f:lines() do
 						if line ~= "" and not line:find("#") and not check_excluded_domain(line) then
@@ -639,7 +966,7 @@ function add_rule(var)
 						}
 					end
 				end
-				local f = io.open("/usr/share/passwall/rules/chnlist")
+				local f = open_rule("/usr/share/passwall/rules/chnlist")
 				if f then
 					for line in f:lines() do
 						if line ~= "" and not line:find("#") and not check_excluded_domain(line) then
@@ -662,9 +989,9 @@ function add_rule(var)
 
 		--分流规则
 		if IS_SHUNT_NODE and USE_CHINADNS_NG == "0" and only_global ~= 1 then
-			local t = api.uci_get_c(NODE)
+			local t = get(NODE)
 			local default_node_id = t["default_node"] or "_direct"
-			api.uci_foreach_c("shunt_rules", function(s)
+			foreach("shunt_rules", function(s)
 				local _node_id = t[s[".name"]]
 				if _node_id and t["shunt_group"] == s.group then
 					if _node_id == "_default" then
@@ -735,9 +1062,9 @@ function add_rule(var)
 		end
 
 		if list1 and next(list1) then
-			local address_out = io.open(CACHE_DNS_PATH .. "/000-address.conf", "a")
-			local server_out = io.open(CACHE_DNS_PATH .. "/001-server.conf", "a")
-			local ipset_out = io.open(CACHE_DNS_PATH .. "/ipset.conf", "a")
+			local address_out = output(CACHE_DNS_PATH .. "/000-address.conf", "a")
+			local server_out = output(CACHE_DNS_PATH .. "/001-server.conf", "a")
+			local ipset_out = output(CACHE_DNS_PATH .. "/ipset.conf", "a")
 			local set_name = "ipset"
 			if NFTFLAG == "1" then
 				set_name = "nftset"
@@ -769,15 +1096,16 @@ function add_rule(var)
 			ipset_out:close()
 		end
 		
+		if iso then isolated_need(GEO_SUCCESS, "geosite generation failed") end
 		if not GEO_SUCCESS then new_text = "" end
-		local f_out = io.open(CACHE_TEXT_FILE, "a")
+		local f_out = output(CACHE_TEXT_FILE, "a")
 		f_out:write(new_text)
 		f_out:close()
 	else
 		log("  - 从缓存加载 Dnsmasq 域名分流规则。")
 	end
 
-	if USE_CHINADNS_NG == "0" then
+	if USE_CHINADNS_NG == "0" and not iso then
 		api.remove(TMP_DNSMASQ_PATH)
 		fs.symlink(CACHE_DNS_PATH, TMP_DNSMASQ_PATH)
 	end
@@ -786,11 +1114,13 @@ function add_rule(var)
 		local conf_lines = {}
 		if LISTEN_PORT then
 			--Copy dnsmasq instance
-			conf_lines = copy_instance({["-LISTEN_PORT"] = LISTEN_PORT, ["-TMP_DNSMASQ_PATH"] = TMP_DNSMASQ_PATH, ["-return"] = "1"})
+			conf_lines = copy_instance({["-LISTEN_PORT"] = LISTEN_PORT, ["-TMP_DNSMASQ_PATH"] = TMP_DNSMASQ_PATH, ["-return"] = "1", _isolated = iso})
 			--dhcp.leases to hosts
-			local hosts = api.CACHE_PATH .. "/dhcp-hosts"
-			sys.call("touch " .. hosts)
-			tinsert(conf_lines, "addn-hosts=" .. hosts)
+			if not iso then
+				local hosts = api.CACHE_PATH .. "/dhcp-hosts"
+				sys.call("touch " .. hosts)
+				tinsert(conf_lines, "addn-hosts=" .. hosts)
+			end
 		else
 			--Modify the default dnsmasq service
 		end
@@ -808,12 +1138,12 @@ function add_rule(var)
 				log(string.format("  - 默认：%s", dnsmasq_default_dns))
 			end
 
-			if FLAG == "default" then
+			if FLAG == "default" and not iso then
 				api.set_cache_var("DEFAULT_DNS", DEFAULT_DNS)
 			end
 		end
 		if #conf_lines > 0 then
-			local conf_out = io.open(DNSMASQ_CONF_FILE, "a")
+			local conf_out = output(DNSMASQ_CONF_FILE, iso and "w" or "a")
 			if conf_out then
 				conf_out:write(table.concat(conf_lines, "\n"))
 				conf_out:write("\n")
@@ -833,9 +1163,64 @@ _G.logic_restart = logic_restart
 _G.copy_instance = copy_instance
 _G.add_rule = add_rule
 
+local function isolated_generate(var)
+	local ctx = isolated_context(var)
+	ctx.inputs = isolated_inputs(ctx)
+	isolated_need(not fs.lstat(ctx.args["-DNSMASQ_CONF_FILE"]) and
+		not fs.lstat(ctx.args["-TMP_DNSMASQ_PATH"]), "private generation already exists")
+	ctx.args._isolated = ctx
+	add_rule(ctx.args)
+	-- Recheck captured inputs and generation after all reads and geoview calls.
+	isolated_inputs(ctx)
+	isolated_need(isolated_snapshot(ctx.snapshot).seal == ctx.frozen.seal, "generation changed during generation")
+end
+
+local function isolated_config_manifest(ctx)
+	local paths = {"dnsmasq.conf"}
+	local rules = "cache/dnsmasq_" .. ctx.args["-FLAG"]
+	isolated_need(fs.realpath(ctx.root .. "/" .. rules) == ctx.root .. "/" .. rules and
+		isolated_type(ctx.root .. "/cache/dnsmasq_" .. ctx.args["-FLAG"] .. ".txt") == "reg", "incomplete generated cache")
+	for name in isolated_need(fs.dir(ctx.root .. "/cache"), "missing generated cache") do
+		isolated_need(name == "dnsmasq_" .. ctx.args["-FLAG"] or name == "dnsmasq_" .. ctx.args["-FLAG"] .. ".txt", "unexpected cache entry")
+		if name:match("%.txt$") then paths[#paths + 1] = "cache/" .. name end
+	end
+	for name in isolated_need(fs.dir(ctx.root .. "/" .. rules), "missing generated rules") do
+		isolated_need(name == "000-address.conf" or name == "001-server.conf" or name == "ipset.conf", "unexpected generated rule")
+		paths[#paths + 1] = rules .. "/" .. name
+	end
+	table.sort(paths)
+	local manifest = {}
+	for _, path in ipairs(paths) do
+		local full = ctx.root .. "/" .. path
+		isolated_need(fs.realpath(full) == full and isolated_type(full) == "reg", "invalid generated file")
+		manifest[#manifest + 1] = isolated_md5(full) .. "  " .. path .. "\n"
+	end
+	return table.concat(manifest)
+end
+
+local function isolated_verify(var)
+	local ctx = isolated_context(var)
+	isolated_inputs(ctx)
+	local manifest = isolated_config_manifest(ctx)
+	if var["-SEAL_CONFIG"] == "1" then
+		isolated_need(not fs.lstat(ctx.root .. "/config.md5"), "configuration manifest already exists")
+		isolated_write(ctx.root .. "/config.md5", manifest)
+	else isolated_need(isolated_read(ctx.root .. "/config.md5") == manifest, "generated configuration changed") end
+end
+
 if arg[1] then
-	local func =_G[arg[1]]
-	if func then
-		func(api.get_function_args(arg))
+	local var = api.get_function_args(arg)
+	local actions = {isolated_capture = isolated_capture, isolated_generate = isolated_generate, isolated_verify = isolated_verify}
+	if actions[arg[1]] then
+		local ok, err = pcall(actions[arg[1]], var or {})
+		if not ok then
+			local detail = type(err) == "string" and err:match("DNS isolated configuration: (.+)") or nil
+			io.stderr:write("dns_dep_config_invalid: " .. (detail or "isolated generator failed") .. "\n"); os.exit(1)
+		end
+	elseif var and (var["-ISOLATED_ROOT"] or var["-SNAPSHOT"]) then
+		io.stderr:write("dns_dep_config_invalid: isolated action required\n"); os.exit(1)
+	else
+		local func = _G[arg[1]]
+		if func then func(var) end
 	end
 end

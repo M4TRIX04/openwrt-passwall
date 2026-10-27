@@ -13,6 +13,16 @@
 # stop a scope's helper before that scope's runtime directory is removed.
 . /usr/share/passwall/global_nodes.sh
 . /usr/share/passwall/dns_helper.sh
+# B1/B3.3-1/B3.3-2 modules. Definitions only as well: no process, record, live
+# UCI read or configuration write happens at load time. Only start_global_frozen()
+# and stop() call them, and only for the canonical Global scope.
+. /usr/share/passwall/node_config.sh
+. /usr/share/passwall/runtime_snapshot.sh
+. /usr/share/passwall/bound_nodes.sh
+# B3.3-3B dependency resolution plus the B3.1 instance-location helper it reuses.
+# Definitions only: no UCI, cache, process or file access happens at load time.
+. /usr/share/passwall/acl_nodes.sh
+. /usr/share/passwall/dns_dependency.sh
 GLOBAL_ACL_PATH=${TMP_ACL_PATH}/default
 LUA_UTIL_PATH=/usr/lib/lua/luci/passwall
 UTIL_SS=$LUA_UTIL_PATH/util_shadowsocks.lua
@@ -24,6 +34,13 @@ HYSTERIA_RUNTIME=$LUA_UTIL_PATH/hysteria_runtime.lua
 # missing or broken probe is never substituted here, so the identity check
 # stays fail-closed instead of guessing another location.
 PW_DNS_HELPER_PROBE=${PW_DNS_HELPER_PROBE:-$LUA_UTIL_PATH/dns_helper_probe.lua}
+# The frozen-node adapter follows the same rule: an explicit caller value wins
+# and a missing module is never replaced by another location.
+PW_BOUND_HELPER=${PW_BOUND_HELPER:-$LUA_UTIL_PATH/runtime_binding.lua}
+# The 3B candidate probe and the H3 dnsmasq generator are addressed the same
+# way: an explicit path wins, a missing module is never substituted.
+PW_DEPENDENCY_HELPER=${PW_DEPENDENCY_HELPER:-$LUA_UTIL_PATH/dependency_probe.lua}
+PW_DNSMASQ_GENERATOR=${PW_DNSMASQ_GENERATOR:-$APP_PATH/helper_dnsmasq.lua}
 
 check_run_environment() {
 	local prefer_nft=$(config_n_get @global_forwarding[0] prefer_nft 1)
@@ -448,6 +465,153 @@ run_socks() {
 	return 0
 }
 
+# Production entry for the canonical Global scope. The merged `node` selector is
+# absent here, so the frozen bound mechanism owns the only Global SOCKS listener
+# and start_global() below is never reached for the same scope. Every published
+# endpoint value is read back from the instance that mechanism sealed; nothing
+# here launches a second listener or reuses a legacy one as a bound candidate.
+start_global_frozen() {
+	local snapshot layout frozen_node instance node port socks preference=ipv4 family=4 DNS_HELPER_BLOCKED=0
+	[ -n "$PW_BOUND_HELPER" ] && [ -f "$PW_BOUND_HELPER" ] || {
+		echolog "全局节点：冻结运行适配器缺失，停止启动。"
+		return 1
+	}
+	passwall_snapshot_capture || {
+		echolog "全局节点：冻结配置快照生成失败，停止启动。"
+		return 1
+	}
+	snapshot=$PW_SNAPSHOT_DIR
+	passwall_snapshot_pair "$snapshot" global || {
+		echolog "全局节点：冻结配置解析失败，停止启动。"
+		return 1
+	}
+	layout=$PW_SNAPSHOT_LAYOUT
+	frozen_node=$PW_SNAPSHOT_TCP
+	# The firewall still routes one Global port for both protocols. A split
+	# layout needs that work (B4), so it is refused instead of half-starting.
+	if [ "$layout" != "combined" ]; then
+		echolog "全局节点：冻结路径本轮仅支持 TCP/UDP 同节点（当前 ${layout}），已拒绝启动。"
+		return 1
+	fi
+	[ "$PROXY_IPV6" != "1" ] || { preference=ipv6; family=6; }
+	echolog "全局节点：[${frozen_node}]，冻结绑定启动。"
+	# A previous generation's DNS helper is stopped before its instance is
+	# replaced, in the same order stop() uses. An unconfirmed stop blocks the new
+	# helper instead of running two claims side by side.
+	DNS_HELPER_BLOCKED=0
+	stop_scope_dns_helper global || {
+		echolog "全局节点：上一代 DNS Helper 停止未确认，本轮不启动新 Helper。"
+		DNS_HELPER_BLOCKED=1
+	}
+	passwall_start_bound_global_nodes "$snapshot" "$preference" "$family" || return 1
+	instance=$(get_cache_var ACL_GLOBAL_TCP_instance) || return 1
+	case "$instance" in
+		"$GLOBAL_ACL_PATH"/split/instance.*/config.json) ;;
+		*) echolog "全局节点：绑定实例发布指针无效。"; return 1 ;;
+	esac
+	instance=${instance%/config.json}
+	node=$(sed -n '2p' "$instance/meta") || return 1
+	port=$(sed -n '3p' "$instance/meta") || return 1
+	socks=$(cat "$instance/socks_port") || return 1
+	# A combined instance serves both protocols on one port and must be the node
+	# the frozen snapshot selected. Anything else is not a usable endpoint.
+	if [ "$node" != "$frozen_node" ] || [ -z "$port" ] || [ -z "$socks" ] ||
+		[ "$(sed -n '4p' "$instance/meta")" != "$port" ]; then
+		echolog "全局节点：绑定实例端点记录不完整。"
+		return 1
+	fi
+	# Bridge only what the DNS and firewall consumers still read. These values
+	# are the instance's own, so the frozen candidate keys published above stay
+	# authoritative for 3B.
+	NODE=$node
+	REDIR_PORT=$port
+	GLOBAL_SOCKS_server="127.0.0.1:$socks"
+	echo "${NODE}" >> $TMP_PATH/direct_node_list
+	# DNS-H4-F2-C: the helper depends on this instance and is verified here.
+	# start_dns below consumes its published claim as the production upstream.
+	[ "$DNS_HELPER_BLOCKED" = 0 ] &&
+		start_global_dns_helper "$snapshot" "$frozen_node" "$preference" "$family"
+	# start() publishes the complete endpoint only after DNS also succeeds.
+	return 0
+}
+
+# Start the Global scope's DNS helper from the same frozen snapshot and the
+# instance this launcher just published. Every input is frozen: no live UCI is
+# re-read and no production dnsmasq configuration is generated or reloaded here.
+# A helper that cannot be proven ready publishes no dep_ready, and start_dns
+# then refuses to publish any upstream for this scope at all.
+start_global_dns_helper() {
+	local snapshot="$1" node="$2" preference="$3" family="$4"
+	local global port fragment base dnsmasq request candidate rc=0
+	local use_direct use_proxy use_block use_gfw chn use_default filter_ipv6 proxy_mode
+	local local_dns default_dns
+	command -v passwall_start_dns_helper >/dev/null 2>&1 &&
+		command -v passwall_validate_dns_dependency >/dev/null 2>&1 &&
+		[ -n "${PW_DEPENDENCY_HELPER:-}" ] && [ -f "$PW_DEPENDENCY_HELPER" ] &&
+		[ -n "${PW_DNSMASQ_GENERATOR:-}" ] && [ -f "$PW_DNSMASQ_GENERATOR" ] || {
+		echolog "DNS helper：依赖适配层缺失，未启动 Helper，未发布 dep_ready。"
+		return 1
+	}
+	case "$node" in ''|*[!a-zA-Z0-9_-]*) return 1 ;; esac
+	# The caller has already stopped the previous generation's helper, before the
+	# instance it depended on was replaced.
+	passwall_validate_dns_dependency "$snapshot" global GLOBAL "$preference" "$family" || {
+		echolog "DNS 依赖：3B 校验拒绝（${PW_DNS_DEP_REASON:-dns_dep_identity}），未启动 Helper。"
+		return 1
+	}
+	candidate=$PW_DNS_DEP_JSON
+	global=$(cat "$snapshot/global") || return 1
+	# The base is the running system dnsmasq configuration. Without it the
+	# fragment cannot preserve local/SRV/hosts behaviour, so it is refused.
+	base="/var/etc/dnsmasq.conf.${DEFAULT_DNSMASQ_CFGID:-}"
+	[ -n "${DEFAULT_DNSMASQ_CFGID:-}" ] && [ -f "$base" ] && [ -r "$base" ] || {
+		echolog "DNS helper：系统 dnsmasq 配置 ${base} 不可读，未启动 Helper。"
+		return 1
+	}
+	dnsmasq=$(first_type dnsmasq) || dnsmasq=
+	case "$dnsmasq" in /*) ;; *) echolog "DNS helper：dnsmasq 不可用。"; return 1 ;; esac
+	port=$(passwall_alloc_dns_helper_port) || port=
+	case "$port" in ''|*[!0-9]*) echolog "DNS helper：Helper 端口分配失败。"; return 1 ;; esac
+	fragment=$(get_new_port 11400 tcp,udp) || fragment=
+	case "$fragment" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$fragment" != "$port" ] || fragment=$(get_new_port 11500 tcp,udp)
+	case "$fragment" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$fragment" != "$port" ] || return 1
+
+	use_direct=$(_pw_snapshot_option "$snapshot" "$global" use_direct_list) || return 1
+	use_proxy=$(_pw_snapshot_option "$snapshot" "$global" use_proxy_list) || return 1
+	use_block=$(_pw_snapshot_option "$snapshot" "$global" use_block_list) || return 1
+	use_gfw=$(_pw_snapshot_option "$snapshot" "$global" use_gfw_list) || return 1
+	chn=$(_pw_snapshot_option "$snapshot" "$global" chn_list) || return 1
+	use_default=$(_pw_snapshot_option "$snapshot" "$global" use_default_dns) || return 1
+	filter_ipv6=$(_pw_snapshot_option "$snapshot" "$global" filter_proxy_ipv6) || return 1
+	proxy_mode=$(_pw_snapshot_option "$snapshot" "$global" tcp_proxy_mode) || return 1
+	: "${use_direct:=1}" "${use_proxy:=1}" "${use_block:=1}" "${use_gfw:=1}"
+	: "${chn:=direct}" "${use_default:=direct}" "${filter_ipv6:=0}"
+	case "$proxy_mode" in disable) proxy_mode=disable ;; *) proxy_mode=proxy ;; esac
+	# Derived DNS inputs only: the same literal IP#port lists the production
+	# fragment uses, never a helper or cache value.
+	local_dns=$(printf '%s\n' "${LOCAL_DNS:-}" | awk -F',' '{for(i=1;i<=NF;i++){if($i !~ /#/) $i=$i"#53";} print $0;}' OFS=',')
+	default_dns=$(printf '%s\n' "${DEFAULT_DNS:-${LOCAL_DNS:-}}" | awk -F',' '{for(i=1;i<=NF;i++){if($i !~ /#/) $i=$i"#53";} print $0;}' OFS=',')
+	request=$(printf '{"-FLAG":"default","-NODE":"%s","-LISTEN_PORT":"%s","-DEFAULT_DNS":"%s","-LOCAL_DNS":"%s","-TUN_DNS":"127.0.0.1#%s","-USE_DEFAULT_DNS":"%s","-CHINADNS_DNS":"0","-USE_DIRECT_LIST":"%s","-USE_PROXY_LIST":"%s","-USE_BLOCK_LIST":"%s","-USE_GFW_LIST":"%s","-CHN_LIST":"%s","-DEFAULT_PROXY_MODE":"%s","-NO_PROXY_IPV6":"%s","-NFTFLAG":"%s","-NO_LOGIC_LOG":"1"}' \
+		"$node" "$fragment" "$default_dns" "$local_dns" "$port" "$use_default" \
+		"$use_direct" "$use_proxy" "$use_block" "$use_gfw" "$chn" "$proxy_mode" "$filter_ipv6" "${nftflag:-0}")
+
+	passwall_start_dns_helper "$snapshot" global GLOBAL "$preference" "$family" "$candidate" \
+		"$base" "$dnsmasq" "$port" "$request" || rc=$?
+	case "$rc" in
+	0)
+		echolog "DNS helper：已就绪（127.0.0.1#${port}，${PW_DNS_HELPER_L3_EVIDENCE:-L3 未取证}）。"
+		[ -z "${PW_DNS_HELPER_DEP_READY:-}" ] ||
+			echolog "DNS helper：dep_ready 已发布（${PW_DNS_HELPER_DEP_READY}），生产 DNS 上游待消费前复核后发布。"
+		;;
+	*)
+		echolog "DNS helper：未就绪（rc=${rc}，${PW_DNS_HELPER_REASON:-dns_dep_identity}，phase=${PW_DNS_HELPER_PHASE:-unknown}${PW_DNS_HELPER_L3_ERROR:+，l3=${PW_DNS_HELPER_L3_ERROR}}），未发布 dep_ready。"
+		;;
+	esac
+	return 0
+}
+
 start_global() {
 	check_node_supported "$NODE" || return 1
 	check_dns_config "${DNS_SHUNT:-dnsmasq}" "${DNS_MODE:-tcp}" global || return 1
@@ -849,10 +1013,36 @@ start_dns() {
 
 	case "$DNS_MODE" in
 	dns2socks)
-		local dns2socks_socks_server="$GLOBAL_SOCKS_server"
-		[ -n "$dns2socks_socks_server" ] || { echolog "DNS global rejected: native SOCKS listener is unavailable."; return 1; }
-		run_dns2socks socks=$dns2socks_socks_server listen_address=127.0.0.1 listen_port=${NEXT_DNS_LISTEN_PORT} dns=$REMOTE_DNS cache=$DNS_CACHE
-		echolog "  - dns2socks(${TUN_DNS})，${dns2socks_socks_server} -> tcp://${REMOTE_DNS}"
+		# DNS-H4-F2-C: on the frozen Global path the helper is the only default
+		# upstream, and only a claim that still verifies may be consumed. The
+		# check re-proves this generation, the published instance, the SOCKS
+		# listener and the helper identity/listener right before publication.
+		# A rejected claim publishes no upstream at all: no stale claim, no
+		# legacy dns2socks fallback and no direct resolver substitution.
+		if [ -n "$PW_GLOBAL_FROZEN" ]; then
+			local helper_port=
+			if ! passwall_check_dns_helper_ready global GLOBAL "${PW_SNAPSHOT_DIR:-}"; then
+				echolog "DNS global rejected: DNS helper claim unusable (${PW_DNS_HELPER_REASON:-dns_dep_identity}, detail=${PW_DNS_HELPER_CHECK_DETAIL:-unknown}); no upstream published."
+				return 1
+			fi
+			[ "$PW_DNS_HELPER_CLAIM_LISTEN_ADDR" = 127.0.0.1 ] || {
+				echolog "DNS global rejected: DNS helper claim listen address is not loopback; no upstream published."
+				return 1
+			}
+			helper_port=$PW_DNS_HELPER_CLAIM_LISTEN_PORT
+			case "$helper_port" in
+				''|*[!0-9]*) echolog "DNS global rejected: DNS helper claim listen port is unusable; no upstream published."; return 1 ;;
+			esac
+			# The frozen endpoint replaces the local dns2socks instance, so the
+			# two never run as competing default upstreams.
+			TUN_DNS="127.0.0.1#${helper_port}"
+			echolog "  - DNS helper(${TUN_DNS})，helper 冻结端点 -> tcp://${REMOTE_DNS}"
+		else
+			local dns2socks_socks_server="$GLOBAL_SOCKS_server"
+			[ -n "$dns2socks_socks_server" ] || { echolog "DNS global rejected: native SOCKS listener is unavailable."; return 1; }
+			run_dns2socks socks=$dns2socks_socks_server listen_address=127.0.0.1 listen_port=${NEXT_DNS_LISTEN_PORT} dns=$REMOTE_DNS cache=$DNS_CACHE
+			echolog "  - dns2socks(${TUN_DNS})，${dns2socks_socks_server} -> tcp://${REMOTE_DNS}"
+		fi
 	;;
 	udp)
 		UDP_PROXY_DNS=1
@@ -1389,7 +1579,13 @@ start() {
 	fi
 	[ "$ENABLED_DEFAULT_ACL" = 1 ] && {
 		mkdir -p ${GLOBAL_ACL_PATH}
-		start_global || {
+		# Exactly one launcher starts the Global SOCKS owner: the frozen bound
+		# path for a canonical section, the legacy merged-node path otherwise.
+		if [ -n "$PW_GLOBAL_FROZEN" ]; then
+			start_global_frozen
+		else
+			start_global
+		fi || {
 			if [ "$(config_n_get "$NODE" type)" = Hysteria ]; then
 				ENABLED_DEFAULT_ACL=0
 				set_cache_vars ENABLED_DEFAULT_ACL 0 ACL_GLOBAL_failed 1 || return 1
@@ -1444,7 +1640,7 @@ start() {
 }
 
 stop() {
-	local hysteria_cleanup_status=0 dns_helper_cleanup_status=0 acl_dir acl_sid
+	local hysteria_cleanup_status=0 dns_helper_cleanup_status=0 frozen_cleanup_status=0 acl_dir acl_sid
 	# Contract 5.2 item 4: stop every scope's DNS helper before the instances it
 	# depends on and the scope directories are released. Scope-local and
 	# idempotent, so a stop with no helper records changes nothing here.
@@ -1458,6 +1654,13 @@ stop() {
 		done
 	fi
 	[ "$dns_helper_cleanup_status" = 0 ] || echolog "DNS helper cleanup pending; runtime records retained."
+	# Frozen Global instances are stopped through their own identity records,
+	# before the runtime tree that holds those records is removed. A cold stop
+	# has no split directory and therefore nothing to reclaim here.
+	if [ -n "${GLOBAL_ACL_PATH:-}" ] && [ -d "$GLOBAL_ACL_PATH/split" ]; then
+		passwall_stop_global_nodes || frozen_cleanup_status=1
+		[ "$frozen_cleanup_status" = 0 ] || echolog "Frozen global cleanup pending; instance records retained."
+	fi
 	[ ! -f "$HYSTERIA_RUNTIME" ] || lua "$HYSTERIA_RUNTIME" stop client || hysteria_cleanup_status=1
 	[ "$hysteria_cleanup_status" = 0 ] || echolog "Hysteria cleanup pending; retry stop after resolving the error."
 	clean_log
@@ -1497,16 +1700,23 @@ stop() {
 		[ -n "${bak_bridge_nf_ipt}" ] && sysctl -w net.bridge.bridge-nf-call-iptables=${bak_bridge_nf_ipt} >/dev/null 2>&1
 		[ -n "${bak_bridge_nf_ip6t}" ] && sysctl -w net.bridge.bridge-nf-call-ip6tables=${bak_bridge_nf_ip6t} >/dev/null 2>&1
 	}
-	# Removing the runtime tree would also delete any identity record a helper
-	# still needs to be stopped later, so it is skipped while one is unconfirmed.
-	if [ "$dns_helper_cleanup_status" = 0 ]; then
+	# Removing the runtime tree would also delete any identity record a helper or
+	# instance still needs to be stopped later, so it is skipped while one is
+	# unconfirmed.
+	if [ "$dns_helper_cleanup_status" = 0 ] && [ "$frozen_cleanup_status" = 0 ]; then
 		rm -rf $TMP_PATH
 	else
-		echolog "Runtime cache kept: an unstopped DNS helper still needs its records."
+		echolog "Runtime cache kept: an unstopped DNS helper or global instance still needs its records."
 	fi
 	echolog "清空并关闭相关程序和缓存完成。"
 	[ "$dns_helper_cleanup_status" = 0 ] || hysteria_cleanup_status=1
-	exit "$hysteria_cleanup_status"
+	[ "$frozen_cleanup_status" = 0 ] || hysteria_cleanup_status=1
+	# Return, never exit: start() calls stop() on its failure paths and must still
+	# reach its own non-zero return, which a script-wide exit here would swallow
+	# and report a refused start as success. The top-level `stop` entry is
+	# unaffected: its dispatch case is the last statement, so this status becomes
+	# the script's exit status exactly as the exit did.
+	return "$hysteria_cleanup_status"
 }
 
 get_config() {
@@ -1515,6 +1725,14 @@ get_config() {
 	ENABLED=$(config_n_get @global[0] enabled 0)
 	SOCKS_ENABLED=$(config_n_get @global[0] socks_enabled 0)
 	NODE=$(config_n_get @global[0] node)
+	# A canonical section carries no merged selector; its TCP node is the scope's
+	# proxy node for every consumer that still reads a single one. The schemas
+	# are mutually exclusive, which is what keeps exactly one Global launcher.
+	PW_GLOBAL_FROZEN=
+	if [ -z "$NODE" ]; then
+		NODE=$(config_n_get @global[0] tcp_node)
+		[ -z "$NODE" ] || PW_GLOBAL_FROZEN=1
+	fi
 
 	[ "$ENABLED" = 1 ] && {
 		if [ -n "$NODE" ] && ([ "$(config_get_type $NODE)" = "nodes" ] || [ "$(config_get_type $NODE)" = "socks" ]); then

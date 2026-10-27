@@ -120,7 +120,10 @@ _pw_dns_helper_config_reset() {
 _pw_dns_helper_config_owned() {
 	local dir="$1" receipt="$2"
 	[ -n "${TMP_PATH:-}" ] && [ "${dir%/*}" = "$TMP_PATH" ] || return 1
-	case "${dir##*/}" in dns-helper.*) ;; *) return 1 ;; esac
+	# Two private directory kinds exist: configuration/verification directories
+	# and the single L3 attempt directory. Both are creation-local and neither
+	# may be reclaimed by a later call.
+	case "${dir##*/}" in dns-helper.*|dns-l3.*) ;; *) return 1 ;; esac
 	printf '%s\n' "$receipt" | grep -Eq '^[0-9]+:[0-9]+:[0-9]+$' || return 1
 	[ -n "$receipt" ] && [ -d "$dir" ] && [ ! -L "$dir" ] &&
 		[ "$(readlink -f "$dir")" = "$dir" ] &&
@@ -272,12 +275,22 @@ _pw_dns_helper_rec_reset() {
 	PW_DNS_HELPER_REC_CONFIG_DIR= PW_DNS_HELPER_REC_CONFIG_MD5_FILE=
 }
 
+_pw_dns_helper_l3_reset() {
+	PW_DNS_HELPER_L3_PHASE= PW_DNS_HELPER_L3_ERROR= PW_DNS_HELPER_L3_EVIDENCE=
+	PW_DNS_HELPER_L3_PORT= PW_DNS_HELPER_L3_PID= PW_DNS_HELPER_L3_QUERY_NAME=
+	PW_DNS_HELPER_L3_SRC_PORT= PW_DNS_HELPER_L3_INODE=
+	# Private resources of one L3 attempt; only its own cleanup may use them.
+	_PW_DNS_HELPER_L3_TMP= _PW_DNS_HELPER_L3_RECEIPT= _PW_DNS_HELPER_L3_DNSMASQ_PID=
+	_PW_DNS_HELPER_L3_TCPDUMP_PID= _PW_DNS_HELPER_L3_SAMPLER_PID=
+}
+
 _pw_dns_helper_start_reset() {
 	PW_DNS_HELPER_BIN= PW_DNS_HELPER_SCOPE_DIR= PW_DNS_HELPER_BINDING= PW_DNS_HELPER_RECORD=
 	PW_DNS_HELPER_LOG= PW_DNS_HELPER_LISTEN_ADDR= PW_DNS_HELPER_LISTEN_PORT= PW_DNS_HELPER_PID=
 	PW_DNS_HELPER_BIRTH= PW_DNS_HELPER_OBSERVATION= PW_DNS_HELPER_OUTBOUND= PW_DNS_HELPER_QUERY_NAME=
 	PW_DNS_HELPER_QUERY_RESULT= PW_DNS_HELPER_PHASE= PW_DNS_HELPER_FRAGMENT_RECEIPT=
-	PW_DNS_HELPER_CMDLINE_MD5=
+	PW_DNS_HELPER_CMDLINE_MD5= PW_DNS_HELPER_DEP_READY=
+	_pw_dns_helper_l3_reset
 	_pw_dns_helper_rec_reset
 }
 
@@ -319,9 +332,12 @@ _pw_dns_helper_write_file() {
 _pw_dns_helper_drop_records() {
 	local dir="$1"
 	[ -n "$dir" ] || return 1
+	# A readiness claim never outlives the helper it describes. Only the claim is
+	# removed here; ownership records are dropped by their own confirmation.
+	rm -f -- "$dir/dep.ready" || return 1
 	rm -f -- "$dir/helper.record" || return 1
 	rm -f -- "$dir/helper.binding" || return 1
-	[ ! -e "$dir/helper.record" ] && [ ! -e "$dir/helper.binding" ]
+	[ ! -e "$dir/dep.ready" ] && [ ! -e "$dir/helper.record" ] && [ ! -e "$dir/helper.binding" ]
 }
 
 # The probe owns all JSON parsing; this reads its key=value form. A temp file is
@@ -529,6 +545,289 @@ EOF
 	return 1
 }
 
+# ---------------------------------------------------------------------------
+# DNS-H4-F2-B: L3 end-to-end gate and the scope's dep_ready record.
+#
+# L3 drives one isolated dnsmasq instance from a one-time copy of the sealed H3
+# fragment (only port/pid-file/log-facility differ) and requires: the fragment
+# still sealed, dnsmasq --log-queries forwarding this attempt's unique probe to
+# the frozen helper endpoint, a loopback capture of the UDP query and its
+# response on the same source port, that source port's socket owned by the
+# isolated PID (same-window /proc/net/udp + /proc/<pid>/fd), and the real helper
+# logging the same probe. No production dnsmasq, /etc/config/dhcp or firewall
+# path is read or written here.
+# ---------------------------------------------------------------------------
+
+# Sub-second sleep is not universal (BusyBox builds without fractional support
+# reject it). A refused sleep falls back to one second, which only slows these
+# bounded waits instead of turning them into busy loops.
+_pw_dns_helper_pause() {
+	sleep 0.1 2>/dev/null || sleep 1
+}
+
+# Copy the sealed fragment once, rewriting exactly the three isolated fields.
+# Zero or multiple matches fail: every other line must stay byte-identical.
+_pw_dns_helper_l3_copy() {
+	local src="$1" dst="$2" port="$3" pidfile="$4" logfile="$5"
+	awk -v port="$port" -v pidfile="$pidfile" -v logfile="$logfile" '
+		/^port=/ { p++; print "port=" port; next }
+		/^pid-file=/ { i++; print "pid-file=" pidfile; next }
+		/^log-facility=/ { l++; print "log-facility=" logfile; next }
+		{ print }
+		END { if (p != 1 || i != 1 || l != 1) exit 1 }
+	' "$src" > "$dst"
+}
+
+_pw_dns_helper_l3_run() {
+	local conf="$1" root="$2" port="$3" dnsmasq="$4"
+	local tmp= receipt= l3port= fport= pid= name= label= out= rc= result= src= inode= hex=
+	local tcpdump_pid= sampler_pid= fwd= rep= qline= rline= payload= i=
+	for i in tcpdump awk mktemp stat readlink md5sum get_new_port check_port_exists; do
+		command -v "$i" >/dev/null 2>&1 || {
+			PW_DNS_HELPER_L3_PHASE=skip
+			PW_DNS_HELPER_L3_ERROR="l3_tool_missing:$i"
+			return 2
+		}
+	done
+	if [ ! -f "$conf" ] || [ -L "$conf" ] || [ ! -f "$root/config.md5" ] ||
+		[ ! -f "$root/config-seal.md5" ] || [ ! -f "$root/dnsmasq-test.status" ]; then
+		PW_DNS_HELPER_L3_ERROR=l3_fragment_unsealed; return 2
+	fi
+	[ "$(md5sum < "$root/config.md5")" = "$(cat "$root/config-seal.md5")" ] || {
+		PW_DNS_HELPER_L3_ERROR=l3_fragment_seal; return 2; }
+	[ "$(cat "$root/dnsmasq-test.status")" = 0 ] || {
+		PW_DNS_HELPER_L3_ERROR=l3_fragment_test; return 2; }
+	_pw_dns_helper_fragment_upstream "$conf" "$root" "$port" || {
+		PW_DNS_HELPER_L3_ERROR=l3_fragment_upstream; return 2; }
+
+	tmp=$(umask 077; mktemp -d "$TMP_PATH/dns-l3.XXXXXX") || {
+		PW_DNS_HELPER_L3_ERROR=l3_tempdir; return 1; }
+	_PW_DNS_HELPER_L3_TMP=$tmp
+	receipt=$(stat -c '%d:%i:%u' "$tmp") || receipt=
+	_PW_DNS_HELPER_L3_RECEIPT=$receipt
+	_pw_dns_helper_config_owned "$tmp" "$receipt" || {
+		PW_DNS_HELPER_L3_ERROR=l3_tempdir_identity; return 1; }
+
+	# The isolated instance never reuses the frozen helper port or the fragment's
+	# own listen port. Reusing the latter would make the rewritten copy identical
+	# and hide a wrong endpoint behind a no-op.
+	fport=$(awk -F= '/^port=/ { print $2; exit }' "$conf" 2>/dev/null) || fport=
+	case "$fport" in ''|*[!0-9]*) PW_DNS_HELPER_L3_ERROR=l3_fragment_port; return 2 ;; esac
+	l3port=$(get_new_port 11400 tcp,udp) || l3port=
+	case "$l3port" in ''|*[!0-9]*) PW_DNS_HELPER_L3_ERROR=l3_port; return 2 ;; esac
+	if [ "$l3port" = "$port" ] || [ "$l3port" = "$fport" ]; then
+		l3port=$(get_new_port $((fport + 1)) tcp,udp) || l3port=
+		case "$l3port" in ''|*[!0-9]*) PW_DNS_HELPER_L3_ERROR=l3_port; return 2 ;; esac
+	fi
+	if [ "$l3port" = "$port" ] || [ "$l3port" = "$fport" ]; then
+		PW_DNS_HELPER_L3_ERROR=l3_port; return 2
+	fi
+	PW_DNS_HELPER_L3_PORT=$l3port
+
+	_pw_dns_helper_l3_copy "$conf" "$tmp/dnsmasq.conf" "$l3port" \
+		"$tmp/dnsmasq.pid" "$tmp/dnsmasq.log" || {
+		PW_DNS_HELPER_L3_ERROR=l3_fragment_copy; return 2; }
+	# Prove the copy line by line with awk alone. `diff` is not part of every
+	# BusyBox a target ships, and the sealed fragment must differ in exactly the
+	# three rewritten lines and nothing else.
+	awk -v port="$l3port" -v pidfile="$tmp/dnsmasq.pid" -v logfile="$tmp/dnsmasq.log" '
+		FNR == NR { src[FNR] = $0; n = FNR; next }
+		{ dst[FNR] = $0; m = FNR }
+		END {
+			if (n == 0 || n != m) exit 1
+			changed = 0
+			for (i = 1; i <= n; i++) {
+				if (src[i] == dst[i]) continue
+				changed++
+				if (src[i] ~ /^port=/ && dst[i] == "port=" port) continue
+				if (src[i] ~ /^pid-file=/ && dst[i] == "pid-file=" pidfile) continue
+				if (src[i] ~ /^log-facility=/ && dst[i] == "log-facility=" logfile) continue
+				exit 1
+			}
+			if (changed != 3) exit 1
+		}
+	' "$conf" "$tmp/dnsmasq.conf" || {
+		PW_DNS_HELPER_L3_ERROR=l3_fragment_diff; return 2; }
+
+	"$dnsmasq" --keep-in-foreground --conf-file="$tmp/dnsmasq.conf" --log-queries \
+		>> "$tmp/dnsmasq.out" 2>&1 &
+	pid=$!
+	_PW_DNS_HELPER_L3_DNSMASQ_PID=$pid
+	i=0
+	while [ "$i" -lt 50 ]; do
+		kill -0 "$pid" 2>/dev/null || break
+		[ "$(check_port_exists "$l3port" udp)" = 0 ] && break
+		i=$((i + 1)); _pw_dns_helper_pause
+	done
+	{ kill -0 "$pid" 2>/dev/null && [ "$(check_port_exists "$l3port" udp)" = 0 ]; } || {
+		PW_DNS_HELPER_L3_ERROR=l3_dnsmasq_start; return 2; }
+
+	tcpdump -i lo -n -U -w "$tmp/cap.pcap" "udp and port $port" > "$tmp/tcpdump.out" 2>&1 &
+	tcpdump_pid=$!
+	_PW_DNS_HELPER_L3_TCPDUMP_PID=$tcpdump_pid
+	i=0
+	while [ "$i" -lt 50 ]; do
+		kill -0 "$tcpdump_pid" 2>/dev/null || break
+		[ -f "$tmp/cap.pcap" ] && break
+		i=$((i + 1)); _pw_dns_helper_pause
+	done
+	{ kill -0 "$tcpdump_pid" 2>/dev/null && [ -f "$tmp/cap.pcap" ]; } || {
+		PW_DNS_HELPER_L3_ERROR=l3_capture_unavailable; return 2; }
+	_pw_dns_helper_pause
+
+	# Same-window socket ownership sampler. A block is written only while the
+	# isolated PID actually holds sockets, and it contains just that PID's fd
+	# inodes plus the /proc/net/udp rows for those same inodes. A captured source
+	# port can therefore be tied to the isolated instance without a transient ss
+	# sample, and a query that never happens writes nothing instead of growing
+	# the private directory.
+	(
+		i=0
+		while [ ! -e "$tmp/stop" ] && [ "$i" -lt 20000 ]; do
+			ls -l "/proc/$pid/fd" 2>/dev/null |
+				sed -n 's/.*socket:\[\([0-9]*\)\].*/inode \1/p' > "$tmp/fd.now"
+			if [ -s "$tmp/fd.now" ]; then
+				printf '== %s\n' "$i" >> "$tmp/sample.txt"
+				awk 'FNR == NR { want[$2] = 1; print; next } ($10 in want)' \
+					"$tmp/fd.now" /proc/net/udp >> "$tmp/sample.txt" 2>/dev/null
+			fi
+			i=$((i + 1))
+		done
+	) &
+	sampler_pid=$!
+	_PW_DNS_HELPER_L3_SAMPLER_PID=$sampler_pid
+	_pw_dns_helper_pause
+
+	name=$(_pw_dns_helper_probe_name)
+	label=${name%%.*}
+	PW_DNS_HELPER_L3_QUERY_NAME=$name
+	out="$tmp/l3.out"
+	rc=0
+	nslookup -type=A "$name" "127.0.0.1:$l3port" > "$out" 2>&1 || rc=$?
+	result=$(_pw_dns_helper_l1_classify "$out" "$rc" "$name")
+	_pw_dns_helper_pause
+
+	: > "$tmp/stop"
+	wait "$sampler_pid" 2>/dev/null
+	_PW_DNS_HELPER_L3_SAMPLER_PID=
+	kill -TERM "$tcpdump_pid" 2>/dev/null
+	wait "$tcpdump_pid" 2>/dev/null
+	_PW_DNS_HELPER_L3_TCPDUMP_PID=
+
+	[ "$result" != failed ] || { PW_DNS_HELPER_L3_ERROR=l3_response; return 2; }
+	fwd=$(grep -c -F "forwarded $name to 127.0.0.1#$port" "$tmp/dnsmasq.log" 2>/dev/null) || fwd=0
+	rep=$(grep -c -F "reply $name is" "$tmp/dnsmasq.log" 2>/dev/null) || rep=0
+	{ [ "$fwd" -ge 1 ] && [ "$rep" -ge 1 ]; } || {
+		PW_DNS_HELPER_L3_ERROR=l3_dnsmasq_forward; return 2; }
+
+	qline=$(tcpdump -nn -r "$tmp/cap.pcap" 2>/dev/null | grep -F "> 127.0.0.1.$port: UDP" | head -1)
+	src=$(printf '%s\n' "$qline" | awk -v p="$port" '
+		{ for (i = 1; i < NF; i++) if ($i == ">" && $(i + 1) == "127.0.0.1." p ":") {
+			n = split($(i - 1), a, "."); if (n == 5) { print a[5]; exit } } }')
+	case "$src" in ''|*[!0-9]*) PW_DNS_HELPER_L3_ERROR=l3_capture_query; return 2 ;; esac
+	rline=$(tcpdump -nn -r "$tmp/cap.pcap" 2>/dev/null | grep -F "127.0.0.1.$port > 127.0.0.1.$src: UDP" | head -1)
+	[ -n "$rline" ] || { PW_DNS_HELPER_L3_ERROR=l3_capture_response; return 2; }
+	payload=$(tcpdump -nn -A -r "$tmp/cap.pcap" 2>/dev/null | grep -c -F "$label") || payload=0
+	[ "$payload" -ge 1 ] || { PW_DNS_HELPER_L3_ERROR=l3_capture_payload; return 2; }
+
+	hex=$(printf '%04X' "$src") || hex=
+	case "$hex" in ''|*[!0-9A-F]*) PW_DNS_HELPER_L3_ERROR=l3_socket_port; return 2 ;; esac
+	inode=$(awk -v p=":$hex" '$2 ~ p"$" { print $10; exit }' "$tmp/sample.txt" 2>/dev/null) || inode=
+	case "$inode" in ''|*[!0-9]*) PW_DNS_HELPER_L3_ERROR=l3_socket_inode; return 2 ;; esac
+	grep -Fqx "inode $inode" "$tmp/sample.txt" || {
+		PW_DNS_HELPER_L3_ERROR=l3_socket_owner; return 2; }
+
+	PW_DNS_HELPER_L3_PID=$pid
+	PW_DNS_HELPER_L3_SRC_PORT=$src
+	PW_DNS_HELPER_L3_INODE=$inode
+	PW_DNS_HELPER_L3_PHASE=pass
+	PW_DNS_HELPER_L3_EVIDENCE="forwarded=$fwd reply=$rep src=$src dst=127.0.0.1#$port inode=$inode payload=$payload port=$l3port isolated=$pid"
+	return 0
+}
+
+# Stop this attempt's isolated processes and remove only its own directory. An
+# unconfirmable stop or directory change keeps the private artifacts and fails.
+_pw_dns_helper_l3_cleanup() {
+	local tmp="$_PW_DNS_HELPER_L3_TMP" receipt="$_PW_DNS_HELPER_L3_RECEIPT"
+	local pid="$_PW_DNS_HELPER_L3_DNSMASQ_PID" i=
+	[ -n "$tmp" ] || return 0
+	if [ -n "${_PW_DNS_HELPER_L3_SAMPLER_PID:-}" ]; then
+		: > "$tmp/stop" 2>/dev/null
+		wait "$_PW_DNS_HELPER_L3_SAMPLER_PID" 2>/dev/null
+		_PW_DNS_HELPER_L3_SAMPLER_PID=
+	fi
+	if [ -n "${_PW_DNS_HELPER_L3_TCPDUMP_PID:-}" ]; then
+		kill -TERM "$_PW_DNS_HELPER_L3_TCPDUMP_PID" 2>/dev/null
+		wait "$_PW_DNS_HELPER_L3_TCPDUMP_PID" 2>/dev/null
+		_PW_DNS_HELPER_L3_TCPDUMP_PID=
+	fi
+	if [ -n "$pid" ]; then
+		kill -TERM "$pid" 2>/dev/null
+		i=0
+		while [ "$i" -lt 20 ]; do
+			kill -0 "$pid" 2>/dev/null || break
+			i=$((i + 1)); _pw_dns_helper_pause
+		done
+		kill -KILL "$pid" 2>/dev/null
+		wait "$pid" 2>/dev/null
+		kill -0 "$pid" 2>/dev/null && return 1
+		_PW_DNS_HELPER_L3_DNSMASQ_PID=
+	fi
+	_pw_dns_helper_config_discard "$tmp" "$receipt" || return 1
+	_PW_DNS_HELPER_L3_TMP= _PW_DNS_HELPER_L3_RECEIPT=
+}
+
+# FRAGMENT CONF_ROOT HELPER_PORT DNSMASQ_BINARY
+# 0=L3 passed, 2=rejected (no dep_ready), 1=cleanup unconfirmed.
+_pw_dns_helper_l3() {
+	local rc=0
+	_pw_dns_helper_l3_reset
+	_pw_dns_helper_l3_run "$@" || rc=$?
+	[ -n "$PW_DNS_HELPER_L3_PHASE" ] || PW_DNS_HELPER_L3_PHASE=fail
+	if ! _pw_dns_helper_l3_cleanup; then
+		[ -n "$PW_DNS_HELPER_L3_ERROR" ] || PW_DNS_HELPER_L3_ERROR=l3_cleanup
+		PW_DNS_HELPER_L3_PHASE=fail
+		return 1
+	fi
+	return "$rc"
+}
+
+# Publish this scope's dep_ready record. Only a helper that passed L1, L2, L3
+# and the outer gate may reach here, and the record is bound to the helper
+# identity this call created, the frozen endpoint and the published instance.
+# PHASE=ready alone is never a DNS switch authorization.
+_pw_dns_helper_publish_ready() {
+	local dir="${PW_DNS_HELPER_SCOPE_DIR:-}" body= expected= actual=
+	[ -n "$dir" ] && [ -n "${PW_DNS_HELPER_PID:-}" ] && [ -n "${PW_DNS_HELPER_BIRTH:-}" ] &&
+		[ -n "${PW_DNS_HELPER_CMDLINE_MD5:-}" ] && [ -n "${PW_DNS_HELPER_BIN:-}" ] &&
+		[ -n "${PW_DNS_HELPER_LISTEN_ADDR:-}" ] && [ -n "${PW_DNS_HELPER_LISTEN_PORT:-}" ] &&
+		[ -n "${PW_DNS_HELPER_REC_INSTANCE:-}" ] && [ -n "${PW_DNS_HELPER_REC_SOCKS_PORT:-}" ] &&
+		[ -n "${PW_DNS_HELPER_CONFIG_MD5:-}" ] || return 1
+	[ "${PW_DNS_HELPER_PHASE:-}" = ready ] && [ "${PW_DNS_HELPER_L3_PHASE:-}" = pass ] || return 1
+	[ "${PW_DNS_HELPER_QUERY_RESULT:-}" != failed ] || return 1
+	body=$(printf '%s\n' \
+		"scope=$PW_DNS_HELPER_REC_SCOPE" \
+		"generation=$PW_DNS_HELPER_REC_GENERATION" \
+		"instance_dir=$PW_DNS_HELPER_REC_INSTANCE" \
+		"socks_addr=$PW_DNS_HELPER_REC_SOCKS_ADDR" \
+		"socks_port=$PW_DNS_HELPER_REC_SOCKS_PORT" \
+		"helper_pid=$PW_DNS_HELPER_PID" \
+		"helper_birth=$PW_DNS_HELPER_BIRTH" \
+		"helper_executable=$PW_DNS_HELPER_BIN" \
+		"helper_cmdline_md5=$PW_DNS_HELPER_CMDLINE_MD5" \
+		"listen_addr=$PW_DNS_HELPER_LISTEN_ADDR" \
+		"listen_port=$PW_DNS_HELPER_LISTEN_PORT" \
+		"identity_md5=$PW_DNS_HELPER_REC_IDENTITY_MD5" \
+		"config_md5=$PW_DNS_HELPER_REC_CONFIG_MD5" \
+		"helper_config_dir=$PW_DNS_HELPER_CONFIG_DIR" \
+		"helper_config_md5=$PW_DNS_HELPER_CONFIG_MD5" \
+		"l1=pass" "l2=pass" "l3=pass" "outer=pass")
+	_pw_dns_helper_write_file "$dir" dep.ready "$body" || return 1
+	expected=$(printf '%s\n' "$body" | md5sum) && actual=$(md5sum < "$dir/dep.ready") || return 1
+	[ "${expected%% *}" = "${actual%% *}" ] || return 1
+	PW_DNS_HELPER_DEP_READY=$dir/dep.ready
+}
+
 # SNAPSHOT ROLE SID PREFERENCE FAMILY CANDIDATE_JSON BASE_DNSMASQ_CONF
 # DNSMASQ_BINARY LISTEN_PORT REQUEST_JSON
 # LISTEN_PORT and REQUEST_JSON stay caller-supplied because the H3 generator
@@ -544,7 +843,7 @@ passwall_start_dns_helper() {
 	}
 	local snapshot="$1" role="$2" sid="$3" preference="$4" family="$5" candidate="$6"
 	local base="$7" dnsmasq="$8" port="$9" request="${10}"
-	local dir= receipt= rc=0 reason= phase=spawn pid= birth= name= out= result= rdns= i=0
+	local dir= receipt= rc=0 reason= phase=spawn pid= birth= name= out= result= rdns=
 
 	passwall_check_dns_helper_candidate "$snapshot" "$role" "$sid" "$preference" "$family" "$candidate" || return $?
 
@@ -584,6 +883,11 @@ passwall_start_dns_helper() {
 	PW_DNS_HELPER_BINDING=$dir/helper.binding
 	PW_DNS_HELPER_RECORD=$dir/helper.record
 	PW_DNS_HELPER_LOG=$dir/helper.log
+
+	# A previous generation's claim never survives a new attempt: the record is
+	# rewritten only after every gate below passes again.
+	rm -f -- "$dir/dep.ready" || { _pw_dns_helper_start_error 1 dns_dep_identity; return; }
+	[ ! -e "$dir/dep.ready" ] || { _pw_dns_helper_start_error 1 dns_dep_identity; return; }
 
 	# Stage B step 2: freeze the scope binding before any fragment exists.
 	_pw_dns_helper_write_file "$dir" helper.binding "$(printf '%s\n' \
@@ -718,23 +1022,39 @@ passwall_start_dns_helper() {
 		return $?
 	}
 
-	# Outer evidence: the helper itself must hold an established TCP connection
-	# to the candidate's SOCKS endpoint. Sampled a few times because dns2socks
-	# may close a per-query connection quickly; absence is never read as PASS.
-	while :; do
-		rc=0
-		PW_DNS_HELPER_OUTBOUND=$(lua "$PW_DNS_HELPER_PROBE" outbound "$candidate" "$pid" "$birth" 2>/dev/null) || rc=$?
-		[ "$rc" = 0 ] && break
-		i=$((i + 1))
-		[ "$i" -lt 4 ] || break
-		sleep 0.1
-	done
-	[ "$rc" = 0 ] || {
+	# Outer evidence (3.3 step 7 limited clause): dns2socks has no direct egress,
+	# so its only upstream is the frozen SOCKS endpoint in argv. A query this
+	# helper actually received can therefore only be answered through that
+	# instance. The helper's stdout/stderr sink is truncated above and bound to
+	# this PID at spawn, and the probe name is unique to this attempt, so a line
+	# naming it can only come from this attempt's helper. This proves receipt
+	# only; the response half is judged independently by L1 above.
+	grep -Fq -- "$name" "$PW_DNS_HELPER_LOG" 2>/dev/null || {
 		_pw_dns_helper_rollback 2 dns_dep_outer outer
 		return $?
 	}
 
+	# L3: the sealed fragment itself must drive an isolated dnsmasq to this
+	# helper. L1 above never substitutes for it, and an unverifiable L3 (missing
+	# capture tooling) rejects publication instead of being reported as pass.
+	# rc is reset first: nslookup reports NXDOMAIN as a non-zero exit, so the L1
+	# status above must never be read back as this gate's result.
+	rc=0
+	_pw_dns_helper_l3 "$PW_DNS_HELPER_CONFIG" "$PW_DNS_HELPER_CONFIG_DIR" "$port" "$dnsmasq" || rc=$?
+	if [ "$rc" != 0 ]; then
+		reason=dns_dep_dns_query
+		[ "$rc" = 1 ] || rc=2
+		_pw_dns_helper_rollback "$rc" "$reason" l3
+		return $?
+	fi
+
 	PW_DNS_HELPER_PHASE=ready
+	# Stage B step 9: publish the scope's dep_ready record. Failing here leaves
+	# no claim and no helper process behind.
+	_pw_dns_helper_publish_ready || {
+		_pw_dns_helper_rollback 1 dns_dep_identity publish
+		return $?
+	}
 }
 
 # SNAPSHOT ROLE SID
@@ -750,12 +1070,21 @@ passwall_stop_dns_helper() {
 	[ "$#" = 3 ] || { _pw_dns_helper_error 1 dns_dep_argument; return; }
 	local role="$2" sid="$3" dir=
 	dir=$(_pw_dns_helper_scope_dir "$role" "$sid") || { _pw_dns_helper_error 1 dns_dep_argument; return; }
-	[ -e "$dir/helper.record" ] || [ -L "$dir/helper.record" ] || return 0
+	# Without an ownership record no claim here can still describe a live helper.
+	[ -e "$dir/helper.record" ] || [ -L "$dir/helper.record" ] || {
+		rm -f -- "$dir/dep.ready"
+		return 0
+	}
 	command -v _pw_global_ss_kill >/dev/null 2>&1 &&
 		command -v _pw_global_ss_state >/dev/null 2>&1 || {
 		_pw_dns_helper_error 1 dns_dep_argument; return;
 	}
 	_pw_dns_helper_scope_owned "$dir" || { _pw_dns_helper_error 1 dns_dep_identity; return; }
+	# A stop attempt invalidates this scope's readiness claim immediately, even
+	# when the stop itself cannot be confirmed: a claim must never be reused
+	# after anyone tried to release the helper it describes. The ownership
+	# records stay, because they are what authorizes the retry.
+	rm -f -- "$dir/dep.ready" || { _pw_dns_helper_error 1 dns_dep_identity; return; }
 	PW_DNS_HELPER_SCOPE_DIR=$dir
 	_pw_dns_helper_record_read "$dir" || { _pw_dns_helper_error 1 dns_dep_identity; return; }
 
@@ -797,4 +1126,181 @@ passwall_stop_dns_helper() {
 	}
 	_pw_dns_helper_drop_records "$dir" || { _pw_dns_helper_error 1 dns_dep_identity; return; }
 	PW_DNS_HELPER_PHASE=stopped
+}
+
+# ---------------------------------------------------------------------------
+# DNS-H4-F2-B-R2: consume-before-use validity of this scope's dep_ready claim.
+#
+# dep_ready records the state at publication time and is never an authorization
+# on its own (contract 3.5). This entry re-reads it and rejects it unless every
+# dependency it names still exists, still belongs to the same generation and the
+# published instance, and is still owned by the processes the records name. A
+# live helper is not evidence that its SOCKS instance is usable, so the
+# instance's own receipt and listening socket are checked separately.
+#
+# Read-only: no record is rewritten or removed and no process is signalled. A
+# rejected claim is left in place; reclaiming it stays the stop path's job.
+#
+# ROLE SID SNAPSHOT
+# 0 = the claim describes a usable dependency at this instant.
+# 1 = it does not; PW_DNS_HELPER_CHECK_DETAIL names the first failed check.
+# A successful result describes this instant only and promises nothing later.
+# ---------------------------------------------------------------------------
+_pw_dns_helper_claim_reset() {
+	PW_DNS_HELPER_CLAIM_SCOPE= PW_DNS_HELPER_CLAIM_GENERATION= PW_DNS_HELPER_CLAIM_INSTANCE=
+	PW_DNS_HELPER_CLAIM_SOCKS_ADDR= PW_DNS_HELPER_CLAIM_SOCKS_PORT=
+	PW_DNS_HELPER_CLAIM_PID= PW_DNS_HELPER_CLAIM_BIRTH= PW_DNS_HELPER_CLAIM_EXECUTABLE=
+	PW_DNS_HELPER_CLAIM_CMDLINE_MD5= PW_DNS_HELPER_CLAIM_LISTEN_ADDR= PW_DNS_HELPER_CLAIM_LISTEN_PORT=
+	PW_DNS_HELPER_CHECK_DETAIL= PW_DNS_HELPER_CHECK_INSTANCE= PW_DNS_HELPER_CHECK_SOCKS_PID=
+}
+
+# A claim that cannot be checked is invalid, never "probably fine".
+_pw_dns_helper_check_fail() {
+	PW_DNS_HELPER_CHECK_DETAIL=$1
+	_pw_dns_helper_error 1 "${2:-dns_dep_identity}"
+	return 1
+}
+
+# Strict key=value reader for the claim. Unknown, empty or duplicated keys are
+# rejected instead of guessed, and the file is never eval'd.
+_pw_dns_helper_claim_read() {
+	local file="$1/dep.ready" line key value
+	_pw_dns_helper_claim_reset
+	[ -f "$file" ] && [ ! -L "$file" ] && [ -r "$file" ] || return 1
+	while IFS= read -r line || [ -n "$line" ]; do
+		case "$line" in '') continue ;; esac
+		key=${line%%=*}
+		value=${line#*=}
+		[ "$key" != "$line" ] && [ -n "$value" ] || return 1
+		case "$key" in
+			scope) PW_DNS_HELPER_CLAIM_SCOPE=$value ;;
+			generation) PW_DNS_HELPER_CLAIM_GENERATION=$value ;;
+			instance_dir) PW_DNS_HELPER_CLAIM_INSTANCE=$value ;;
+			socks_addr) PW_DNS_HELPER_CLAIM_SOCKS_ADDR=$value ;;
+			socks_port) PW_DNS_HELPER_CLAIM_SOCKS_PORT=$value ;;
+			helper_pid) PW_DNS_HELPER_CLAIM_PID=$value ;;
+			helper_birth) PW_DNS_HELPER_CLAIM_BIRTH=$value ;;
+			helper_executable) PW_DNS_HELPER_CLAIM_EXECUTABLE=$value ;;
+			helper_cmdline_md5) PW_DNS_HELPER_CLAIM_CMDLINE_MD5=$value ;;
+			listen_addr) PW_DNS_HELPER_CLAIM_LISTEN_ADDR=$value ;;
+			listen_port) PW_DNS_HELPER_CLAIM_LISTEN_PORT=$value ;;
+			identity_md5|config_md5|helper_config_dir|helper_config_md5) ;;
+			l1|l2|l3|outer) [ "$value" = pass ] || return 1 ;;
+			*) return 1 ;;
+		esac
+	done < "$file"
+	[ -n "$PW_DNS_HELPER_CLAIM_SCOPE" ] && [ -n "$PW_DNS_HELPER_CLAIM_GENERATION" ] &&
+		[ -n "$PW_DNS_HELPER_CLAIM_INSTANCE" ] && [ -n "$PW_DNS_HELPER_CLAIM_SOCKS_ADDR" ] &&
+		[ -n "$PW_DNS_HELPER_CLAIM_SOCKS_PORT" ] && [ -n "$PW_DNS_HELPER_CLAIM_PID" ] &&
+		[ -n "$PW_DNS_HELPER_CLAIM_BIRTH" ] && [ -n "$PW_DNS_HELPER_CLAIM_EXECUTABLE" ] &&
+		[ -n "$PW_DNS_HELPER_CLAIM_CMDLINE_MD5" ] && [ -n "$PW_DNS_HELPER_CLAIM_LISTEN_ADDR" ] &&
+		[ -n "$PW_DNS_HELPER_CLAIM_LISTEN_PORT" ]
+}
+
+passwall_check_dns_helper_ready() {
+	local role="${1:-}" sid="${2:-}" snapshot="${3:-}"
+	local dir= instance= socks= spid= sbirth=
+	# Only this entry's own scratch is cleared: a read-only check must not wipe
+	# the start outputs a caller may still be holding.
+	_pw_dns_helper_reset
+	_pw_dns_helper_rec_reset
+	_pw_dns_helper_claim_reset
+	# Only the canonical Global scope has an unambiguous published-instance
+	# pointer. An ACL scope is refused here rather than verified by assumption.
+	[ "$#" = 3 ] && [ "$role" = global ] ||
+		{ _pw_dns_helper_check_fail argument dns_dep_argument; return 1; }
+	[ -n "$snapshot" ] && [ "${snapshot%/*}" != "$snapshot" ] ||
+		{ _pw_dns_helper_check_fail snapshot_argument dns_dep_argument; return 1; }
+	# Every mechanism below already exists; if one is absent the claim cannot be
+	# checked, so it is not accepted.
+	command -v _pw_global_ss_state >/dev/null 2>&1 &&
+		command -v _pw_global_ss_alive >/dev/null 2>&1 &&
+		command -v _pw_global_ss_socket >/dev/null 2>&1 &&
+		command -v get_cache_var >/dev/null 2>&1 &&
+		command -v get_process_start_time >/dev/null 2>&1 &&
+		command -v passwall_snapshot_check >/dev/null 2>&1 &&
+		[ -n "${GLOBAL_ACL_PATH:-}" ] &&
+		[ -n "${PW_DNS_HELPER_PROBE:-}" ] && [ -f "$PW_DNS_HELPER_PROBE" ] ||
+		{ _pw_dns_helper_check_fail tool dns_dep_identity; return 1; }
+
+	dir=$(_pw_dns_helper_scope_dir "$role" "$sid") ||
+		{ _pw_dns_helper_check_fail scope dns_dep_identity; return 1; }
+	_pw_dns_helper_scope_owned "$dir" ||
+		{ _pw_dns_helper_check_fail scope dns_dep_identity; return 1; }
+	_pw_dns_helper_claim_read "$dir" ||
+		{ _pw_dns_helper_check_fail claim dns_dep_identity; return 1; }
+	[ "$PW_DNS_HELPER_CLAIM_SCOPE" = global ] ||
+		{ _pw_dns_helper_check_fail claim_scope dns_dep_identity; return 1; }
+
+	# 1a. The claim's generation must still be the live one, and that snapshot
+	# must still verify; a superseded generation invalidates the claim.
+	passwall_snapshot_check "$snapshot" ||
+		{ _pw_dns_helper_check_fail generation_stale dns_dep_stale_generation; return 1; }
+	[ "$PW_DNS_HELPER_CLAIM_GENERATION" = "${snapshot##*/}" ] ||
+		{ _pw_dns_helper_check_fail generation_mismatch dns_dep_stale_generation; return 1; }
+
+	# 1b. The claim must still name the instance that is actually published now.
+	instance=$(get_cache_var ACL_GLOBAL_TCP_instance) || instance=
+	case "$instance" in
+		"${GLOBAL_ACL_PATH}"/split/instance.*/config.json) ;;
+		*) _pw_dns_helper_check_fail instance_pointer dns_dep_identity; return 1 ;;
+	esac
+	instance=${instance%/config.json}
+	[ "$PW_DNS_HELPER_CLAIM_INSTANCE" = "$instance" ] ||
+		{ _pw_dns_helper_check_fail instance_mismatch dns_dep_identity; return 1; }
+	[ -d "$instance" ] && [ ! -L "$instance" ] ||
+		{ _pw_dns_helper_check_fail instance_missing dns_dep_identity; return 1; }
+
+	# 2. The instance's own published endpoint must still be the claim's endpoint.
+	socks=$(cat "$instance/socks_port" 2>/dev/null) || socks=
+	case "$socks" in
+		''|*[!0-9]*) _pw_dns_helper_check_fail instance_endpoint dns_dep_identity; return 1 ;;
+	esac
+	[ "$PW_DNS_HELPER_CLAIM_SOCKS_ADDR" = 127.0.0.1 ] &&
+		[ "$PW_DNS_HELPER_CLAIM_SOCKS_PORT" = "$socks" ] ||
+		{ _pw_dns_helper_check_fail instance_endpoint dns_dep_identity; return 1; }
+	PW_DNS_HELPER_CHECK_INSTANCE=$instance
+
+	# 3. The instance's SOCKS receipt must still describe the live process.
+	spid= sbirth=
+	{ IFS= read -r spid; IFS= read -r sbirth; } < "$instance/socks/process" 2>/dev/null || :
+	case "$spid" in ''|*[!0-9]*) spid= ;; esac
+	case "$sbirth" in ''|*[!0-9]*) sbirth= ;; esac
+	[ -n "$spid" ] && [ -n "$sbirth" ] ||
+		{ _pw_dns_helper_check_fail instance_process dns_dep_identity; return 1; }
+	_pw_global_ss_alive "$spid" "$sbirth" ||
+		{ _pw_dns_helper_check_fail instance_process dns_dep_identity; return 1; }
+	PW_DNS_HELPER_CHECK_SOCKS_PID=$spid
+
+	# 4+5. That process must still hold the LISTEN socket on that port, and the
+	# socket inode must be one of its own fds (never matched by port alone).
+	_pw_global_ss_socket "$spid" tcp "$socks" ||
+		{ _pw_dns_helper_check_fail socks_listener dns_dep_identity; return 1; }
+
+	# 6. Helper identity and listener ownership, through the same record and
+	# probe the stop path uses. Claim and record must describe one helper.
+	_pw_dns_helper_record_read "$dir" ||
+		{ _pw_dns_helper_check_fail helper_record dns_dep_identity; return 1; }
+	[ "$PW_DNS_HELPER_REC_SCOPE" = "$PW_DNS_HELPER_CLAIM_SCOPE" ] &&
+		[ "$PW_DNS_HELPER_REC_GENERATION" = "$PW_DNS_HELPER_CLAIM_GENERATION" ] &&
+		[ "$PW_DNS_HELPER_REC_INSTANCE" = "$PW_DNS_HELPER_CLAIM_INSTANCE" ] &&
+		[ "$PW_DNS_HELPER_REC_PID" = "$PW_DNS_HELPER_CLAIM_PID" ] &&
+		[ "$PW_DNS_HELPER_REC_BIRTH" = "$PW_DNS_HELPER_CLAIM_BIRTH" ] &&
+		[ "$PW_DNS_HELPER_REC_EXECUTABLE" = "$PW_DNS_HELPER_CLAIM_EXECUTABLE" ] &&
+		[ "$PW_DNS_HELPER_REC_CMDLINE_MD5" = "$PW_DNS_HELPER_CLAIM_CMDLINE_MD5" ] &&
+		[ "$PW_DNS_HELPER_REC_LISTEN_ADDR" = "$PW_DNS_HELPER_CLAIM_LISTEN_ADDR" ] &&
+		[ "$PW_DNS_HELPER_REC_LISTEN_PORT" = "$PW_DNS_HELPER_CLAIM_LISTEN_PORT" ] ||
+		{ _pw_dns_helper_check_fail helper_record dns_dep_identity; return 1; }
+	[ "$PW_DNS_HELPER_CLAIM_LISTEN_ADDR" = 127.0.0.1 ] ||
+		{ _pw_dns_helper_check_fail helper_listen dns_dep_identity; return 1; }
+	case "$(_pw_global_ss_state "$PW_DNS_HELPER_CLAIM_PID" "$PW_DNS_HELPER_CLAIM_BIRTH")" in
+		alive) ;;
+		*) _pw_dns_helper_check_fail helper_process dns_dep_identity; return 1 ;;
+	esac
+	lua "$PW_DNS_HELPER_PROBE" identity "$PW_DNS_HELPER_CLAIM_PID" "$PW_DNS_HELPER_CLAIM_BIRTH" \
+		"$PW_DNS_HELPER_CLAIM_EXECUTABLE" "$PW_DNS_HELPER_CLAIM_CMDLINE_MD5" >/dev/null 2>&1 ||
+		{ _pw_dns_helper_check_fail helper_identity dns_dep_identity; return 1; }
+	_pw_global_ss_socket "$PW_DNS_HELPER_CLAIM_PID" udp "$PW_DNS_HELPER_CLAIM_LISTEN_PORT" ||
+		{ _pw_dns_helper_check_fail helper_listen dns_dep_identity; return 1; }
+	return 0
 }

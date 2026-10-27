@@ -56,7 +56,22 @@ function M.candidate(old, fresh)
 	return c
 end
 
-local function identity(pid, birth, bin, command, cmdline_md5)
+-- dns2socks 2.1 parses each IPv4/hostname "host:port" argument in place
+-- (strchr(':') then writes NUL), so its /proc cmdline legitimately differs
+-- from the launched argv at exactly those colons. Only this deterministic
+-- rewrite of the argv passed by observe is accepted; anything else fails.
+local function argv_rewrite(argv)
+	local parts = {argv[1]}
+	for i = 2, #argv do parts[i] = (argv[i]:gsub(":", "\0")) end
+	return table.concat(parts, "\0") .. "\0"
+end
+-- JSON numbers keep only limited significant digits, so a large dev/ino does
+-- not survive stringify/parse. Store the exact decimal value as a string.
+local function identity_number(value)
+	need(type(value) == "number" and value >= 0 and value % 1 == 0)
+	return string.format("%.0f", value)
+end
+local function identity(pid, birth, bin, command, cmdline_md5, rewritten)
 	need(type(pid) == "string" and pid:match("^%d+$") and tonumber(pid) > 0)
 	need(type(birth) == "string" and birth:match("^%d+$"))
 	local proc = "/proc/" .. pid
@@ -69,10 +84,13 @@ local function identity(pid, birth, bin, command, cmdline_md5)
 	need(namespace == need(fs.readlink("/proc/self/ns/net")))
 	need(fs.realpath(proc .. "/exe") == bin)
 	local executable, expected = need(fs.stat(proc .. "/exe")), need(fs.stat(bin))
-	need(executable.type == "reg" and type(executable.dev) == "number" and type(executable.ino) == "number" and
-		executable.dev == expected.dev and executable.ino == expected.ino)
+	local dev, ino = identity_number(executable.dev), identity_number(executable.ino)
+	need(executable.type == "reg" and dev == identity_number(expected.dev) and ino == identity_number(expected.ino))
 	-- A stored record has no argv text, so it is compared through its digest.
-	if command ~= nil then need(read(proc .. "/cmdline") == command) end
+	if command ~= nil then
+		local argv = read(proc .. "/cmdline")
+		need(argv == command or (rewritten ~= nil and argv == rewritten))
+	end
 	local tasks = 0
 	for task in need(fs.dir(proc .. "/task")) do
 		tasks = tasks + 1
@@ -87,7 +105,7 @@ local function identity(pid, birth, bin, command, cmdline_md5)
 	local cmdline = digest(api.md5_file(proc .. "/cmdline"))
 	if cmdline_md5 ~= nil then need(cmdline == digest(cmdline_md5)) end
 	return {pid = pid, birth = birth, executable = bin, executable_md5 = md5,
-		executable_dev = executable.dev, executable_ino = executable.ino,
+		executable_dev = dev, executable_ino = ino,
 		cmdline_md5 = cmdline, gid = api.DIRECT_GID,
 		network_namespace = namespace}
 end
@@ -119,9 +137,9 @@ function M.observe(value, pid, birth, bin, listen_port)
 	argv[#argv + 1] = c.remote_dns:gsub("#", ":")
 	argv[#argv + 1] = "127.0.0.1:" .. p
 	local command = table.concat(argv, "\0") .. "\0"
-	local before = identity(pid, birth, bin, command)
+	local before = identity(pid, birth, bin, command, nil, argv_rewrite(argv))
 	local inode = listener(pid, p)
-	need(equal(before, identity(pid, birth, bin, command)) and inode == listener(pid, p))
+	need(equal(before, identity(pid, birth, bin, command, nil, argv_rewrite(argv))) and inode == listener(pid, p))
 	return {scope = c.scope, generation = c.generation, instance_dir = c.instance_dir,
 		socks_addr = c.socks_addr, socks_port = c.socks_port,
 		identity_md5 = c.identity_md5, socks_identity_md5 = c.socks_identity_md5 or c.identity_md5,
@@ -194,7 +212,7 @@ end
 if arg and arg[0] and arg[0]:match("dns_helper_probe%.lua$") then
 	local ok, result, plain = pcall(function()
 		if arg[1] == "candidate" and #arg == 3 then return M.candidate(arg[2], arg[3]) end
-		if arg[1] == "bind" and #arg == 3 then return M.bind(arg[2]), true end
+		if arg[1] == "bind" and #arg == 2 then return M.bind(arg[2]), true end
 		if arg[1] == "observe" and #arg == 6 then return M.observe(unpack(arg, 2)) end
 		if arg[1] == "check" and #arg == 7 then return M.check(unpack(arg, 2)) end
 		if arg[1] == "identity" and #arg == 5 then return M.recheck(unpack(arg, 2)) end

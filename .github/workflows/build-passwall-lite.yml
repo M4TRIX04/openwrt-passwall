@@ -30,7 +30,7 @@ jobs:
           } > .config
 
       - name: Compile With OpenWrt SDK
-        uses: openwrt/gh-action-sdk@main
+        uses: openwrt/gh-action-sdk@v2
         env:
           ARCH: x86_64-24.10.5
           PACKAGES: luci-app-passwall
@@ -43,7 +43,7 @@ jobs:
           compgen -G 'upload/luci-app-passwall_*.ipk' > /dev/null
 
       - name: Upload test IPKs
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: passwall-lite-24.10.5-x86_64-${{ github.run_id }}
           path: upload/*.ipk

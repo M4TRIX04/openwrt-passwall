@@ -545,6 +545,70 @@ EOF
 	return 1
 }
 
+# Choose a unique name from the sealed fragment's existing forwarding rules.
+# A remote default can use .invalid; a direct default needs a child of an
+# explicitly proxied suffix. Never add a probe-only server rule to the copy.
+# Conflicting/local answers still have to pass the unchanged L3 forwarding,
+# response and socket-ownership gates below (L1 keeps the helper/SOCKS proof).
+_pw_dns_helper_l3_probe_name() {
+	local conf="$1" root="$2" port="$3" name line dir file
+	name=$(_pw_dns_helper_probe_name) || return 1
+	{
+		cat "$conf" || return 1
+		while IFS= read -r line; do
+			case "$line" in conf-dir=*) ;; *) continue ;; esac
+			dir=${line#conf-dir=}
+			case "$dir" in "$root"/cache/dnsmasq_*) ;; *) continue ;; esac
+			[ -d "$dir" ] && [ ! -L "$dir" ] || continue
+			for file in "$dir"/*; do
+				[ -f "$file" ] && [ ! -L "$file" ] || continue
+				cat "$file" || return 1
+			done
+		done <<EOF
+$(grep -E '^conf-dir=' "$conf" 2>/dev/null)
+EOF
+	} | awk -v label="${name%%.*}" -v upstream="127.0.0.1#$port" '
+		function valid(domain, parts, n, i) {
+			if (length(domain) + length(label) + 1 > 253) return 0
+			n = split(domain, parts, ".")
+			for (i = 1; i <= n; i++)
+				if (length(parts[i]) > 63 || parts[i] !~ /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/) return 0
+			return n > 0
+		}
+		function routed(query, specificity, domain) {
+			for (domain in other)
+				if (length(domain) >= specificity && (domain == "" || query == domain ||
+					substr(query, length(query) - length(domain)) == "." domain)) return 0
+			return 1
+		}
+		/^(server|local|address)=/ {
+			key = substr($0, 1, index($0, "=") - 1)
+			value = substr($0, index($0, "=") + 1)
+			if (value !~ /^\//) {
+				if (key == "server") {
+					if (value == upstream) remote_default = 1; else other_default = 1
+				}
+			} else {
+				n = split(value, fields, "/")
+				# IPv6-only address rules do not answer the A probe.
+				if (key == "address" && fields[n] ~ /:/) next
+				for (j = 2; j < n; j++) {
+					domain = tolower(fields[j]); sub(/^\./, "", domain)
+					if (domain == "#") domain = ""; else if (!valid(domain)) continue
+					if (key == "server" && fields[n] == upstream) proxy[domain] = 1; else other[domain] = 1
+				}
+			}
+		}
+		END {
+			if (remote_default && !other_default && routed(label ".invalid", 0)) { print label ".invalid"; exit }
+			for (domain in proxy)
+				if (routed(label "." (domain == "" ? "invalid" : domain), length(domain)) &&
+					(!found || domain < chosen)) { chosen = domain; found = 1 }
+			if (!found) exit 1
+			print label "." (chosen == "" ? "invalid" : chosen)
+		}'
+}
+
 # ---------------------------------------------------------------------------
 # DNS-H4-F2-B: L3 end-to-end gate and the scope's dep_ready record.
 #
@@ -565,24 +629,82 @@ _pw_dns_helper_pause() {
 	sleep 0.1 2>/dev/null || sleep 1
 }
 
-# Copy the sealed fragment once, rewriting exactly the three isolated fields.
-# Zero or multiple matches fail: every other line must stay byte-identical.
+# Stage a readable copy of every addn-hosts target the sealed fragment declares.
+# dnsmasq drops to its unprivileged user before it reads hosts files, while the
+# H3 capture keeps 0700 directories and 0600 assets owned by root, so the
+# fragment's own targets are unreadable there. Only this attempt's directory is
+# opened for traversal and only these copies become readable; the H3 root, its
+# input directory and the captured assets keep their exact mode, owner and
+# content. Every target must be a regular, non-symlink file inside the capture's
+# input directory, and its digest is checked on both sides of the copy. Writes
+# "SRC<TAB>COPY" to $4; an empty map means the fragment declares no hosts.
+_pw_dns_helper_l3_stage_hosts() {
+	local conf="$1" root="$2" tmp="$3" map="$4"
+	local src= dst= before=
+	[ -f "$conf" ] && [ ! -L "$conf" ] || return 1
+	# The capture manifest is the seal for those assets; a changed one rejects.
+	[ "$(md5sum < "$root/inputs.json" 2>/dev/null)" = "$(cat "$root/inputs.md5" 2>/dev/null)" ] || return 1
+	( umask 077; mkdir "$tmp/ro" ) && chmod 0711 "$tmp/ro" || return 1
+	: > "$map" || return 1
+	while IFS= read -r src; do
+		# The heredoc yields one empty line when the fragment declares no hosts;
+		# an empty addn-hosts value is refused by the copy's coverage check.
+		[ -n "$src" ] || continue
+		case "$src" in "$root"/input/?*) ;; *) return 1 ;; esac
+		[ -f "$src" ] && [ ! -L "$src" ] || return 1
+		[ "$(readlink -f "$src")" = "$src" ] || return 1
+		case "${src##*/}" in ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;; esac
+		dst="$tmp/ro/${src##*/}"
+		[ ! -L "$dst" ] || return 1
+		before=$(md5sum < "$src") || return 1
+		if [ -e "$dst" ]; then
+			[ "$(md5sum < "$dst")" = "$before" ] || return 1
+		else
+			cp -- "$src" "$dst" || return 1
+			chmod 0644 "$dst" || return 1
+			[ "$(md5sum < "$dst")" = "$before" ] || return 1
+		fi
+		[ "$(md5sum < "$src")" = "$before" ] || return 1
+		printf '%s\t%s\n' "$src" "$dst" >> "$map" || return 1
+	done <<EOF
+$(sed -n 's/^addn-hosts=//p' "$conf")
+EOF
+	return 0
+}
+
+# Copy the sealed fragment once, rewriting exactly the three isolated fields and
+# the addn-hosts targets covered by the staged map. Zero or multiple matches of a
+# rewritten field fail, every staged target must be used, and every other line
+# must stay byte-identical.
 _pw_dns_helper_l3_copy() {
-	local src="$1" dst="$2" port="$3" pidfile="$4" logfile="$5"
-	awk -v port="$port" -v pidfile="$pidfile" -v logfile="$logfile" '
+	local src="$1" dst="$2" port="$3" pidfile="$4" logfile="$5" map="$6"
+	awk -v port="$port" -v pidfile="$pidfile" -v logfile="$logfile" -v map="$map" '
+		BEGIN {
+			while ((getline line < map) > 0) {
+				split(line, field, "\t")
+				if (field[1] != "" && field[2] != "") { staged[field[1]] = field[2]; total++ }
+			}
+			close(map)
+		}
 		/^port=/ { p++; print "port=" port; next }
 		/^pid-file=/ { i++; print "pid-file=" pidfile; next }
 		/^log-facility=/ { l++; print "log-facility=" logfile; next }
+		/^addn-hosts=/ {
+			hosts++
+			if (!(substr($0, 12) in staged)) { bad = 1; exit 1 }
+			print "addn-hosts=" staged[substr($0, 12)]
+			next
+		}
 		{ print }
-		END { if (p != 1 || i != 1 || l != 1) exit 1 }
+		END { if (bad || p != 1 || i != 1 || l != 1 || hosts != total) exit 1 }
 	' "$src" > "$dst"
 }
 
 _pw_dns_helper_l3_run() {
 	local conf="$1" root="$2" port="$3" dnsmasq="$4"
 	local tmp= receipt= l3port= fport= pid= name= label= out= rc= result= src= inode= hex=
-	local tcpdump_pid= sampler_pid= fwd= rep= qline= rline= payload= i=
-	for i in tcpdump awk mktemp stat readlink md5sum get_new_port check_port_exists; do
+	local tcpdump_pid= sampler_pid= fwd= rep= qline= rline= payload= i= map=
+	for i in tcpdump awk mktemp stat readlink md5sum cp chmod sed get_new_port check_port_exists; do
 		command -v "$i" >/dev/null 2>&1 || {
 			PW_DNS_HELPER_L3_PHASE=skip
 			PW_DNS_HELPER_L3_ERROR="l3_tool_missing:$i"
@@ -599,6 +721,8 @@ _pw_dns_helper_l3_run() {
 		PW_DNS_HELPER_L3_ERROR=l3_fragment_test; return 2; }
 	_pw_dns_helper_fragment_upstream "$conf" "$root" "$port" || {
 		PW_DNS_HELPER_L3_ERROR=l3_fragment_upstream; return 2; }
+	name=$(_pw_dns_helper_l3_probe_name "$conf" "$root" "$port") && [ -n "$name" ] || {
+		PW_DNS_HELPER_L3_ERROR=l3_probe_route; return 2; }
 
 	tmp=$(umask 077; mktemp -d "$TMP_PATH/dns-l3.XXXXXX") || {
 		PW_DNS_HELPER_L3_ERROR=l3_tempdir; return 1; }
@@ -607,6 +731,17 @@ _pw_dns_helper_l3_run() {
 	_PW_DNS_HELPER_L3_RECEIPT=$receipt
 	_pw_dns_helper_config_owned "$tmp" "$receipt" || {
 		PW_DNS_HELPER_L3_ERROR=l3_tempdir_identity; return 1; }
+
+	# dnsmasq drops to its unprivileged user before it reads hosts files, so the
+	# path to the staged copies must be traversable by that user: TMP_PATH (last
+	# octal digit = other's bits, x required) and this attempt's directory. Every
+	# other file in here keeps its private mode; see the umask in
+	# _pw_dns_helper_l3. A private TMP_PATH rejects here instead of degrading.
+	case "$(stat -c '%a' "$TMP_PATH" 2>/dev/null)" in
+		*[1357]) ;;
+		*) PW_DNS_HELPER_L3_ERROR=l3_tempdir_mode; return 2 ;;
+	esac
+	chmod 0711 "$tmp" || { PW_DNS_HELPER_L3_ERROR=l3_tempdir_mode; return 2; }
 
 	# The isolated instance never reuses the frozen helper port or the fragment's
 	# own listen port. Reusing the latter would make the rewritten copy identical
@@ -624,27 +759,42 @@ _pw_dns_helper_l3_run() {
 	fi
 	PW_DNS_HELPER_L3_PORT=$l3port
 
+	map="$tmp/hosts.map"
+	_pw_dns_helper_l3_stage_hosts "$conf" "$root" "$tmp" "$map" || {
+		PW_DNS_HELPER_L3_ERROR=l3_hosts_stage; return 2; }
+
 	_pw_dns_helper_l3_copy "$conf" "$tmp/dnsmasq.conf" "$l3port" \
-		"$tmp/dnsmasq.pid" "$tmp/dnsmasq.log" || {
+		"$tmp/dnsmasq.pid" "$tmp/dnsmasq.log" "$map" || {
 		PW_DNS_HELPER_L3_ERROR=l3_fragment_copy; return 2; }
 	# Prove the copy line by line with awk alone. `diff` is not part of every
 	# BusyBox a target ships, and the sealed fragment must differ in exactly the
-	# three rewritten lines and nothing else.
-	awk -v port="$l3port" -v pidfile="$tmp/dnsmasq.pid" -v logfile="$tmp/dnsmasq.log" '
+	# three rewritten fields plus one staged addn-hosts replacement per declared
+	# hosts line and nothing else.
+	awk -v port="$l3port" -v pidfile="$tmp/dnsmasq.pid" -v logfile="$tmp/dnsmasq.log" \
+		-v map="$map" '
+		BEGIN {
+			while ((getline line < map) > 0) {
+				split(line, field, "\t")
+				if (field[1] != "" && field[2] != "") { stage[field[1]] = field[2]; staged++ }
+			}
+			close(map)
+		}
 		FNR == NR { src[FNR] = $0; n = FNR; next }
 		{ dst[FNR] = $0; m = FNR }
 		END {
 			if (n == 0 || n != m) exit 1
-			changed = 0
+			changed = 0; hosts = 0
 			for (i = 1; i <= n; i++) {
 				if (src[i] == dst[i]) continue
 				changed++
 				if (src[i] ~ /^port=/ && dst[i] == "port=" port) continue
 				if (src[i] ~ /^pid-file=/ && dst[i] == "pid-file=" pidfile) continue
 				if (src[i] ~ /^log-facility=/ && dst[i] == "log-facility=" logfile) continue
+				if (src[i] ~ /^addn-hosts=/ &&
+					dst[i] == "addn-hosts=" stage[substr(src[i], 12)]) { hosts++; continue }
 				exit 1
 			}
-			if (changed != 3) exit 1
+			if (changed != 3 + hosts || hosts != staged) exit 1
 		}
 	' "$conf" "$tmp/dnsmasq.conf" || {
 		PW_DNS_HELPER_L3_ERROR=l3_fragment_diff; return 2; }
@@ -653,13 +803,16 @@ _pw_dns_helper_l3_run() {
 		>> "$tmp/dnsmasq.out" 2>&1 &
 	pid=$!
 	_PW_DNS_HELPER_L3_DNSMASQ_PID=$pid
+	# check_port_exists prints the number of matching listeners (0 = none), so
+	# the count - not a command exit status - is what proves the bind. Wait for
+	# the isolated instance to bind, then require it still alive and listening.
 	i=0
 	while [ "$i" -lt 50 ]; do
 		kill -0 "$pid" 2>/dev/null || break
-		[ "$(check_port_exists "$l3port" udp)" = 0 ] && break
+		[ "$(check_port_exists "$l3port" udp)" != 0 ] && break
 		i=$((i + 1)); _pw_dns_helper_pause
 	done
-	{ kill -0 "$pid" 2>/dev/null && [ "$(check_port_exists "$l3port" udp)" = 0 ]; } || {
+	{ kill -0 "$pid" 2>/dev/null && [ "$(check_port_exists "$l3port" udp)" != 0 ]; } || {
 		PW_DNS_HELPER_L3_ERROR=l3_dnsmasq_start; return 2; }
 
 	tcpdump -i lo -n -U -w "$tmp/cap.pcap" "udp and port $port" > "$tmp/tcpdump.out" 2>&1 &
@@ -698,7 +851,6 @@ _pw_dns_helper_l3_run() {
 	_PW_DNS_HELPER_L3_SAMPLER_PID=$sampler_pid
 	_pw_dns_helper_pause
 
-	name=$(_pw_dns_helper_probe_name)
 	label=${name%%.*}
 	PW_DNS_HELPER_L3_QUERY_NAME=$name
 	out="$tmp/l3.out"
@@ -719,6 +871,12 @@ _pw_dns_helper_l3_run() {
 	rep=$(grep -c -F "reply $name is" "$tmp/dnsmasq.log" 2>/dev/null) || rep=0
 	{ [ "$fwd" -ge 1 ] && [ "$rep" -ge 1 ]; } || {
 		PW_DNS_HELPER_L3_ERROR=l3_dnsmasq_forward; return 2; }
+	# dnsmasq only logs an unreadable hosts file and keeps serving, so a missing
+	# copy would pass every gate below while the fragment silently lost its local
+	# names. The staged copies exist so this line must never appear.
+	if grep -Fq 'failed to load names from' "$tmp/dnsmasq.log" 2>/dev/null; then
+		PW_DNS_HELPER_L3_ERROR=l3_hosts_unreadable; return 2
+	fi
 
 	qline=$(tcpdump -nn -r "$tmp/cap.pcap" 2>/dev/null | grep -F "> 127.0.0.1.$port: UDP" | head -1)
 	src=$(printf '%s\n' "$qline" | awk -v p="$port" '
@@ -780,15 +938,22 @@ _pw_dns_helper_l3_cleanup() {
 # FRAGMENT CONF_ROOT HELPER_PORT DNSMASQ_BINARY
 # 0=L3 passed, 2=rejected (no dep_ready), 1=cleanup unconfirmed.
 _pw_dns_helper_l3() {
-	local rc=0
+	local rc=0 saved_umask=
 	_pw_dns_helper_l3_reset
+	# This attempt's directory is made traversable for the unprivileged dnsmasq
+	# user, so every artifact created inside it stays private by construction and
+	# only the staged hosts copies are opened up afterwards.
+	saved_umask=$(umask) || saved_umask=
+	umask 077
 	_pw_dns_helper_l3_run "$@" || rc=$?
 	[ -n "$PW_DNS_HELPER_L3_PHASE" ] || PW_DNS_HELPER_L3_PHASE=fail
 	if ! _pw_dns_helper_l3_cleanup; then
+		[ -z "$saved_umask" ] || umask "$saved_umask"
 		[ -n "$PW_DNS_HELPER_L3_ERROR" ] || PW_DNS_HELPER_L3_ERROR=l3_cleanup
 		PW_DNS_HELPER_L3_PHASE=fail
 		return 1
 	fi
+	[ -z "$saved_umask" ] || umask "$saved_umask"
 	return "$rc"
 }
 

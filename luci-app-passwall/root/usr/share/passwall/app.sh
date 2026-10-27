@@ -561,6 +561,9 @@ start_global_dns_helper() {
 	}
 	candidate=$PW_DNS_DEP_JSON
 	global=$(cat "$snapshot/global") || return 1
+	# Prepare once before capturing H3 inputs; start_dns consumes the same values
+	# and must not create a second TCP-direct relay or allocate another port.
+	prepare_global_dns_inputs || return 1
 	# The base is the running system dnsmasq configuration. Without it the
 	# fragment cannot preserve local/SRV/hosts behaviour, so it is refused.
 	base="/var/etc/dnsmasq.conf.${DEFAULT_DNSMASQ_CFGID:-}"
@@ -589,10 +592,9 @@ start_global_dns_helper() {
 	: "${use_direct:=1}" "${use_proxy:=1}" "${use_block:=1}" "${use_gfw:=1}"
 	: "${chn:=direct}" "${use_default:=direct}" "${filter_ipv6:=0}"
 	case "$proxy_mode" in disable) proxy_mode=disable ;; *) proxy_mode=proxy ;; esac
-	# Derived DNS inputs only: the same literal IP#port lists the production
-	# fragment uses, never a helper or cache value.
-	local_dns=$(printf '%s\n' "${LOCAL_DNS:-}" | awk -F',' '{for(i=1;i<=NF;i++){if($i !~ /#/) $i=$i"#53";} print $0;}' OFS=',')
-	default_dns=$(printf '%s\n' "${DEFAULT_DNS:-${LOCAL_DNS:-}}" | awk -F',' '{for(i=1;i<=NF;i++){if($i !~ /#/) $i=$i"#53";} print $0;}' OFS=',')
+	# Both generators receive these exact effective inputs.
+	local_dns=$LOCAL_DNS
+	default_dns=$DEFAULT_DNS
 	request=$(printf '{"-FLAG":"default","-NODE":"%s","-LISTEN_PORT":"%s","-DEFAULT_DNS":"%s","-LOCAL_DNS":"%s","-TUN_DNS":"127.0.0.1#%s","-USE_DEFAULT_DNS":"%s","-CHINADNS_DNS":"0","-USE_DIRECT_LIST":"%s","-USE_PROXY_LIST":"%s","-USE_BLOCK_LIST":"%s","-USE_GFW_LIST":"%s","-CHN_LIST":"%s","-DEFAULT_PROXY_MODE":"%s","-NO_PROXY_IPV6":"%s","-NFTFLAG":"%s","-NO_LOGIC_LOG":"1"}' \
 		"$node" "$fragment" "$default_dns" "$local_dns" "$port" "$use_default" \
 		"$use_direct" "$use_proxy" "$use_block" "$use_gfw" "$chn" "$proxy_mode" "$filter_ipv6" "${nftflag:-0}")
@@ -951,10 +953,11 @@ get_direct_dns_mode() {
 	fi
 }
 
-start_dns() {
-	check_dns_config "${DNS_SHUNT:-dnsmasq}" "${DNS_MODE:-tcp}" global || return 1
-	echolog "DNS域名解析："
-
+# Reuse the existing direct-DNS setup for H3 capture and production generation.
+# Only the frozen path reuses a prepared result; legacy callers retain their
+# original setup timing and behaviour.
+prepare_global_dns_inputs() {
+	[ -z "$PW_GLOBAL_FROZEN" ] || [ "${PW_GLOBAL_DNS_INPUTS_READY:-}" != 1 ] || return 0
 	local china_ng_local_dns="${LOCAL_DNS}"
 	local direct_dns_mode=$(get_direct_dns_mode)
 
@@ -1008,6 +1011,19 @@ start_dns() {
 	}
 	# 排除127.0.0.1的条目
 	IPT_APPEND_DNS=$(echo "$IPT_APPEND_DNS" | awk -F',' '{for(i=1;i<=NF;i++) if($i !~ /^127\.0\.0\.1/) printf (i>1?",":"") $i; print ""}' | sed 's/^,\|,$//g')
+	PW_DNS_CHINA_NG_LOCAL=$china_ng_local_dns
+	if [ -n "$PW_GLOBAL_FROZEN" ]; then
+		DEFAULT_DNS=$(add_default_port "${DEFAULT_DNS:-$LOCAL_DNS}")
+		PW_GLOBAL_DNS_INPUTS_READY=1
+	fi
+	return 0
+}
+
+start_dns() {
+	check_dns_config "${DNS_SHUNT:-dnsmasq}" "${DNS_MODE:-tcp}" global || return 1
+	echolog "DNS域名解析："
+	prepare_global_dns_inputs || return 1
+	local china_ng_local_dns="$PW_DNS_CHINA_NG_LOCAL"
 
 	TUN_DNS="127.0.0.1#${NEXT_DNS_LISTEN_PORT}"
 
@@ -1721,6 +1737,8 @@ stop() {
 
 get_config() {
 	ENABLED_DEFAULT_ACL=0
+	PW_GLOBAL_DNS_INPUTS_READY=
+	PW_DNS_CHINA_NG_LOCAL=
 	REDIR_PORT=$(echo $(get_new_port 1041 tcp,udp))
 	ENABLED=$(config_n_get @global[0] enabled 0)
 	SOCKS_ENABLED=$(config_n_get @global[0] socks_enabled 0)

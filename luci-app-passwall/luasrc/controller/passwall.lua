@@ -39,9 +39,6 @@ function index()
 	entry({"admin", "services", appname, "settings"}, cbi(appname .. "/client/global"), _("Basic Settings"), 1).dependent = true
 	entry({"admin", "services", appname, "node_list"}, cbi(appname .. "/client/node_list"), _("Node List"), 2).dependent = true
 	entry({"admin", "services", appname, "other"}, cbi(appname .. "/client/other"), _("Other Settings"), 92).leaf = true
-	if api.is_finded("haproxy") then
-		entry({"admin", "services", appname, "haproxy"}, cbi(appname .. "/client/haproxy"), _("Load Balancing"), 93).leaf = true
-	end
 	entry({"admin", "services", appname, "app_update"}, cbi(appname .. "/client/app_update"), _("App Update"), 95).leaf = true
 	entry({"admin", "services", appname, "rule"}, cbi(appname .. "/client/rule"), _("Rule Manage"), 96).leaf = true
 	entry({"admin", "services", appname, "rule_list"}, cbi(appname .. "/client/rule_list", {autoapply = true}), _("Rule List"), 97).leaf = true
@@ -72,7 +69,6 @@ function index()
 	entry({"admin", "services", appname, "get_log"}, call("get_log")).leaf = true
 	entry({"admin", "services", appname, "clear_log"}, call("clear_log")).leaf = true
 	entry({"admin", "services", appname, "index_status"}, call("index_status")).leaf = true
-	entry({"admin", "services", appname, "haproxy_status"}, call("haproxy_status")).leaf = true
 	entry({"admin", "services", appname, "socks_status"}, call("socks_status")).leaf = true
 	entry({"admin", "services", appname, "connect_status"}, call("connect_status")).leaf = true
 	entry({"admin", "services", appname, "ping_node"}, call("ping_node")).leaf = true
@@ -295,11 +291,6 @@ function index_status()
 		e.dns_mode_status = luci.sys.call("netstat -apn | grep ':15353 ' >/dev/null") == 0
 	end
 
-	e.haproxy_status = "-1"
-	if api.is_finded("haproxy") then
-		e.haproxy_status = (luci.sys.call("/bin/busybox top -bn1 | grep -v 'grep' | grep '%s/bin/' | grep haproxy >/dev/null" % appname) == 0) and "0" or "1"
-	end
-
 	if api.get_cache_var("ENABLED_DEFAULT_ACL") == "1" then
 		local has_tproxy = api.get_cache_var("HAS_TPROXY")
 		if not has_tproxy then
@@ -314,12 +305,6 @@ function index_status()
 			e["udp_status"] = luci.sys.call("/bin/busybox top -bn1 | grep -v -E 'grep|naive' | grep '%s/bin/' | grep 'default' | grep 'global' >/dev/null" % api.TMP_PATH) == 0
 		end
 	end
-	http_write_json(e)
-end
-
-function haproxy_status()
-	local e = {}
-	e["status"] = luci.sys.call("/bin/busybox top -bn1 | grep -v 'grep' | grep '%s/bin/' | grep haproxy >/dev/null" % appname) == 0
 	http_write_json(e)
 end
 
@@ -504,14 +489,10 @@ end
 function clear_all_nodes()
 	uci_set('@global[0]', "enabled", "0")
 	uci_set('@global[0]', "socks_enabled", "0")
-	uci_set('@global_haproxy[0]', "balancing_enable", "0")
 	uci_del('@global[0]', "node")
 	uci_foreach("socks", function(t)
 		uci_del(t[".name"])
 		uci_set(t[".name"], "autoswitch_backup_node", {})
-	end)
-	uci_foreach("haproxy_config", function(t)
-		uci_del(t[".name"])
 	end)
 	uci_foreach("acl_rule", function(t)
 		uci_del(t[".name"], "node")
@@ -551,11 +532,6 @@ function delete_select_nodes()
 				else
 					uci_set(t[".name"], "enabled", "0")
 				end
-			end
-		end)
-		uci_foreach("haproxy_config", function(t)
-			if t["lbss"] == w then
-				uci_del(t[".name"])
 			end
 		end)
 		uci_foreach("acl_rule", function(t)

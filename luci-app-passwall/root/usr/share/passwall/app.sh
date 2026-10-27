@@ -1233,19 +1233,6 @@ start_dns() {
 	fi
 }
 
-start_haproxy() {
-	[ "$(config_n_get @global_haproxy[0] balancing_enable 0)" != "1" ] && return
-	local haproxy_ver=$($(first_type haproxy) -v 2>/dev/null | awk 'NR==1 {print $3}' | cut -d'-' -f1)
-	if [ "$(check_ver "$haproxy_ver" "3.0.0")" = "1" ]; then
-		echolog "* 注意：haproxy($haproxy_ver) 程序版本低，HAPROXY 负载均衡启动失败，请更新到 3.0 以上版本。"
-		return
-	fi
-	local haproxy_path=$TMP_PATH/haproxy
-	local haproxy_conf="config.cfg"
-	lua $APP_PATH/haproxy.lua -path ${haproxy_path} -conf ${haproxy_conf}
-	ln_run "$(first_type haproxy)" haproxy "/dev/null" -f "${haproxy_path}/${haproxy_conf}"
-}
-
 # Return 2 only for publication errors whose per-ACL rollback fully succeeded.
 # Other nonzero statuses mean the firewall cannot safely consume ACL state.
 acl_app() {
@@ -1579,7 +1566,6 @@ start() {
 	fi
 	export SS_SYSTEM_DNS_RESOLVER_FORCE_BUILTIN=1
 	ulimit -n 65535
-	start_haproxy
 	start_socks
 	nftflag=0
 	USE_TABLES=""

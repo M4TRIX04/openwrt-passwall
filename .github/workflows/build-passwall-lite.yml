@@ -1,4 +1,12 @@
-name: Passwall Lite test IPK
+name: Passwall Lite build (IPK/APK)
+
+# Manual only: this workflow never publishes a release or a tag. It builds the
+# LuCI package from the passwall-lite branch for two OpenWrt targets and keeps
+# the results as workflow artifacts.
+#
+# The artifact contains the LuCI package and its language pack only. Proxy
+# cores (shadowsocks-libev, hysteria 1.3.5, dns2socks, ...) are separate
+# packages and are deliberately not built or bundled here.
 
 on:
   workflow_dispatch:
@@ -8,15 +16,44 @@ permissions:
 
 jobs:
   build:
+    name: ${{ matrix.label }} / ${{ matrix.pkg_format }}
+    # Only the Lite branch may build. A dispatch from any other branch or from
+    # a tag is skipped instead of silently building different sources.
     if: github.ref == 'refs/heads/passwall-lite'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # OpenWrt 24.10: opkg packages (.ipk)
+          - label: "24.10"
+            sdk_arch: x86_64-24.10.5
+            pkg_format: ipk
+          # OpenWrt 25.12+: apk packages (.apk)
+          - label: "25.12"
+            sdk_arch: x86-64-SNAPSHOT
+            pkg_format: apk
+
     steps:
       - name: Checkout passwall-lite
         uses: actions/checkout@v4
         with:
           ref: passwall-lite
           persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify build context
+        run: |
+          set -eu
+          # GITHUB_REF_NAME is the branch the dispatch was started from; it does
+          # not depend on whether checkout left a detached HEAD.
+          test "${GITHUB_REF}" = "refs/heads/passwall-lite"
+          test "${GITHUB_REF_NAME}" = "passwall-lite"
+          echo "source branch: ${GITHUB_REF_NAME}"
+          echo "commit: ${GITHUB_SHA}"
+          echo "sdk arch: ${{ matrix.sdk_arch }}"
+          echo "package format: ${{ matrix.pkg_format }}"
 
       - name: Generate .config for Language Packs
         run: |
@@ -32,20 +69,31 @@ jobs:
       - name: Compile With OpenWrt SDK
         uses: openwrt/gh-action-sdk@main
         env:
-          ARCH: x86_64-24.10.5
+          ARCH: ${{ matrix.sdk_arch }}
           PACKAGES: luci-app-passwall
 
-      - name: Collect LuCI IPKs
+      - name: Collect ${{ matrix.pkg_format }} packages
         run: |
+          set -eu
           mkdir -p upload
-          find bin/packages/ -type f -name 'luci-app-passwall_*.ipk' -exec cp {} upload/ \;
-          find bin/packages/ -type f -name 'luci-i18n-passwall-*.ipk' -exec cp {} upload/ \;
-          compgen -G 'upload/luci-app-passwall_*.ipk' > /dev/null
+          # ipk names use "<name>_<version>_all.ipk", apk names use
+          # "<name>-<version>.apk", so the name match stops before the separator
+          # and the format filter is the extension.
+          find bin/packages -type f -name "luci-app-passwall*.${{ matrix.pkg_format }}" -exec cp {} upload/ \;
+          find bin/packages -type f -name "luci-i18n-passwall*.${{ matrix.pkg_format }}" -exec cp {} upload/ \;
+          # An empty upload must fail the job instead of producing an empty artifact.
+          count=$(find upload -maxdepth 1 -type f | wc -l)
+          test "${count}" -ge 1
+          cd upload
+          for f in *; do
+            mv "${f}" "passwall-lite_${{ matrix.label }}_${{ matrix.sdk_arch }}_${GITHUB_SHA}_${f}"
+          done
+          ls -l
 
-      - name: Upload test IPKs
+      - name: Upload ${{ matrix.pkg_format }} artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: passwall-lite-24.10.5-x86_64-${{ github.run_id }}
-          path: upload/*.ipk
+          name: passwall-lite-${{ matrix.label }}-${{ matrix.sdk_arch }}-${{ github.sha }}
+          path: upload/*
           if-no-files-found: error
           retention-days: 14

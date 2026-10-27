@@ -15,25 +15,22 @@ PKG_CONFIG_DEPENDS:= \
 	CONFIG_PACKAGE_$(PKG_NAME)_Iptables_Transparent_Proxy \
 	CONFIG_PACKAGE_$(PKG_NAME)_Nftables_Transparent_Proxy \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Geoview \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Haproxy \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Hysteria \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_NaiveProxy \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks_Rust_Client \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks_Rust_Server \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Libev_Client \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Libev_Server \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadow_TLS \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Simple_Obfs \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_Geodata \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_Plugin \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Xray_Plugin
+	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_Geodata
 
 LUCI_TITLE:=LuCI support for PassWall
 LUCI_PKGARCH:=all
+# Shadowsocks-libev client cores are mandatory: the Global path starts a
+# private ss-local for its SOCKS listener and ss-redir for transparent TCP+UDP
+# (ss-redir relays UDP itself via mode=tcp_and_udp, so no extra helper package
+# is involved). ss-server stays out of this list because server mode is
+# optional. These package names are not provided by the default OpenWrt feeds
+# or by the passwall packages feed; they come from the separate
+# openwrt-legacy-proxy-packages build.
 LUCI_DEPENDS:=+coreutils +coreutils-base64 +coreutils-nohup +coreutils-timeout +curl \
 	+chinadns-ng +dns2socks +dnsmasq-full +ip-full \
 	+libuci-lua +lua +luci-compat +luci-lib-jsonc \
-	+microsocks +resolveip +tcping +tcpdump-mini
+	+microsocks +resolveip +shadowsocks-libev-ss-local \
+	+shadowsocks-libev-ss-redir +tcping +tcpdump-mini
 
 define Package/$(PKG_NAME)/config
 menu "Configuration"
@@ -69,70 +66,14 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_Geoview
 	select PACKAGE_geoview
 	default y if aarch64||arm||i386||x86_64
 
-config PACKAGE_$(PKG_NAME)_INCLUDE_Haproxy
-	bool "Include Haproxy"
-	select PACKAGE_haproxy
-	default y if aarch64||arm||i386||x86_64
-
-config PACKAGE_$(PKG_NAME)_INCLUDE_Hysteria
-	bool "Include Hysteria"
-	select PACKAGE_hysteria
-	default n
-
-config PACKAGE_$(PKG_NAME)_INCLUDE_NaiveProxy
-	bool "Include NaiveProxy"
-	depends on !(arc||armeb||loongarch64||mips||mips64||powerpc||TARGET_gemini)
-	select PACKAGE_naiveproxy
-	default n
-
-config PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks_Rust_Client
-	bool "Include Shadowsocks Rust Client"
-	depends on !i386
-	select PACKAGE_shadowsocks-rust-sslocal
-	default y if aarch64||x86_64
-
-config PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks_Rust_Server
-	bool "Include Shadowsocks Rust Server"
-	depends on !i386
-	select PACKAGE_shadowsocks-rust-ssserver
-	default n
-
-config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Libev_Client
-	bool "Include ShadowsocksR Libev Client"
-	select PACKAGE_shadowsocksr-libev-ssr-local
-	select PACKAGE_shadowsocksr-libev-ssr-redir
-	default y
-
-config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR_Libev_Server
-	bool "Include ShadowsocksR Libev Server"
-	select PACKAGE_shadowsocksr-libev-ssr-server
-	default n
-
-config PACKAGE_$(PKG_NAME)_INCLUDE_Shadow_TLS
-	bool "Include Shadow-TLS"
-	select PACKAGE_shadow-tls
-	depends on aarch64||arm||x86_64
-	default n
-
-config PACKAGE_$(PKG_NAME)_INCLUDE_Simple_Obfs
-	bool "Include Simple-Obfs (Shadowsocks Plugin)"
-	select PACKAGE_simple-obfs-client
-	default y
-
+# Hysteria is deliberately not bundled here. The configured feeds only provide
+# hysteria 2.x, which Passwall Lite does not support; Hysteria v1.3.5 is built by
+# the separate openwrt-legacy-proxy-packages repository and installed on the
+# device as an optional component.
 config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_Geodata
 	bool "Include V2ray_Geodata"
 	select PACKAGE_v2ray-geoip
 	select PACKAGE_v2ray-geosite
-	default n
-
-config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_Plugin
-	bool "Include V2ray-Plugin (Shadowsocks Plugin)"
-	select PACKAGE_v2ray-plugin
-	default y if aarch64||arm||i386||x86_64
-
-config PACKAGE_$(PKG_NAME)_INCLUDE_Xray_Plugin
-	bool "Include Xray-Plugin (Shadowsocks Plugin)"
-	select PACKAGE_xray-plugin
 	default n
 
 endmenu

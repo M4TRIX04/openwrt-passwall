@@ -134,7 +134,7 @@ sources.validate = function(self, value, t)
 	return value
 end
 
-local NODE = m:get("@global[0]", "node") or ""
+local NODE = m:get("@global[0]", "tcp_node") or m:get("@global[0]", "node") or ""
 o = s:taboption("Main", ListValue, "mode", translate("Mode"))
 o:value("0", translate("No Proxy"))
 o:value("1", translate("Proxy"))

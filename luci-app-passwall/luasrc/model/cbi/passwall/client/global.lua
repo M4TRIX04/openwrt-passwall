@@ -29,14 +29,54 @@ s:tab("Main", translate("Main"))
 o = s:taboption("Main", Flag, "enabled", translate("Main switch"))
 o.rmempty = false
 
----- Node
-o = s:taboption("Main", ListValue, "node", "<a style='color: red'>" .. translate("Proxy Node") .. "</a>")
+---- TCP Node
+o = s:taboption("Main", ListValue, "tcp_node", "<a style='color: red'>" .. translate("TCP Node") .. "</a>")
 o.template = m:template_path("/cbi/nodes_listvalue")
 o:value("", translate("Close"))
 o.group = {""}
+-- The merged selector this section may still carry is removed on the first
+-- save. The runtime reads it before the canonical pair, so leaving it behind
+-- would keep overriding whatever the user selects here.
+o.write = function(self, section, value)
+	m:del(section, "node")
+	return ListValue.write(self, section, value)
+end
 
-current_node_id = m:get(s.section, "node")
-local node_value = s.fields["node"]:formvalue(s.section)
+---- UDP Node
+o = s:taboption("Main", ListValue, "udp_node", "<a style='color: red'>" .. translate("UDP Node") .. "</a>")
+o.template = m:template_path("/cbi/nodes_listvalue")
+o:value("", translate("Close"))
+o:value("tcp", translate("Same as the tcp node"))
+o.group = {"", ""}
+
+-- Read-only compatibility. A section that still carries the merged `node`
+-- selector proxied both protocols with that one node, so it is shown as
+-- TCP=<node> with UDP following TCP. Nothing is written by this block: the
+-- values become canonical only when the page is saved, and the merged option is
+-- removed at that point.
+local legacy_node = m:get(s.section, "node") or ""
+local o_tcp_field = s.fields["tcp_node"]
+o_tcp_field.cfgvalue = function(self, section)
+	local v = self.map:get(section, self.option)
+	if (v == nil or v == "") and legacy_node ~= "" then
+		return legacy_node
+	end
+	return v
+end
+local o_udp_field = s.fields["udp_node"]
+o_udp_field.cfgvalue = function(self, section)
+	local v = self.map:get(section, self.option)
+	if v == nil and legacy_node ~= "" then
+		return "tcp"
+	end
+	return v
+end
+
+current_node_id = m:get(s.section, "tcp_node")
+if current_node_id == nil or current_node_id == "" then
+	current_node_id = legacy_node
+end
+local node_value = s.fields["tcp_node"]:formvalue(s.section)
 if node_value then
 	current_node_id = node_value
 end
@@ -46,11 +86,11 @@ o = s:taboption("Main", Value, "node_socks_port", translate("Node") .. " Socks "
 o.default = 1070
 o.placeholder = 1070
 o.datatype = "range(1,65535)"
-o:depends({ node = "", ['!reverse'] = true })
+o:depends({ tcp_node = "", ['!reverse'] = true })
 
 o = s:taboption("Main", Flag, "node_socks_bind_local", translate("Node") .. " Socks " .. translate("Bind Local"), translate("When selected, it can only be accessed localhost."))
 o.default = "1"
-o:depends({ node = "", ['!reverse'] = true })
+o:depends({ tcp_node = "", ['!reverse'] = true })
 
 -- [[ DNS Settings ]]--
 s:tab("DNS", translate("DNS"))
@@ -510,8 +550,13 @@ function s2.remove(e, t)
 	if node0 then
 		new_node = node0[".name"]
 	end
-	if (m:get("@global[0]", "node") or "") == t then
-		m:set('@global[0]', "node", new_node)
+	if (m:get("@global[0]", "tcp_node") or "") == t then
+		m:set('@global[0]', "tcp_node", new_node)
+	end
+	-- Removing the node a UDP selector points at falls back to following TCP,
+	-- which is the only remaining selector that cannot dangle.
+	if (m:get("@global[0]", "udp_node") or "") == t then
+		m:set('@global[0]', "udp_node", "tcp")
 	end
 	m:foreach("acl_rule", function(s)
 		if s["node"] and s["node"] == t then
@@ -558,11 +603,14 @@ o.cfgvalue = function(t, n)
 	]], n, socks, http_status)
 end
 
-local o_node = s.fields["node"]
+local o_tcp_node = s.fields["tcp_node"]
+local o_udp_node = s.fields["udp_node"]
 local o_socks = s2.fields["node"]
 for _, v in ipairs(nodes_table) do
-	o_node:value(v.id, v.remark)
-	o_node.group[#o_node.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
+	o_tcp_node:value(v.id, v.remark)
+	o_tcp_node.group[#o_tcp_node.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
+	o_udp_node:value(v.id, v.remark)
+	o_udp_node.group[#o_udp_node.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 	if v.type ~= "Socks" then
 		o_socks:value(v.id, v.remark)
 		o_socks.group[#o_socks.group+1] = (v.group and v.group ~= "") and v.group or translate("default")

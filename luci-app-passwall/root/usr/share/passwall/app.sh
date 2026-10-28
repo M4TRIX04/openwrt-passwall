@@ -238,7 +238,7 @@ stop_scope_dns_helper() {
 
 fail_acl() {
 	local failed_sid="$1" key cleanup_status=0
-	for key in node redir_port dns_port default fakedns; do
+	for key in node redir_port udp_redir_port dns_port default fakedns; do
 		del_cache_var "ACL_${failed_sid}_${key}" || cleanup_status=1
 	done
 	set_cache_var "ACL_${failed_sid}_failed" 1 || cleanup_status=1
@@ -265,7 +265,7 @@ check_ss_node() {
 
 fail_ss_acl() {
 	local failed_sid="$1" failed_node="$2" failed_config="$3" key
-	for key in node redir_port dns_port default fakedns; do
+	for key in node redir_port udp_redir_port dns_port default fakedns; do
 		del_cache_var "ACL_${failed_sid}_${key}"
 	done
 	if [ -z "$failed_config" ]; then
@@ -335,7 +335,7 @@ fail_hysteria_acl() {
 			echolog "ACL $1: Hysteria cleanup pending: $3"
 		}
 	fi
-	for key in node redir_port dns_port default fakedns; do del_cache_var "ACL_${1}_${key}"; done
+	for key in node redir_port udp_redir_port dns_port default fakedns; do del_cache_var "ACL_${1}_${key}"; done
 	set_cache_var "ACL_${1}_failed" 1
 	if stop_scope_dns_helper acl "$1"; then
 		rm -rf "${TMP_ACL_PATH:?}/$1"
@@ -471,7 +471,7 @@ run_socks() {
 # endpoint value is read back from the instance that mechanism sealed; nothing
 # here launches a second listener or reuses a legacy one as a bound candidate.
 start_global_frozen() {
-	local snapshot layout frozen_node instance node port socks preference=ipv4 family=4 DNS_HELPER_BLOCKED=0
+	local snapshot layout frozen_node frozen_udp served proto instance node port other socks preference=ipv4 family=4 DNS_HELPER_BLOCKED=0
 	[ -n "$PW_BOUND_HELPER" ] && [ -f "$PW_BOUND_HELPER" ] || {
 		echolog "全局节点：冻结运行适配器缺失，停止启动。"
 		return 1
@@ -487,14 +487,32 @@ start_global_frozen() {
 	}
 	layout=$PW_SNAPSHOT_LAYOUT
 	frozen_node=$PW_SNAPSHOT_TCP
-	# The firewall still routes one Global port for both protocols. A split
-	# layout needs that work (B4), so it is refused instead of half-starting.
-	if [ "$layout" != "combined" ]; then
-		echolog "全局节点：冻结路径本轮仅支持 TCP/UDP 同节点（当前 ${layout}），已拒绝启动。"
-		return 1
+	frozen_udp=$PW_SNAPSHOT_UDP
+	case "$layout" in
+		closed) served="" ;;
+		combined|split) served="TCP UDP" ;;
+		tcp) served="TCP" ;;
+		udp) served="UDP" ;;
+		*) echolog "全局节点：未知布局 ${layout}，已拒绝启动。"; return 1 ;;
+	esac
+	# A scope without a TCP node has no instance for the DNS helper to depend on
+	# (dns_dependency.sh requires one). Refuse before anything is started rather
+	# than leaving a half-started scope behind. Modes that do not consume that
+	# listener keep their existing behaviour and are not claimed as verified.
+	if [ -n "$served" ] && [ -z "$frozen_node" ]; then
+		case "${DNS_MODE:-tcp}" in
+			dns2socks|socks)
+				echolog "全局节点：UDP-only 与 DNS 模式 ${DNS_MODE} 不兼容（该模式依赖 TCP 节点的 SOCKS 监听），已拒绝启动。"
+				return 1
+			;;
+		esac
 	fi
 	[ "$PROXY_IPV6" != "1" ] || { preference=ipv6; family=6; }
-	echolog "全局节点：[${frozen_node}]，冻结绑定启动。"
+	if [ -n "$served" ]; then
+		echolog "全局节点：[TCP:${frozen_node:-关闭}] [UDP:${frozen_udp:-关闭}]，冻结绑定启动。"
+	else
+		echolog "全局节点：TCP/UDP 均已关闭，不启动全局代理。"
+	fi
 	# A previous generation's DNS helper is stopped before its instance is
 	# replaced, in the same order stop() uses. An unconfirmed stop blocks the new
 	# helper instead of running two claims side by side.
@@ -504,32 +522,64 @@ start_global_frozen() {
 		DNS_HELPER_BLOCKED=1
 	}
 	passwall_start_bound_global_nodes "$snapshot" "$preference" "$family" || return 1
-	instance=$(get_cache_var ACL_GLOBAL_TCP_instance) || return 1
-	case "$instance" in
-		"$GLOBAL_ACL_PATH"/split/instance.*/config.json) ;;
-		*) echolog "全局节点：绑定实例发布指针无效。"; return 1 ;;
-	esac
-	instance=${instance%/config.json}
-	node=$(sed -n '2p' "$instance/meta") || return 1
-	port=$(sed -n '3p' "$instance/meta") || return 1
-	socks=$(cat "$instance/socks_port") || return 1
-	# A combined instance serves both protocols on one port and must be the node
-	# the frozen snapshot selected. Anything else is not a usable endpoint.
-	if [ "$node" != "$frozen_node" ] || [ -z "$port" ] || [ -z "$socks" ] ||
-		[ "$(sed -n '4p' "$instance/meta")" != "$port" ]; then
-		echolog "全局节点：绑定实例端点记录不完整。"
-		return 1
+	# A closed layout has already stopped any previous generation through
+	# passwall_stop_global_nodes and must not publish an endpoint or a helper.
+	# Reporting success here is what keeps "both protocols closed" from being
+	# mistaken for a refused start.
+	if [ -z "$served" ]; then
+		NODE= REDIR_PORT= GLOBAL_SOCKS_server= UDP_NODE= UDP_REDIR_PORT=
+		return 0
 	fi
+	# Validate and bridge each protocol the layout serves, from the instance that
+	# published it. A protocol the layout does not serve keeps an empty identity
+	# and port so the firewall adds no rule for it; nothing is inferred from the
+	# other protocol, and a missing endpoint is a hard failure rather than a
+	# silent cross-protocol fallback.
+	NODE= REDIR_PORT= GLOBAL_SOCKS_server= UDP_NODE= UDP_REDIR_PORT=
+	for proto in $served; do
+		instance=$(get_cache_var "ACL_GLOBAL_${proto}_instance") || return 1
+		case "$instance" in
+			"$GLOBAL_ACL_PATH"/split/instance.*/config.json) ;;
+			*) echolog "全局节点：${proto} 绑定实例发布指针无效。"; return 1 ;;
+		esac
+		instance=${instance%/config.json}
+		node=$(sed -n '2p' "$instance/meta") || return 1
+		if [ "$proto" = TCP ]; then
+			port=$(sed -n '3p' "$instance/meta") || return 1
+			other=$(sed -n '4p' "$instance/meta") || return 1
+			[ "$node" = "$frozen_node" ] || { echolog "全局节点：TCP 绑定实例节点记录不一致。"; return 1; }
+		else
+			port=$(sed -n '4p' "$instance/meta") || return 1
+			other=$(sed -n '3p' "$instance/meta") || return 1
+			[ "$node" = "$frozen_udp" ] || { echolog "全局节点：UDP 绑定实例节点记录不一致。"; return 1; }
+		fi
+		[ -n "$port" ] || { echolog "全局节点：${proto} 绑定实例端口记录缺失。"; return 1; }
+		if [ "$layout" = combined ]; then
+			# One instance serves both protocols on one port.
+			[ "$other" = "$port" ] || { echolog "全局节点：${proto} 绑定实例端点记录不完整。"; return 1; }
+		else
+			# A single-protocol instance must not carry the other protocol's port.
+			[ -z "$other" ] || { echolog "全局节点：${proto} 绑定实例混用了另一协议端口。"; return 1; }
+		fi
+		if [ "$proto" = TCP ]; then
+			socks=$(cat "$instance/socks_port") || return 1
+			[ -n "$socks" ] || { echolog "全局节点：TCP 绑定实例 SOCKS 监听记录缺失。"; return 1; }
+			NODE=$node
+			REDIR_PORT=$port
+			GLOBAL_SOCKS_server="127.0.0.1:$socks"
+		else
+			UDP_NODE=$node
+			UDP_REDIR_PORT=$port
+		fi
+	done
 	# Bridge only what the DNS and firewall consumers still read. These values
 	# are the instance's own, so the frozen candidate keys published above stay
 	# authoritative for 3B.
-	NODE=$node
-	REDIR_PORT=$port
-	GLOBAL_SOCKS_server="127.0.0.1:$socks"
-	echo "${NODE}" >> $TMP_PATH/direct_node_list
+	[ -z "$NODE" ] || echo "${NODE}" >> $TMP_PATH/direct_node_list
 	# DNS-H4-F2-C: the helper depends on this instance and is verified here.
 	# start_dns below consumes its published claim as the production upstream.
-	[ "$DNS_HELPER_BLOCKED" = 0 ] &&
+	# A UDP-only scope has no such instance; its compatibility is decided above.
+	[ "$DNS_HELPER_BLOCKED" = 0 ] && [ -n "$NODE" ] &&
 		start_global_dns_helper "$snapshot" "$frozen_node" "$preference" "$family"
 	# start() publishes the complete endpoint only after DNS also succeeds.
 	return 0
@@ -1256,9 +1306,12 @@ acl_app() {
 			[ "$(config_n_get $sid enabled)" = "1" ] || continue
 			local check_node=$(config_n_get "$sid" node)
 			local GLOBAL_NODE=$(get_cache_var "ACL_GLOBAL_node")
+			# A UDP-only global publishes no TCP node, but inheritance still
+			# applies; the identity is only used for enablement and matching.
+			[ -n "$GLOBAL_NODE" ] || GLOBAL_NODE=$(get_cache_var "ACL_GLOBAL_UDP_node")
 			local inherit_global=0 no_proxy=0
 			if [ "$(config_n_get "$sid" use_global_config 0)" = 1 ] || [ "$check_node" = default ]; then
-				check_node="$NODE"
+				check_node="${NODE:-$UDP_NODE}"
 				inherit_global=1
 			fi
 			[ -n "$GLOBAL_NODE" ] && [ "$check_node" = "$GLOBAL_NODE" ] && inherit_global=1
@@ -1337,7 +1390,7 @@ acl_app() {
 			if [ "$no_proxy" = 1 ]; then
 				# Clear only this ACL's published proxy state; shared instances stay owned.
 				local key
-				for key in node redir_port dns_port default fakedns; do
+				for key in node redir_port udp_redir_port dns_port default fakedns; do
 					del_cache_var "ACL_${sid}_${key}" || return 1
 				done
 				unset use_global_config
@@ -1361,6 +1414,7 @@ acl_app() {
 			[ -n "$node" ] && {
 				[ -n "${GLOBAL_NODE}" ] && {
 					local GLOBAL_redir_port=$(get_cache_var "ACL_GLOBAL_redir_port")
+					local GLOBAL_udp_redir_port=$(get_cache_var "ACL_GLOBAL_UDP_redir_port")
 					local GLOBAL_dns_port=$(get_cache_var "ACL_default_dns_port")
 					[ "$node" = "${GLOBAL_NODE}" ] && node="default"
 				}
@@ -1368,9 +1422,17 @@ acl_app() {
 					if [ -n "${GLOBAL_NODE}" ]; then
 						# DNS_REDIRECT=0 intentionally uses the system dnsmasq on port 53.
 						[ "$DNS_REDIRECT" != 0 ] || GLOBAL_dns_port=${GLOBAL_dns_port:-53}
-						if [ -z "$GLOBAL_redir_port" ] || [ -z "$GLOBAL_dns_port" ] || ! set_cache_vars \
+						# A canonical global publishes one port per protocol, so an
+						# inheriting ACL must take each one separately. The legacy
+						# merged global has a single port for both protocols.
+						if [ -z "$PW_GLOBAL_FROZEN" ]; then
+							GLOBAL_udp_redir_port=$GLOBAL_redir_port
+						fi
+						if { [ -z "$GLOBAL_redir_port" ] && [ -z "$GLOBAL_udp_redir_port" ]; } ||
+							[ -z "$GLOBAL_dns_port" ] || ! set_cache_vars \
 							"ACL_${sid}_node" "$GLOBAL_NODE" \
 							"ACL_${sid}_redir_port" "$GLOBAL_redir_port" \
+							"ACL_${sid}_udp_redir_port" "$GLOBAL_udp_redir_port" \
 							"ACL_${sid}_dns_port" "$GLOBAL_dns_port" \
 							"ACL_${sid}_default" 1; then
 							fail_acl "$sid" "cannot publish global inheritance" || return 1
@@ -1539,7 +1601,7 @@ start() {
 	# Only start_global/start_dns below may publish this run's global endpoint.
 	# Preserve independent SOCKS services, device ACLs and shared node caches.
 	local key
-	for key in ACL_GLOBAL_node ACL_GLOBAL_redir_port ACL_default_dns_port GLOBAL_SOCKS_server ACL_GLOBAL_failed; do
+	for key in ACL_GLOBAL_node ACL_GLOBAL_redir_port ACL_GLOBAL_UDP_node ACL_GLOBAL_UDP_redir_port ACL_default_dns_port GLOBAL_SOCKS_server ACL_GLOBAL_failed; do
 		del_cache_var "$key" || return 1
 	done
 	# Enabled is a success marker, published with the endpoint after DNS completes.
@@ -1588,7 +1650,9 @@ start() {
 		else
 			start_global
 		fi || {
-			if [ "$(config_n_get "$NODE" type)" = Hysteria ]; then
+			# The failing protocol may be the UDP-only one, so the core that
+			# failed is taken from whichever selector is in use.
+			if [ "$(config_n_get "${NODE:-$UDP_NODE}" type)" = Hysteria ]; then
 				ENABLED_DEFAULT_ACL=0
 				set_cache_vars ENABLED_DEFAULT_ACL 0 ACL_GLOBAL_failed 1 || return 1
 			else
@@ -1603,12 +1667,24 @@ start() {
 			return 1
 		}
 		if [ "$ENABLED_DEFAULT_ACL" = 1 ]; then
-			if [ -z "$NODE" ] || [ -z "$REDIR_PORT" ] || [ -z "$GLOBAL_SOCKS_server" ] ||
-				{ [ "$DNS_REDIRECT" != 0 ] && [ -z "$ACL_default_dns_port" ]; } || ! set_cache_vars \
+			# Publish per protocol. A protocol is complete only when its own node
+			# and port exist; TCP additionally needs its SOCKS listener because
+			# DNS depends on it. Nothing is copied across protocols, so a scope
+			# that lost one endpoint fails here instead of forwarding to a port
+			# that belongs to the other protocol.
+			local global_ok=1
+			[ -n "$NODE$UDP_NODE" ] || global_ok=0
+			[ -z "$NODE" ] || { [ -n "$REDIR_PORT" ] && [ -n "$GLOBAL_SOCKS_server" ]; } || global_ok=0
+			[ -z "$UDP_NODE" ] || [ -n "$UDP_REDIR_PORT" ] || global_ok=0
+			[ "$DNS_REDIRECT" = 0 ] || [ -n "$ACL_default_dns_port" ] || global_ok=0
+			if [ "$global_ok" != 1 ] || ! set_cache_vars \
 				ACL_GLOBAL_redir_port "$REDIR_PORT" \
+				ACL_GLOBAL_node "$NODE" \
+				ACL_GLOBAL_UDP_redir_port "$UDP_REDIR_PORT" \
+				ACL_GLOBAL_UDP_node "$UDP_NODE" \
 				ACL_default_dns_port "$ACL_default_dns_port" \
 				GLOBAL_SOCKS_server "$GLOBAL_SOCKS_server" \
-				ACL_GLOBAL_node "$NODE" ENABLED_DEFAULT_ACL 1; then
+				ENABLED_DEFAULT_ACL 1; then
 				ENABLED_DEFAULT_ACL=0
 				echolog "Global cache publication failed; aborting firewall initialization."
 				return 1
@@ -1734,14 +1810,34 @@ get_config() {
 	# are mutually exclusive, which is what keeps exactly one Global launcher.
 	PW_GLOBAL_FROZEN=
 	if [ -z "$NODE" ]; then
+		# An absent merged selector means the section is canonical, including the
+		# case where both protocols are closed. Presence of `node` always keeps
+		# the legacy merged launcher, so a canonical pair left behind by an older
+		# experiment can never take over a section the user has not migrated.
+		PW_GLOBAL_FROZEN=1
 		NODE=$(config_n_get @global[0] tcp_node)
-		[ -z "$NODE" ] || PW_GLOBAL_FROZEN=1
 	fi
+	# Per-protocol selector. The legacy merged selector proxies both protocols
+	# with one node; a canonical section states UDP explicitly (`tcp` follows the
+	# TCP node, empty closes it). start_global_frozen re-resolves both from the
+	# frozen snapshot and overwrites them before the firewall runs.
+	UDP_NODE=$NODE
+	if [ -n "$PW_GLOBAL_FROZEN" ]; then
+		passwall_resolve_node_pair "$NODE" "$(config_n_get @global[0] udp_node)" || return 1
+		UDP_NODE=$PW_NODE_UDP
+	fi
+	UDP_REDIR_PORT=$REDIR_PORT
 
 	[ "$ENABLED" = 1 ] && {
-		if [ -n "$NODE" ] && ([ "$(config_get_type $NODE)" = "nodes" ] || [ "$(config_get_type $NODE)" = "socks" ]); then
-			ENABLED_DEFAULT_ACL=1
-		fi
+		# Either protocol may be the only configured one: a UDP-only scope still
+		# needs the launcher and its own firewall rules.
+		for _pw_sel in "$NODE" "$UDP_NODE"; do
+			[ -n "$_pw_sel" ] || continue
+			if [ "$(config_get_type $_pw_sel)" = "nodes" ] || [ "$(config_get_type $_pw_sel)" = "socks" ]; then
+				ENABLED_DEFAULT_ACL=1
+			fi
+		done
+		unset _pw_sel
 	}
 	ENABLED_ACLS=$(config_n_get @global[0] acl_enable 0)
 	# The global enabled marker is committed by start() with its complete endpoint.

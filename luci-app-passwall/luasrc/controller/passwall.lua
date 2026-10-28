@@ -202,7 +202,7 @@ function get_redir_log()
 
 	local name = "global"
 	if id and id ~= "default" then
-		local global_node = uci_get("@global[0]", "node") or "nil"
+		local global_node = uci_get("@global[0]", "tcp_node") or uci_get("@global[0]", "node") or "nil"
 		local acl_node = uci_get(id, "node") or "nil"
 		local global_enabled = uci_get("@global[0]", "enabled") == "1"
 		if acl_node == global_node and global_enabled then
@@ -240,7 +240,7 @@ function get_chinadns_log()
 	local flag = http.formvalue("flag")
 	local path = api.TMP_PATH .. "/acl/" .. flag .. "/chinadns_ng.log"
 	if flag ~= "default" then
-		local global_node = uci_get("@global[0]", "node") or "nil"
+		local global_node = uci_get("@global[0]", "tcp_node") or uci_get("@global[0]", "node") or "nil"
 		local acl_node = uci_get(flag, "node") or "nil"
 		if acl_node == global_node and uci_get("@global[0]", "enabled") == "1" then
 			path = api.TMP_PATH .. "/acl/default/chinadns_ng.log"
@@ -490,6 +490,11 @@ function clear_all_nodes()
 	uci_set('@global[0]', "enabled", "0")
 	uci_set('@global[0]', "socks_enabled", "0")
 	uci_del('@global[0]', "node")
+	-- Every node is removed below, so the per-protocol selectors cannot keep
+	-- naming one. `udp_node=tcp` is the follow-TCP marker rather than a node
+	-- reference, but with no TCP node left it resolves to closed anyway.
+	uci_del('@global[0]', "tcp_node")
+	uci_del('@global[0]', "udp_node")
 	uci_foreach("socks", function(t)
 		uci_del(t[".name"])
 		uci_set(t[".name"], "autoswitch_backup_node", {})
@@ -512,6 +517,15 @@ function delete_select_nodes()
 		ids_t[#ids_t + 1] = w
 		if (uci_get("@global[0]", "node") or "") == w then
 			uci_del('@global[0]', "node")
+		end
+		-- Clear only the per-protocol selector that names this node. `tcp_node`
+		-- has no marker value, while `udp_node=tcp` means "follow the TCP node"
+		-- and must survive a deletion that does not touch the TCP selector.
+		if (uci_get("@global[0]", "tcp_node") or "") == w then
+			uci_del('@global[0]', "tcp_node")
+		end
+		if w ~= "tcp" and (uci_get("@global[0]", "udp_node") or "") == w then
+			uci_del('@global[0]', "udp_node")
 		end
 		uci_foreach("socks", function(t)
 			local changed = false

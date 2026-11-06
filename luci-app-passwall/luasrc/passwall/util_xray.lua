@@ -649,7 +649,6 @@ function gen_config_server(node)
 
 	local config = {
 		log = {
-			-- error = "/tmp/etc/passwall_server/log/" .. user[".name"] .. ".log",
 			loglevel = ("1" == node.log) and node.loglevel or "none"
 		},
 		-- 传入连接

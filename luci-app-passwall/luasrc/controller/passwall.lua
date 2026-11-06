@@ -50,16 +50,7 @@ function index()
 	entry({"admin", "services", appname, "acl_config"}, cbi(appname .. "/client/acl_config")).leaf = true
 	entry({"admin", "services", appname, "log"}, form(appname .. "/client/log"), _("Runtime Logs"), 999).leaf = true
 
-	--[[ Server ]]
-	entry({"admin", "services", appname, "server"}, cbi(appname .. "/server/index"), _("Server-Side"), 99).leaf = true
-	entry({"admin", "services", appname, "server_user"}, cbi(appname .. "/server/user")).leaf = true
-
 	--[[ API ]]
-	entry({"admin", "services", appname, "server_user_update"}, call("server_user_update")).leaf = true
-	entry({"admin", "services", appname, "server_user_status"}, call("server_user_status")).leaf = true
-	entry({"admin", "services", appname, "server_user_log"}, call("server_user_log")).leaf = true
-	entry({"admin", "services", appname, "server_get_log"}, call("server_get_log")).leaf = true
-	entry({"admin", "services", appname, "server_clear_log"}, call("server_clear_log")).leaf = true
 	entry({"admin", "services", appname, "link_add_node"}, call("link_add_node")).leaf = true
 	entry({"admin", "services", appname, "socks_autoswitch_add_node"}, call("socks_autoswitch_add_node")).leaf = true
 	entry({"admin", "services", appname, "socks_autoswitch_remove_node"}, call("socks_autoswitch_remove_node")).leaf = true
@@ -713,49 +704,6 @@ function rollback_rules()
 	http_write_json_ok()
 end
 
-function server_user_update()
-	local id = http.formvalue("id") -- Node id
-	local data = http.formvalue("data") -- json new Data
-	if id and data then
-		local data_t = jsonParse(data) or {}
-		if next(data_t) then
-			for k, v in pairs(data_t) do
-				uci:set(appname .. "_server", id, k, v)
-			end
-			api.uci_save(uci, appname .. "_server")
-			http_write_json_ok()
-			return
-		end
-	end
-	http_write_json_error()
-end
-
-function server_user_status()
-	local e = {}
-	e.index = http.formvalue("index")
-	e.status = luci.sys.call(string.format("/bin/busybox top -bn1 | grep -v 'grep' | grep '%s/bin/' | grep -i '%s' >/dev/null", appname .. "_server", http.formvalue("id"))) == 0
-	http_write_json(e)
-end
-
-function server_user_log()
-	local id = http.formvalue("id")
-	if fs.access("/tmp/etc/passwall_server/" .. id .. ".log") then
-		local content = luci.sys.exec("cat /tmp/etc/passwall_server/" .. id .. ".log")
-		content = content:gsub("\n", "<br />")
-		http.write(content)
-	else
-		http.write(string.format("<script>alert('%s');window.close();</script>", i18n.translate("Not enabled log")))
-	end
-end
-
-function server_get_log()
-	http.write(luci.sys.exec("[ -f '/tmp/log/passwall_server.log' ] && cat /tmp/log/passwall_server.log"))
-end
-
-function server_clear_log()
-	luci.sys.call("echo '' > /tmp/log/passwall_server.log")
-end
-
 function app_check()
 	local json = api.to_check_self()
 	http_write_json(json)
@@ -801,7 +749,6 @@ end
 
 local backup_files = {
     "/etc/config/passwall",
-    "/etc/config/passwall_server",
     "/usr/share/passwall/rules/block_host",
     "/usr/share/passwall/rules/block_ip",
     "/usr/share/passwall/rules/direct_host",
@@ -867,7 +814,6 @@ function restore_backup()
 				api.log(" * PassWall 配置还原成功…")
 				api.log(" * 重启 PassWall 服务中…\n")
 				luci.sys.call('/etc/init.d/passwall restart > /dev/null 2>&1 &')
-				luci.sys.call('/etc/init.d/passwall_server restart > /dev/null 2>&1 &')
 				result = { status = "success", message = "Upload completed", path = file_path }
 			else
 				api.log(" * PassWall 配置文件解压失败，请重试！")

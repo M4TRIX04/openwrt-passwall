@@ -1607,17 +1607,20 @@ local current_node = map:get(section)
 			}
 			opt.set(dom_prefix + 'address', unbracketIP(m.hostname));
 			opt.set(dom_prefix + 'port', m.port || "443");
-			opt.set(dom_prefix + 'protocol', queryParam.protocol);
-			opt.set(dom_prefix + 'obfs', queryParam.obfsParam);
-			opt.set(dom_prefix + 'auth_type', (queryParam.auth && queryParam.auth !== "") ? "string" : "disable");
-			opt.set(dom_prefix + 'auth_password', queryParam.auth || "");
-			opt.set(dom_prefix + 'tls_serverName', queryParam.peer);
-			if (queryParam.insecure && queryParam.insecure == "1") {
-				opt.set(dom_prefix + 'tls_allowInsecure', true);
+			// 链接里没有的参数不要写 undefined，保留表单默认值
+			if (queryParam.protocol) opt.set(dom_prefix + 'protocol', queryParam.protocol);
+			if (queryParam.obfsParam) opt.set(dom_prefix + 'obfs', queryParam.obfsParam);
+			if (queryParam.auth && queryParam.auth !== "") {
+				opt.set(dom_prefix + 'auth_type', "string");
+				opt.set(dom_prefix + 'auth_password', queryParam.auth);
+			} else {
+				opt.set(dom_prefix + 'auth_type', "disable");
 			}
-			opt.set(dom_prefix + 'alpn', queryParam.alpn);
-			opt.set(dom_prefix + 'up_mbps', queryParam.upmbps);
-			opt.set(dom_prefix + 'down_mbps', queryParam.downmbps);
+			if (queryParam.peer) opt.set(dom_prefix + 'tls_serverName', queryParam.peer);
+			opt.set(dom_prefix + 'tls_allowInsecure', queryParam.insecure == "1");
+			if (queryParam.alpn) opt.set(dom_prefix + 'alpn', queryParam.alpn);
+			if (queryParam.upmbps) opt.set(dom_prefix + 'up_mbps', queryParam.upmbps);
+			if (queryParam.downmbps) opt.set(dom_prefix + 'down_mbps', queryParam.downmbps);
 			if (m.hash) {
 				opt.set('remarks', decodeURIComponent(m.hash.substr(1)));
 			}

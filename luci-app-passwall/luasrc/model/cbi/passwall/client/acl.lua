@@ -5,7 +5,13 @@ local sys = api.sys
 m = Map(appname)
 api.set_apply_on_parse(m)
 
-s = m:section(TypedSection, "global", translate("ACLs"), "<font color='red'>" .. translate("ACLs is a tools which used to designate specific IP proxy mode.") .. "</font>")
+s = m:section(TypedSection, "global", translate("ACLs"),
+	"<font color='red'>" ..
+	translate("Assign a proxy mode to each client:") ..
+	"<br />" .. translate("Proxy") .. " - " .. translate("Follow the global settings") ..
+	"<br />" .. translate("Direct") .. " - " .. translate("Bypass PassWall completely") .. " (" .. translate("including DNS") .. ")" ..
+	"<br />" .. translate("Custom Node") .. " - " .. translate("Use a dedicated node and DNS") ..
+	"</font>")
 s.anonymous = true
 
 o = s:option(Flag, "acl_enable", translate("Main switch"))

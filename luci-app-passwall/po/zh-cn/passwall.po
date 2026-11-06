@@ -2156,3 +2156,12 @@ msgstr "直连模式下，该来源的流量与 DNS 都不经过 PassWall。"
 msgid "Custom Node exposes the advanced per-ACL settings below."
 msgstr "自定义节点会展开下方所有高级设置。"
 
+msgid "Assign a proxy mode to each client:"
+msgstr "为每个客户端选择代理模式："
+
+msgid "including DNS"
+msgstr "含 DNS"
+
+msgid "Use a dedicated node and DNS"
+msgstr "使用独立节点与 DNS"
+

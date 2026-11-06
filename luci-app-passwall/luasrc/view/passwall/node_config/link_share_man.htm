@@ -948,6 +948,13 @@ local current_node = map:get(section)
 			};
 			method = mapping[_method] || _method;
 
+			// SS 只接受 AEAD 加密，与服务端/客户端下拉保持一致
+			const SS_AEAD_METHODS = ["aes-128-gcm", "aes-192-gcm", "aes-256-gcm", "chacha20-ietf-poly1305", "xchacha20-ietf-poly1305"];
+			if (!SS_AEAD_METHODS.includes(method)) {
+				s.innerHTML = "<font color='red'><%:Encrypt Method%>: " + method + " (AEAD only)</font>";
+				return false;
+			}
+
 			opt.set(dom_prefix + 'address', unbracketIP(server));
 			opt.set(dom_prefix + 'port', port);
 			opt.set(dom_prefix + 'password', password || "");

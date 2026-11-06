@@ -163,7 +163,10 @@ local current_node = map:get(section)
 
 		var dom_prefix = null
 		var protocol = ""
-		if (v_type === "Hysteria2") {
+		if (v_type === "SS") {
+			dom_prefix = "ss_"
+			protocol = "ss"
+		} else if (v_type === "Hysteria2") {
 			dom_prefix = "hysteria2_"
 			protocol = "hysteria2"
 		} else if (v_type === "Xray") {
@@ -185,7 +188,7 @@ local current_node = map:get(section)
 			}
 		}
 		var url = null;
-		if ((v_type === "sing-box" || v_type === "Xray") && opt.get(dom_prefix + "protocol").value === "shadowsocks") {
+		if (v_type === "SS" || ((v_type === "sing-box" || v_type === "Xray") && opt.get(dom_prefix + "protocol").value === "shadowsocks")) {
 			protocol = "ss"
 			var v_port = opt.get(dom_prefix + "port");
 			var v_method = opt.get(dom_prefix + "method") || opt.get(dom_prefix + "ss_method");

@@ -1569,9 +1569,10 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		end
 	end
 	-- SS 节点只接受 AEAD 加密，其余跳过（订阅里常见的 rc4-md5 / aes-*-cfb 等）
-	if result.method and (result.type == "SS" or result.protocol == "shadowsocks") then
-		if not SS_AEAD_METHODS[tostring(result.method):lower()] then
-			log("跳过节点：" .. tostring(result.remarks) .. "，加密方式 " .. tostring(result.method) .. " 不是 AEAD。")
+	if result.type == "SS" or result.protocol == "shadowsocks" then
+		local _m = result.method and tostring(result.method):lower() or ""
+		if not SS_AEAD_METHODS[_m] then
+			log("跳过节点：" .. tostring(result.remarks) .. "，加密方式 " .. (_m ~= "" and _m or "空") .. " 不是 AEAD。")
 			return nil
 		end
 	end

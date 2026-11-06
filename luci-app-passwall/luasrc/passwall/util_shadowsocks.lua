@@ -10,13 +10,7 @@ function gen_config_server(node)
 	config.timeout = tonumber(node.timeout)
 	config.fast_open = (node.tcp_fast_open and node.tcp_fast_open == "1") and true or false
 	config.method = node.method
-
-	if node.type == "SS-Rust" then
-		config.server = "::"
-		config.mode = "tcp_and_udp"
-	else
-		config.server = {"[::0]", "0.0.0.0"}
-	end
+	config.server = {"[::0]", "0.0.0.0"}
 
 	return config
 end

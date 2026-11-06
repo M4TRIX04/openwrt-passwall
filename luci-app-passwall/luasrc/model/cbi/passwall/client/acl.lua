@@ -30,7 +30,6 @@ function s.create(e, t)
 	-- 但此时还没有配置源，而底层的「空源」等于「所有设备」，
 	-- 所以先禁用，等用户填好源并勾上 Enable 后再生效，避免一建就误伤全网。
 	m:set(t, "acl_mode", "direct")
-	m:set(t, "use_global_config", "0")
 	m:set(t, "enabled", "0")
 	luci.http.redirect(e.extedit:format(t))
 end

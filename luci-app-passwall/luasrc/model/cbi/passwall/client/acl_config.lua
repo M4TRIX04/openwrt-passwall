@@ -81,6 +81,16 @@ if not valid_mode(m:get(arg[1], "acl_mode")) then
 	m:set(arg[1], "acl_mode", api.get_acl_mode(arg[1]))
 end
 
+-- use_global_config 字段已移除（它的语义等于「选中和全局相同的节点」）。
+-- 旧配置里它是 1 且没选节点时，这里翻译成「选中全局节点」，保存后即固化；
+-- 不保存也没关系 —— 底层仍然认这个字段，行为不变。
+if m:get(arg[1], "use_global_config") == "1" and (m:get(arg[1], "tcp_node") or "") == "" then
+	local global_node = m:get("@global[0]", "tcp_node")
+	if global_node and global_node ~= "" then
+		m:set(arg[1], "tcp_node", global_node)
+	end
+end
+
 ---- Proxy Mode
 -- direct = 完全直连（TCP/UDP 与 DNS 都不进入 PassWall 的处理链）
 -- custom = 自定义节点（独立节点、独立 DNS、独立端口设置）
@@ -104,13 +114,14 @@ o.write = function(self, section, value)
 	value = value or "direct"
 	m:set(section, "acl_mode", value)
 
+	-- 这个字段已经不在界面上，保存时顺手清掉，避免残留值影响底层判断
+	-- （旧的 use_global_config=1 已经在上面翻译成具体的 tcp_node 了）。
+	m:del(section, "use_global_config")
+
 	-- 把模式语义下沉到下面这几个字段上（见 acl_mode_of 的用法）。
 	-- 这里先兜底写一遍，保证即使某个字段被 depends 隐藏、没有参与提交，
 	-- 底层字段也不会残留上一种模式的值。
-	-- custom 分支不动 use_global_config：老配置里它可能是 1（表示复用全局节点），
-	-- 保留下来行为不变，用户在页面上能看到这个勾选。
 	if value == "direct" then
-		m:set(section, "use_global_config", "0")
 		m:set(section, "tcp_no_redir_ports", "1:65535")
 		m:set(section, "udp_no_redir_ports", "1:65535")
 	end
@@ -275,26 +286,11 @@ o:depends({ tcp_no_redir_ports = "1:65535", udp_no_redir_ports = "1:65535" })
 if TCP_NO_REDIR_PORTS == "1:65535" and UDP_NO_REDIR_PORTS == "1:65535" then
 	o:depends({ tcp_no_redir_ports = "", udp_no_redir_ports = "" })
 end
--- 直连模式下端口字段被固定成 1:65535，上面两组自然会命中，
--- 所以 use_global_config 那个取反依赖在直连模式下自动失效，不需要额外加条件。
--- （提醒：不要往 use_global_config 的依赖组里塞条件 —— ['!reverse'] 是整组取反，
---  多加一个条件等于把条件也一起取反，字段会在非 custom 模式下反而显示出来。）
-
-o = s:option(Flag, "use_global_config", translatef("Use global config"))
-o.default = "0"
-o.rmempty = false
-o:depends({ _hide_node_option = "1",  ['!reverse'] = true })
-o.write = function(self, section, value)
-	-- 直连模式下这个字段不可见，强制写成 0，避免残留上一次的勾选
-	if acl_mode_of(section) == "direct" then
-		value = "0"
-	end
-	return Flag.write(self, section, value)
-end
+-- 直连模式下端口字段被固定成 1:65535，上面两组自然会命中，节点选择器随之隐藏。
 
 o = s:option(ListValue, "tcp_node", "<a style='color: red'>" .. translate("TCP Node") .. "</a>")
 o.default = ""
-o:depends({ acl_mode = "custom", _hide_node_option = false, use_global_config = false })
+o:depends({ acl_mode = "custom", _hide_node_option = false })
 o.template = appname .. "/cbi/nodes_listvalue"
 o.group = {}
 o.remove = function(self, section)
@@ -348,7 +344,6 @@ o = s:option(Value, "tcp_proxy_drop_ports", translate("TCP Proxy Drop Ports"))
 o:value("", translate("Use global config") .. "(" .. TCP_PROXY_DROP_PORTS .. ")")
 o:value("disable", translate("No patterns are used"))
 o.validate = port_validate
-o:depends({ acl_mode = "custom", use_global_config = true })
 o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 ---- UDP Proxy Drop Ports
@@ -358,7 +353,6 @@ o:value("", translate("Use global config") .. "(" .. UDP_PROXY_DROP_PORTS .. ")"
 o:value("disable", translate("No patterns are used"))
 o:value("443", translate("QUIC"))
 o.validate = port_validate
-o:depends({ acl_mode = "custom", use_global_config = true })
 o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 ---- TCP Redir Ports
@@ -370,7 +364,6 @@ o:value("80,443", "80,443")
 o:value("80:65535", "80 " .. translate("or more"))
 o:value("1:443", "443 " .. translate("or less"))
 o.validate = port_validate
-o:depends({ acl_mode = "custom", use_global_config = true })
 o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 ---- UDP Redir Ports
@@ -380,7 +373,6 @@ o:value("", translate("Use global config") .. "(" .. UDP_REDIR_PORTS .. ")")
 o:value("1:65535", translate("All"))
 o:value("53", "53")
 o.validate = port_validate
-o:depends({ acl_mode = "custom", use_global_config = true })
 o:depends({ acl_mode = "custom", _udp_node_bool = "1" })
 
 o = s:option(DummyValue, "tips", "　")
@@ -389,7 +381,6 @@ o.cfgvalue = function(t, n)
 	return string.format('<font color="red">%s</font>',
 	translate("The port settings support single ports and ranges.<br>Separate multiple ports with commas (,).<br>Example: 21,80,443,1000:2000."))
 end
-o:depends({ acl_mode = "custom", use_global_config = true })
 o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 o = s:option(Flag, "use_direct_list", translatef("Use %s", translate("Direct List")))

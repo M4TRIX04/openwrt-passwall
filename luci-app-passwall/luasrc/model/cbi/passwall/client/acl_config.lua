@@ -275,15 +275,21 @@ o.write = mode_bound_port_write
 o = s:option(DummyValue, "_hide_node_option", "")
 o.template = "passwall/cbi/hidevalue"
 o.value = "1"
-o:depends({ acl_mode = "custom", tcp_no_redir_ports = "1:65535", udp_no_redir_ports = "1:65535" })
+o:depends({ tcp_no_redir_ports = "1:65535", udp_no_redir_ports = "1:65535" })
 if TCP_NO_REDIR_PORTS == "1:65535" and UDP_NO_REDIR_PORTS == "1:65535" then
-	o:depends({ acl_mode = "custom", tcp_no_redir_ports = "", udp_no_redir_ports = "" })
+	o:depends({ tcp_no_redir_ports = "", udp_no_redir_ports = "" })
 end
+-- 代理 / 直连模式下整个节点选择器都不可用，直接把它标记为「隐藏」，
+-- 让下面 use_global_config 那个取反依赖失效。
+-- 不能把 acl_mode 直接塞进那个反向组 —— ['!reverse'] 是整组取反，
+-- 塞进去会让字段在非 custom 模式下反而显示出来。
+o:depends({ acl_mode = "proxy" })
+o:depends({ acl_mode = "direct" })
 
 o = s:option(Flag, "use_global_config", translatef("Use global config"))
 o.default = "0"
 o.rmempty = false
-o:depends({ acl_mode = "custom", _hide_node_option = "1",  ['!reverse'] = true })
+o:depends({ _hide_node_option = "1",  ['!reverse'] = true })
 o.write = function(self, section, value)
 	local mode = acl_mode_of(section)
 	if mode == "proxy" then

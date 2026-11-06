@@ -456,9 +456,9 @@ end
 
 -- 读取 ACL 的代理模式：direct（完全直连）/ custom（自定义节点）
 -- 旧配置没有 acl_mode 字段，按底层字段反推，保证升级后语义不漂移。
--- 注意：早期版本还有一档 proxy（跟随主设置），它和「不加这条 ACL」等价，已移除；
--- use_global_config 字段也已移除（语义等于「选中和全局相同的节点」）。
--- 旧配置里这两者一律按 custom 处理，具体的节点由配置页迁移成显式的 tcp_node。
+-- 注意：早期版本还有一档 proxy（跟随主设置），它和「不加这条 ACL」等价，
+-- 已移除。旧配置里的 proxy / use_global_config=1 一律按 custom 处理 ——
+-- 那个 use_global_config 勾选仍然保留，行为（复用全局节点）不变。
 function get_acl_mode(section)
 	if not section or section == "" then
 		return "direct"

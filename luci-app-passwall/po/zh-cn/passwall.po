@@ -2165,3 +2165,6 @@ msgstr "含 DNS"
 msgid "Use a dedicated node and DNS"
 msgstr "使用独立节点与 DNS"
 
+msgid "ACLs are exceptions to the global settings. Clients without an ACL are proxied normally."
+msgstr "ACL 是全局设置的例外。没有配置 ACL 的客户端照常走代理。"
+

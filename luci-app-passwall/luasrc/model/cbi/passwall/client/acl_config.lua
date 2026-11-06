@@ -74,7 +74,7 @@ s.dynamic = false
 -- 旧配置没有 acl_mode 字段，这里按底层字段反推后写进内存态，
 -- 让 depends 在首次渲染时就能正确求值（GET 请求不会落盘，保存时才写入）。
 local valid_mode = function(v)
-	return v == "proxy" or v == "direct" or v == "custom"
+	return v == "direct" or v == "custom"
 end
 
 if not valid_mode(m:get(arg[1], "acl_mode")) then
@@ -82,13 +82,13 @@ if not valid_mode(m:get(arg[1], "acl_mode")) then
 end
 
 ---- Proxy Mode
--- proxy  = 跟随主设置（复用全局节点与全局 DNS，不额外起进程）
 -- direct = 完全直连（TCP/UDP 与 DNS 都不进入 PassWall 的处理链）
--- custom = 自定义节点（保留原有的独立节点、独立 DNS、独立端口设置）
+-- custom = 自定义节点（独立节点、独立 DNS、独立端口设置）
+-- 注意：早期版本还有一档 proxy（跟随主设置），它和不加这条 ACL 完全等价
+-- （nft 规则、节点、DNS 端口都一样），已移除。旧配置由 get_acl_mode() 归到 custom。
 o = s:option(ListValue, "acl_mode", translate("Proxy Mode"))
-o.default = "proxy"
+o.default = "direct"
 o.rmempty = false
-o:value("proxy", translate("Proxy") .. " (" .. translate("Follow the global settings") .. ")")
 o:value("direct", translate("Direct") .. " (" .. translate("Bypass PassWall completely") .. ")")
 o:value("custom", translate("Custom Node"))
 o.description = translate("Direct mode bypasses PassWall for both traffic and DNS.") .. "<br />" ..
@@ -101,20 +101,18 @@ o.cfgvalue = function(self, section)
 	return api.get_acl_mode(section)
 end
 o.write = function(self, section, value)
-	value = value or "proxy"
+	value = value or "direct"
 	m:set(section, "acl_mode", value)
 
 	-- 把模式语义下沉到下面这几个字段上（见 acl_mode_of 的用法）。
 	-- 这里先兜底写一遍，保证即使某个字段被 depends 隐藏、没有参与提交，
 	-- 底层字段也不会残留上一种模式的值。
+	-- custom 分支不动 use_global_config：老配置里它可能是 1（表示复用全局节点），
+	-- 保留下来行为不变，用户在页面上能看到这个勾选。
 	if value == "direct" then
 		m:set(section, "use_global_config", "0")
 		m:set(section, "tcp_no_redir_ports", "1:65535")
 		m:set(section, "udp_no_redir_ports", "1:65535")
-	elseif value == "proxy" then
-		m:set(section, "use_global_config", "1")
-		m:del(section, "tcp_no_redir_ports")
-		m:del(section, "udp_no_redir_ports")
 	end
 end
 
@@ -128,14 +126,12 @@ local acl_mode_of = function(section)
 	return api.get_acl_mode(section)
 end
 
--- proxy / direct 模式下，端口字段一律由模式决定取值；
--- 这样即使 LuCI 仍然把这些被隐藏的字段写回，也不会破坏模式语义。
+-- direct 模式下端口字段一律固定为「全部不代理」；
+-- 这样即使 LuCI 仍然把这个被隐藏的字段写回，也不会破坏模式语义。
 local mode_bound_port_write = function(self, section, value)
 	local mode = acl_mode_of(section)
 	if mode == "direct" then
 		value = "1:65535"
-	elseif mode == "proxy" then
-		value = ""
 	end
 	return Value.write(self, section, value)
 end
@@ -279,22 +275,18 @@ o:depends({ tcp_no_redir_ports = "1:65535", udp_no_redir_ports = "1:65535" })
 if TCP_NO_REDIR_PORTS == "1:65535" and UDP_NO_REDIR_PORTS == "1:65535" then
 	o:depends({ tcp_no_redir_ports = "", udp_no_redir_ports = "" })
 end
--- 代理 / 直连模式下整个节点选择器都不可用，直接把它标记为「隐藏」，
--- 让下面 use_global_config 那个取反依赖失效。
--- 不能把 acl_mode 直接塞进那个反向组 —— ['!reverse'] 是整组取反，
--- 塞进去会让字段在非 custom 模式下反而显示出来。
-o:depends({ acl_mode = "proxy" })
-o:depends({ acl_mode = "direct" })
+-- 直连模式下端口字段被固定成 1:65535，上面两组自然会命中，
+-- 所以 use_global_config 那个取反依赖在直连模式下自动失效，不需要额外加条件。
+-- （提醒：不要往 use_global_config 的依赖组里塞条件 —— ['!reverse'] 是整组取反，
+--  多加一个条件等于把条件也一起取反，字段会在非 custom 模式下反而显示出来。）
 
 o = s:option(Flag, "use_global_config", translatef("Use global config"))
 o.default = "0"
 o.rmempty = false
 o:depends({ _hide_node_option = "1",  ['!reverse'] = true })
 o.write = function(self, section, value)
-	local mode = acl_mode_of(section)
-	if mode == "proxy" then
-		value = "1"
-	elseif mode == "direct" then
+	-- 直连模式下这个字段不可见，强制写成 0，避免残留上一次的勾选
+	if acl_mode_of(section) == "direct" then
 		value = "0"
 	end
 	return Flag.write(self, section, value)

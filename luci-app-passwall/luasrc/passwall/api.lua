@@ -454,15 +454,18 @@ function get_domain_from_url(url)
 	return url
 end
 
--- 读取 ACL 的代理模式：proxy（跟随主设置）/ direct（完全直连）/ custom（自定义节点）
+-- 读取 ACL 的代理模式：direct（完全直连）/ custom（自定义节点）
 -- 旧配置没有 acl_mode 字段，按底层字段反推，保证升级后语义不漂移。
+-- 注意：早期版本还有一档 proxy（跟随主设置），它和「不加这条 ACL」等价，
+-- 已移除。旧配置里的 proxy / use_global_config=1 一律按 custom 处理 ——
+-- 那个 use_global_config 勾选仍然保留，行为（复用全局节点）不变。
 function get_acl_mode(section)
 	if not section or section == "" then
 		return "direct"
 	end
 
 	local mode = uci:get(appname, section, "acl_mode")
-	if mode == "proxy" or mode == "direct" or mode == "custom" then
+	if mode == "direct" or mode == "custom" then
 		return mode
 	end
 
@@ -478,7 +481,7 @@ function get_acl_mode(section)
 	end
 
 	if uci:get(appname, section, "use_global_config") == "1" then
-		return "proxy"
+		return "custom"
 	end
 
 	local tcp_node = uci:get(appname, section, "tcp_node")

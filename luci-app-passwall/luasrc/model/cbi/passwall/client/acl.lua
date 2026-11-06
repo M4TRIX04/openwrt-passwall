@@ -7,8 +7,7 @@ api.set_apply_on_parse(m)
 
 s = m:section(TypedSection, "global", translate("ACLs"),
 	"<font color='red'>" ..
-	translate("Assign a proxy mode to each client:") ..
-	"<br />" .. translate("Proxy") .. " - " .. translate("Follow the global settings") ..
+	translate("ACLs are exceptions to the global settings. Clients without an ACL are proxied normally.") ..
 	"<br />" .. translate("Direct") .. " - " .. translate("Bypass PassWall completely") .. " (" .. translate("including DNS") .. ")" ..
 	"<br />" .. translate("Custom Node") .. " - " .. translate("Use a dedicated node and DNS") ..
 	"</font>")
@@ -27,10 +26,12 @@ s.addremove = true
 s.extedit = api.url("acl_config", "%s")
 function s.create(e, t)
 	t = TypedSection.create(e, t)
-	-- 新建的 ACL 默认走「代理（跟随主设置）」，与配置页的默认值保持一致；
-	-- 否则空 ACL 会被底层当成直连处理，界面上却看不出区别。
-	m:set(t, "acl_mode", "proxy")
-	m:set(t, "use_global_config", "1")
+	-- 新建的 ACL 默认是「直连」—— ACL 的语义就是例外清单，默认全部代理。
+	-- 但此时还没有配置源，而底层的「空源」等于「所有设备」，
+	-- 所以先禁用，等用户填好源并勾上 Enable 后再生效，避免一建就误伤全网。
+	m:set(t, "acl_mode", "direct")
+	m:set(t, "use_global_config", "0")
+	m:set(t, "enabled", "0")
 	luci.http.redirect(e.extedit:format(t))
 end
 function s.remove(e, t)
@@ -77,9 +78,7 @@ o = s:option(DummyValue, "acl_mode", translate("Proxy Mode"))
 o.rawhtml = true
 o.cfgvalue = function(t, n)
 	local mode = api.get_acl_mode(n)
-	if mode == "proxy" then
-		return translate("Proxy")
-	elseif mode == "direct" then
+	if mode == "direct" then
 		return "<span style='color:gray'>" .. translate("Direct") .. "</span>"
 	end
 	return translate("Custom Node")

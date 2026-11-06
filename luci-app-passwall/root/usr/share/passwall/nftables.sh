@@ -767,13 +767,6 @@ load_acl() {
 	}
 }
 
-filter_haproxy() {
-	for item in ${haproxy_items}; do
-		get_host_ip ipv4 $(echo $item | awk -F ":" '{print $1}') 1
-	done | insert_nftset $NFTSET_VPS "-1"
-	echolog "  - [$?]加入负载均衡的节点到nftset[$NFTSET_VPS]直连完成"
-}
-
 filter_vps_addr() {
 	for server_host in "$@"; do
 		get_host_ip "ipv4" ${server_host}
@@ -1052,7 +1045,6 @@ add_firewall_rule() {
 
 	#  过滤所有节点IP
 	filter_vpsip > /dev/null 2>&1 &
-	# filter_haproxy > /dev/null 2>&1 &
 	# Prevent some conditions
 	filter_vps_addr $(config_n_get $TCP_NODE address) $(config_n_get $UDP_NODE address) > /dev/null 2>&1 &
 	filter_vps_addr $(config_n_get $TCP_NODE download_address) $(config_n_get $UDP_NODE download_address) > /dev/null 2>&1 &

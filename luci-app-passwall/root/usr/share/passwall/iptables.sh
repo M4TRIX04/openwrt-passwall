@@ -725,14 +725,6 @@ load_acl() {
 	}
 }
 
-filter_haproxy() {
-	for item in ${haproxy_items}; do
-		local ip=$(get_host_ip ipv4 $(echo $item | awk -F ":" '{print $1}') 1)
-		ipset -q add $IPSET_VPS $ip
-	done
-	echolog "  - [$?]加入负载均衡的节点到ipset[$IPSET_VPS]直连完成"
-}
-
 filter_vpsip() {
 	local EXCLUDE_VPSIP="^(0\.0\.0\.0|127\.0\.0\.1|1\.1\.1\.1|1\.1\.1\.2|8\.8\.8\.8|8\.8\.4\.4|9\.9\.9\.9)$"
 	uci show $CONFIG | grep -E "(\.address=|\.download_address=)" | cut -d "'" -f 2 | grep -E "^([0-9]{1,3}\.){3}[0-9]{1,3}$" | grep -Ev "$EXCLUDE_VPSIP" | sed "s/^/add $IPSET_VPS /" | awk '1; END{print "COMMIT"}' | ipset -! -R
@@ -994,7 +986,6 @@ add_firewall_rule() {
 
 	#  过滤所有节点IP
 	filter_vpsip > /dev/null 2>&1 &
-	# filter_haproxy > /dev/null 2>&1 &
 
 	accept_icmp=$(config_t_get global_forwarding accept_icmp 0)
 	accept_icmpv6=$(config_t_get global_forwarding accept_icmpv6 0)

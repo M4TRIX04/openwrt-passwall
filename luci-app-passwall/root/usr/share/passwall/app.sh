@@ -1260,7 +1260,8 @@ start_dns() {
 	esac
 
 	# 追加直连DNS到iptables/nftables
-	[ "$(config_t_get global_haproxy balancing_enable 0)" != "1" ] && IPT_APPEND_DNS=
+	# 以本次 start_dns 解析出的 LOCAL_DNS 为准，丢弃 get_config 阶段可能已过期的值
+	IPT_APPEND_DNS=
 	add_default_port() {
 		[ -z "$1" ] && echo "" || echo "$1" | awk -F',' '{for(i=1;i<=NF;i++){if($i !~ /#/) $i=$i"#53";} print $0;}' OFS=','
 	}
@@ -1515,19 +1516,6 @@ start_dns() {
 		#dhcp.leases to hosts
 		$APP_PATH/lease2hosts.sh > /dev/null 2>&1 &
 	fi
-}
-
-start_haproxy() {
-	[ "$(config_t_get global_haproxy balancing_enable 0)" != "1" ] && return
-	local haproxy_ver=$($(first_type haproxy) -v 2>/dev/null | awk 'NR==1 {print $3}' | cut -d'-' -f1)
-	if [ "$(check_ver "$haproxy_ver" "3.0.0")" = "1" ]; then
-		echolog "* 注意：haproxy($haproxy_ver) 程序版本低，HAPROXY 负载均衡启动失败，请更新到 3.0 以上版本。"
-		return
-	fi
-	local haproxy_path=$TMP_PATH/haproxy
-	local haproxy_conf="config.cfg"
-	lua $APP_PATH/haproxy.lua -path ${haproxy_path} -conf ${haproxy_conf} -dns ${LOCAL_DNS}
-	ln_run "$(first_type haproxy)" haproxy "/dev/null" -f "${haproxy_path}/${haproxy_conf}"
 }
 
 acl_app() {
@@ -1871,7 +1859,6 @@ start() {
 	export ENABLE_DEPRECATED_GEOIP=true
 	export SS_SYSTEM_DNS_RESOLVER_FORCE_BUILTIN=1
 	ulimit -n 65535
-	start_haproxy
 	start_socks
 	nftflag=0
 	USE_TABLES=""

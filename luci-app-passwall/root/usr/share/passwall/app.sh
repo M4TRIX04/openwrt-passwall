@@ -13,7 +13,6 @@ LUA_UTIL_PATH=/usr/lib/lua/luci/passwall
 UTIL_SINGBOX=$LUA_UTIL_PATH/util_sing-box.lua
 UTIL_SS=$LUA_UTIL_PATH/util_shadowsocks.lua
 UTIL_XRAY=$LUA_UTIL_PATH/util_xray.lua
-UTIL_NAIVE=$LUA_UTIL_PATH/util_naiveproxy.lua
 UTIL_HYSTERIA=$LUA_UTIL_PATH/util_hysteria.lua
 SINGBOX_BIN=$(first_type $(config_t_get global_app sing_box_file) sing-box)
 XRAY_BIN=$(first_type $(config_t_get global_app xray_file) xray)
@@ -450,13 +449,6 @@ run_socks() {
 		[ -n "$no_run" ] && _args="${_args} no_run=1"
 		run_xray flag=$flag node=$node socks_address=$bind socks_port=$socks_port config_file=$config_file log_file=$log_file ${_args}
 	;;
-	naiveproxy)
-		json_add_string "run_type" "socks"
-		json_add_string "local_addr" "$bind"
-		json_add_string "local_port" "$socks_port"
-		lua $UTIL_NAIVE gen_config "$(json_dump)" > $config_file
-		[ -n "$no_run" ] || ln_run "$(first_type naive)" naive $log_file "$config_file"
-	;;
 	ss)
 		[ -n "$no_run" ] || {
 			local plugin_sh="${config_file%.json}_plugin.sh"
@@ -622,9 +614,6 @@ run_redir() {
 				fi
 			}
 			run_xray flag=UDP node=$node udp_redir_port=$local_port config_file=$config_file log_file=$log_file
-		;;
-		naiveproxy)
-			echolog "Naiveproxy不支持UDP转发！"
 		;;
 		ss)
 			local plugin_sh="${config_file%.json}_plugin.sh"
@@ -867,13 +856,6 @@ run_redir() {
 				NEXT_DNS_LISTEN_PORT=$(expr $NEXT_DNS_LISTEN_PORT + 1)
 			}
 			run_xray flag=$_flag node=$node tcp_redir_port=$local_port tcp_proxy_way=$TCP_PROXY_WAY config_file=$config_file log_file=$log_file ${_args}
-		;;
-		naiveproxy)
-			json_add_string "run_type" "redir"
-			json_add_string "local_addr" "0.0.0.0"
-			json_add_string "local_port" "$local_port"
-			lua $UTIL_NAIVE gen_config "$(json_dump)" > $config_file
-			ln_run "$(first_type naive)" naive $log_file "$config_file"
 		;;
 		ss)
 			[ "${TCP_PROXY_WAY}" = "tproxy" ] && json_add_string "tcp_tproxy" "true"
@@ -2027,7 +2009,7 @@ get_config() {
 	FILTER_PROXY_IPV6=$(config_t_get global filter_proxy_ipv6 0)
 	DNS_REDIRECT=$(config_t_get global dns_redirect 1)
 
-	REDIRECT_LIST="socks ss ss-rust ssr sing-box xray naiveproxy hysteria"
+	REDIRECT_LIST="socks ss ss-rust ssr sing-box xray hysteria"
 	TPROXY_LIST="socks ss ss-rust ssr sing-box xray hysteria"
 
 	NEXT_DNS_LISTEN_PORT=15353

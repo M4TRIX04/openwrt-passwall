@@ -29,6 +29,14 @@ local has_singbox = api.finded_com("sing-box")
 local has_xray = api.finded_com("xray")
 local has_hysteria2 = api.finded_com("hysteria")
 local DEFAULT_ALLOWINSECURE = true
+-- SS 只接受 AEAD 加密，与服务端/客户端 UI 的白名单保持一致
+local SS_AEAD_METHODS = {
+	["aes-128-gcm"] = true,
+	["aes-192-gcm"] = true,
+	["aes-256-gcm"] = true,
+	["chacha20-ietf-poly1305"] = true,
+	["xchacha20-ietf-poly1305"] = true,
+}
 local DEFAULT_FILTER_KEYWORD_MODE = uci:get(appname, "@global_subscribe[0]", "filter_keyword_mode") or "0"
 local DEFAULT_FILTER_KEYWORD_DISCARD_LIST = uci:get(appname, "@global_subscribe[0]", "filter_discard_list") or {}
 local DEFAULT_FILTER_KEYWORD_KEEP_LIST = uci:get(appname, "@global_subscribe[0]", "filter_keep_list") or {}
@@ -1558,6 +1566,13 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.remarks = result.address .. ':' .. result.port
 		else
 			result.remarks = "NULL"
+		end
+	end
+	-- SS 节点只接受 AEAD 加密，其余跳过（订阅里常见的 rc4-md5 / aes-*-cfb 等）
+	if result.method and (result.type == "SS" or result.protocol == "shadowsocks") then
+		if not SS_AEAD_METHODS[tostring(result.method):lower()] then
+			log("跳过节点：" .. tostring(result.remarks) .. "，加密方式 " .. tostring(result.method) .. " 不是 AEAD。")
+			return nil
 		end
 	end
 	return result

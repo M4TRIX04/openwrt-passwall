@@ -1262,8 +1262,8 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.type = 'sing-box'
 			result.protocol = "hysteria"
 		else
-			log("跳过 Hysteria 节点，因未安装 Hysteria 核心程序 Sing-box。")
-			return nil
+			-- 没有 sing-box 时用原生 hysteria（v1）
+			result.type = "Hysteria"
 		end
 
 		local alias = ""
@@ -1277,10 +1277,12 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		local query = split(content:gsub("/%?", "?"), '%?')
 		local host_port = query[1]
 		local params = {}
-		for _, v in pairs(split(query[2], '&')) do
-			local s = v:find("=", 1, true)
-			if s and s > 1 then
-				params[v:sub(1, s - 1)] = v:sub(s + 1)
+		if query[2] then
+			for _, v in pairs(split(query[2], '&')) do
+				local s = v:find("=", 1, true)
+				if s and s > 1 then
+					params[v:sub(1, s - 1)] = v:sub(s + 1)
+				end
 			end
 		end
 		-- [2001:4860:4860::8888]:443
@@ -1297,12 +1299,18 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.address = host_port
 		end
 		result.hysteria_obfs = params.obfsParam
-		result.hysteria_auth_type = "string"
+		result.hysteria_auth_type = (params.auth and params.auth ~= "") and "string" or "disable"
 		result.hysteria_auth_password = params.auth
 		result.tls_serverName = params.peer or params.sni or ""
 		local insecure = params.allowinsecure or params.allowInsecure or params.insecure
 		result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
-		result.alpn = params.alpn
+		if has_singbox then
+			result.alpn = params.alpn
+		else
+			-- 原生 hysteria 的 alpn 存带前缀的字段，protocol 是 udp/faketcp
+			result.protocol = params.protocol
+			result.hysteria_alpn = params.alpn
+		end
 		result.hysteria_up_mbps = params.upmbps or sub_hy_up_mbps
 		result.hysteria_down_mbps = params.downmbps or sub_hy_down_mbps
 		result.hysteria_hop = params.mport

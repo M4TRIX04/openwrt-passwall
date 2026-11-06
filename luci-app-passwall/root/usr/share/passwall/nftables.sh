@@ -174,7 +174,9 @@ insert_nftset() {
 			 "0") suffix=" timeout $default_timeout" ;;
 			   *) suffix=" timeout $timeout_argument" ;;
 		esac
-		{
+
+		local nft_script
+		nft_script=$(
 			if [ $# -gt 0 ]; then
 				printf "%s\n" "$@"
 			else
@@ -196,7 +198,25 @@ insert_nftset() {
 					if (first == 1) printf "\n }\n";
 				}
 			'
-		} | nft -f -
+		)
+
+		[ -z "${nft_script}" ] && return 0
+
+		if printf '%s\n' "${nft_script}" | nft -f - 2>/dev/null; then
+			return 0
+		fi
+
+		# 内核偶尔会拒绝写入已经过 auto-merge 的集合（add element 返回 ENOENT），
+		# 此时集合本身仍然可用，清空后重试一次即可；内容由调用方从规则文件完整重建。
+		[ -z "$(command -v echolog)" ] && . "$UTILS_PATH"
+		echolog "  - 写入 NFTSet[${nftset_name}] 失败，清空集合后重试"
+		nft "flush set $NFTABLE_NAME $nftset_name"
+		if printf '%s\n' "${nft_script}" | nft -f -; then
+			echolog "  - NFTSet[${nftset_name}] 重试成功"
+			return 0
+		fi
+		echolog "  - NFTSet[${nftset_name}] 重试仍失败，本次未能加载"
+		return 1
 	fi
 }
 

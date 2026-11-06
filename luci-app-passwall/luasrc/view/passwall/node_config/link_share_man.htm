@@ -4,12 +4,11 @@ local api = require "luci.passwall.api"
 local appname = api.appname
 local map = self.map
 
-local has_ss_rust = api.is_finded("sslocal")
 local has_singbox = api.finded_com("sing-box")
 local has_xray = api.finded_com("xray")
 local has_hysteria2 = api.finded_com("hysteria")
 
-local ss_type = api.get_core("ss_type", {{has_ss_rust,"shadowsocks-rust"},{has_singbox,"sing-box"},{has_xray,"xray"}})
+local ss_type = api.get_core("ss_type", {{has_singbox,"sing-box"},{has_xray,"xray"}})
 local trojan_type = api.get_core("trojan_type", {{has_singbox,"sing-box"},{has_xray,"xray"}})
 local vmess_type = api.get_core("vmess_type", {{has_xray,"xray"},{has_singbox,"sing-box"}})
 local vless_type = api.get_core("vless_type", {{has_xray,"xray"},{has_singbox,"sing-box"}})
@@ -164,10 +163,7 @@ local current_node = map:get(section)
 
 		var dom_prefix = null
 		var protocol = ""
-		if (v_type === "SS-Rust") {
-			dom_prefix = "ssrust_"
-			protocol = "ss"
-		} else if (v_type === "Hysteria2") {
+		if (v_type === "Hysteria2") {
 			dom_prefix = "hysteria2_"
 			protocol = "hysteria2"
 		} else if (v_type === "Xray") {
@@ -189,7 +185,7 @@ local current_node = map:get(section)
 			}
 		}
 		var url = null;
-		if (v_type === "SS-Rust" || ((v_type === "sing-box" || v_type === "Xray") && opt.get(dom_prefix + "protocol").value === "shadowsocks")) {
+		if ((v_type === "sing-box" || v_type === "Xray") && opt.get(dom_prefix + "protocol").value === "shadowsocks") {
 			protocol = "ss"
 			var v_port = opt.get(dom_prefix + "port");
 			var v_method = opt.get(dom_prefix + "method") || opt.get(dom_prefix + "ss_method");
@@ -938,8 +934,8 @@ local current_node = map:get(section)
 				opt.set('type', "sing-box");
 				opt.set(dom_prefix + 'protocol', "shadowsocks");
 			} else {
-				dom_prefix = "ssrust_"
-				opt.set('type', "SS-Rust");
+				dom_prefix = "ss_"
+				opt.set('type', "SS");
 			}
 
 			const _method = (method || "none").toLowerCase();
@@ -1116,12 +1112,7 @@ local current_node = map:get(section)
 							return "";
 						}
 					}
-					if (dom_prefix === "ssrust_") {
-						opt.set(dom_prefix + 'plugin_enabled', true);
-						opt.set(dom_prefix + 'plugin', "shadow-tls");
-						let shadowtlsOpt = parseShadowTLSParams(queryParam["shadow-tls"]);
-						opt.set(dom_prefix + 'plugin_opts', shadowtlsOpt || "");
-					} else if (dom_prefix === "singbox_") {
+					if (dom_prefix === "singbox_") {
 						let shadowtlsOpt = {};
 						parseShadowTLSParams(queryParam["shadow-tls"], shadowtlsOpt);
 						if (Object.keys(shadowtlsOpt).length > 0) {

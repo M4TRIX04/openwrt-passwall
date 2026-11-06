@@ -24,7 +24,7 @@ local UrlDecode = api.UrlDecode
 local uci = api.uci
 local fs = api.fs
 
-local has_ss_rust = api.is_finded("sslocal")
+local has_ss = api.is_finded("ss-redir")
 local has_singbox = api.finded_com("sing-box")
 local has_xray = api.finded_com("xray")
 local has_hysteria2 = api.finded_com("hysteria")
@@ -33,7 +33,7 @@ local DEFAULT_FILTER_KEYWORD_MODE = uci:get(appname, "@global_subscribe[0]", "fi
 local DEFAULT_FILTER_KEYWORD_DISCARD_LIST = uci:get(appname, "@global_subscribe[0]", "filter_discard_list") or {}
 local DEFAULT_FILTER_KEYWORD_KEEP_LIST = uci:get(appname, "@global_subscribe[0]", "filter_keep_list") or {}
 -- 取节点使用core类型（节点订阅页面未设置时，自动取默认）
-local DEFAULT_SS_TYPE = api.get_core("ss_type", {{has_ss_rust,"shadowsocks-rust"},{has_singbox,"sing-box"},{has_xray,"xray"}})
+local DEFAULT_SS_TYPE = api.get_core("ss_type", {{has_ss,"shadowsocks-libev"},{has_singbox,"sing-box"},{has_xray,"xray"}})
 local DEFAULT_TROJAN_TYPE =  api.get_core("trojan_type", {{has_singbox,"sing-box"},{has_xray,"xray"}})
 local DEFAULT_VMESS_TYPE = api.get_core("vmess_type", {{has_xray,"xray"},{has_singbox,"sing-box"}})
 local DEFAULT_VLESS_TYPE = api.get_core("vless_type", {{has_xray,"xray"},{has_singbox,"sing-box"}})
@@ -41,7 +41,7 @@ local DEFAULT_HYSTERIA2_TYPE = api.get_core("hysteria2_type", {{has_hysteria2,"h
 local core_has = {
 	["xray"] = has_xray,
 	["sing-box"] = has_singbox,
-	["shadowsocks-rust"] = has_ss_rust,
+	["shadowsocks-libev"] = has_ss,
 	["hysteria2"] = has_hysteria2
 }
 -- 判断是否过滤节点关键字
@@ -450,8 +450,8 @@ end
 
 -- 设置 ss 协议实现类型
 local function set_ss_implementation(ss_type, result)
-	if ss_type == "shadowsocks-rust" and has_ss_rust then
-		result.type = 'SS-Rust'
+	if ss_type == "shadowsocks-libev" and has_ss then
+		result.type = 'SS'
 	elseif ss_type == "xray" and has_xray then
 		result.type = 'Xray'
 		result.protocol = 'shadowsocks'
@@ -796,108 +796,104 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 				else
 					result.transport = params.type
 				end
-				if result.type ~= "SS-Rust" then
-					if params.type == 'ws' then
-						result.ws_host = params.host
-						result.ws_path = params.path
-						if result.type == "sing-box" and params.path then
-							local ws_path_dat = split(params.path, "%?")
-							local ws_path = ws_path_dat[1]
-							local ws_path_params = {}
-							for _, v in pairs(split(ws_path_dat[2], '&')) do
-								local t = split(v, '=')
-								ws_path_params[t[1]] = t[2]
-							end
-							if ws_path_params.ed and tonumber(ws_path_params.ed) then
-								result.ws_path = ws_path
-								result.ws_enableEarlyData = "1"
-								result.ws_maxEarlyData = tonumber(ws_path_params.ed)
-								result.ws_earlyDataHeaderName = "Sec-WebSocket-Protocol"
-							end
+				if params.type == 'ws' then
+					result.ws_host = params.host
+					result.ws_path = params.path
+					if result.type == "sing-box" and params.path then
+						local ws_path_dat = split(params.path, "%?")
+						local ws_path = ws_path_dat[1]
+						local ws_path_params = {}
+						for _, v in pairs(split(ws_path_dat[2], '&')) do
+							local t = split(v, '=')
+							ws_path_params[t[1]] = t[2]
+						end
+						if ws_path_params.ed and tonumber(ws_path_params.ed) then
+							result.ws_path = ws_path
+							result.ws_enableEarlyData = "1"
+							result.ws_maxEarlyData = tonumber(ws_path_params.ed)
+							result.ws_earlyDataHeaderName = "Sec-WebSocket-Protocol"
 						end
 					end
-					if params.type == "http" then
-						if result.type == "sing-box" then
-							result.transport = "http"
-							result.http_host = (params.host and params.host ~= "") and { params.host } or nil
-							result.http_path = params.path
-						elseif result.type == "Xray" then
-							result.transport = "xhttp"
-							result.xhttp_mode = "stream-one"
-							result.xhttp_host = params.host
-							result.xhttp_path = params.path
-						end
-					end
-					if params.type == 'raw' or params.type == 'tcp' then
-						result.tcp_guise = params.headerType or "none"
-						result.tcp_guise_http_host = (params.host and params.host ~= "") and { params.host } or nil
-						result.tcp_guise_http_path = (params.path and params.path ~= "") and { params.path } or nil
-					end
-					if params.type == 'kcp' or params.type == 'mkcp' then
-						result.transport = "mkcp"
-						result.mkcp_guise = params.headerType or "none"
-						result.mkcp_seed = params.seed
-					end
-					if params.type == 'quic' then
-						result.quic_guise = params.headerType or "none"
-						result.quic_key = params.key
-						result.quic_security = params.quicSecurity or "none"
-					end
-					if params.type == 'grpc' then
-						if params.path then result.grpc_serviceName = params.path end
-						if params.serviceName then result.grpc_serviceName = params.serviceName end
-						result.grpc_mode = params.mode or "gun"
-					end
-					if params.type == 'xhttp' then
-						if result.type ~= "Xray" then
-							result.error_msg = "请更换 Xray 以支持 xhttp 传输方式。"
-						end
+				end
+				if params.type == "http" then
+					if result.type == "sing-box" then
+						result.transport = "http"
+						result.http_host = (params.host and params.host ~= "") and { params.host } or nil
+						result.http_path = params.path
+					elseif result.type == "Xray" then
+						result.transport = "xhttp"
+						result.xhttp_mode = "stream-one"
 						result.xhttp_host = params.host
 						result.xhttp_path = params.path
-						result.xhttp_mode = params.mode or "auto"
-						result.use_xhttp_extra = (params.extra and params.extra ~= "") and "1" or nil
-						result.xhttp_extra = (params.extra and params.extra ~= "") and api.base64Encode(params.extra) or nil
-						local success, Data = pcall(jsonParse, params.extra)
-						if success and Data then
-							local address = (Data.extra and Data.extra.downloadSettings and Data.extra.downloadSettings.address)
-									or (Data.downloadSettings and Data.downloadSettings.address)
-							result.download_address = (address and address ~= "") and address:gsub("^%[", ""):gsub("%]$", "") or nil
-						end
 					end
-					result.tls = "0"
-					if params.security == "tls" or params.security == "reality" then
-						result.tls = "1"
-						result.tls_serverName = (params.sni and params.sni ~= "") and params.sni or params.host
-						result.alpn = params.alpn
-						if params.fp and params.fp ~= "" then
-							result.utls = "1"
-							result.fingerprint = params.fp
-						end
-						if params.ech and params.ech ~= "" then
-							result.ech = "1"
-							result.ech_config = params.ech
-						end
-						result.tls_pinSHA256 = params.pcs
-						result.tls_CertByName = params.vcn
-						if params.security == "reality" then
-							result.reality = "1"
-							result.reality_publicKey = params.pbk or nil
-							result.reality_shortId = params.sid or nil
-							result.reality_spiderX = params.spx or nil
-							result.use_mldsa65Verify = (params.pqv and params.pqv ~= "") and "1" or nil
-							result.reality_mldsa65Verify = params.pqv or nil
-						end
-					end
-					local insecure = params.allowinsecure or params.allowInsecure or params.insecure
-					result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
-					result.uot = params.udp
-				else
-					result.error_msg = "请更换 Xray 或 Sing-Box 来支持 SS 更多的传输方式。"
 				end
+				if params.type == 'raw' or params.type == 'tcp' then
+					result.tcp_guise = params.headerType or "none"
+					result.tcp_guise_http_host = (params.host and params.host ~= "") and { params.host } or nil
+					result.tcp_guise_http_path = (params.path and params.path ~= "") and { params.path } or nil
+				end
+				if params.type == 'kcp' or params.type == 'mkcp' then
+					result.transport = "mkcp"
+					result.mkcp_guise = params.headerType or "none"
+					result.mkcp_seed = params.seed
+				end
+				if params.type == 'quic' then
+					result.quic_guise = params.headerType or "none"
+					result.quic_key = params.key
+					result.quic_security = params.quicSecurity or "none"
+				end
+				if params.type == 'grpc' then
+					if params.path then result.grpc_serviceName = params.path end
+					if params.serviceName then result.grpc_serviceName = params.serviceName end
+					result.grpc_mode = params.mode or "gun"
+				end
+				if params.type == 'xhttp' then
+					if result.type ~= "Xray" then
+						result.error_msg = "请更换 Xray 以支持 xhttp 传输方式。"
+					end
+					result.xhttp_host = params.host
+					result.xhttp_path = params.path
+					result.xhttp_mode = params.mode or "auto"
+					result.use_xhttp_extra = (params.extra and params.extra ~= "") and "1" or nil
+					result.xhttp_extra = (params.extra and params.extra ~= "") and api.base64Encode(params.extra) or nil
+					local success, Data = pcall(jsonParse, params.extra)
+					if success and Data then
+						local address = (Data.extra and Data.extra.downloadSettings and Data.extra.downloadSettings.address)
+								or (Data.downloadSettings and Data.downloadSettings.address)
+						result.download_address = (address and address ~= "") and address:gsub("^%[", ""):gsub("%]$", "") or nil
+					end
+				end
+				result.tls = "0"
+				if params.security == "tls" or params.security == "reality" then
+					result.tls = "1"
+					result.tls_serverName = (params.sni and params.sni ~= "") and params.sni or params.host
+					result.alpn = params.alpn
+					if params.fp and params.fp ~= "" then
+						result.utls = "1"
+						result.fingerprint = params.fp
+					end
+					if params.ech and params.ech ~= "" then
+						result.ech = "1"
+						result.ech_config = params.ech
+					end
+					result.tls_pinSHA256 = params.pcs
+					result.tls_CertByName = params.vcn
+					if params.security == "reality" then
+						result.reality = "1"
+						result.reality_publicKey = params.pbk or nil
+						result.reality_shortId = params.sid or nil
+						result.reality_spiderX = params.spx or nil
+						result.use_mldsa65Verify = (params.pqv and params.pqv ~= "") and "1" or nil
+						result.reality_mldsa65Verify = params.pqv or nil
+					end
+				end
+				local insecure = params.allowinsecure or params.allowInsecure or params.insecure
+				result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
+				result.uot = params.udp
 			end
 
 			if params["shadow-tls"] then
-				if result.type ~= "sing-box" and result.type ~= "SS-Rust" then
+				if result.type ~= "sing-box" then
 					result.error_msg =  sub_ss_type .. " 不支持 shadow-tls 插件。"
 				else
 					-- 解析SS Shadow-TLS 插件参数
@@ -918,11 +914,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 						return table.concat(t, ";")
 					end
 
-					if result.type == "SS-Rust" then
-						result.plugin_enabled = "1"
-						result.plugin = "shadow-tls"
-						result.plugin_opts = parseShadowTLSParams(params["shadow-tls"])
-					elseif result.type == "sing-box" then
+					if result.type == "sing-box" then
 						local shadowtlsOpt = {}
 						parseShadowTLSParams(params["shadow-tls"], shadowtlsOpt)
 						if next(shadowtlsOpt) then

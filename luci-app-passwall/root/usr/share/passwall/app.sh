@@ -460,22 +460,6 @@ run_socks() {
 		lua $UTIL_SS gen_config "$(json_dump)" > $config_file
 		[ -n "$no_run" ] || ln_run "$(first_type ss-local)" "ss-local" $log_file -c "$config_file" -v
 	;;
-	ss-rust)
-		[ "$http_port" != "0" ] && {
-			http_flag=1
-			config_file="${config_file//SOCKS/HTTP_SOCKS}"
-			json_add_string "local_http_address" "$bind"
-			json_add_string "local_http_port" "$http_port"
-		}
-		[ -n "$no_run" ] || {
-			local plugin_sh="${config_file%.json}_plugin.sh"
-			json_add_string "plugin_sh" "$plugin_sh"
-		}
-		json_add_string "local_socks_address" "$bind"
-		json_add_string "local_socks_port" "$socks_port"
-		lua $UTIL_SS gen_config "$(json_dump)" > $config_file
-		[ -n "$no_run" ] || ln_run "$(first_type sslocal)" "sslocal" $log_file -c "$config_file" -v
-	;;
 	hysteria)
 		[ "$http_port" != "0" ] && {
 			http_flag=1
@@ -617,13 +601,6 @@ run_redir() {
 			json_add_string "mode" "udp_only"
 			lua $UTIL_SS gen_config "$(json_dump)" > $config_file
 			ln_run "$(first_type ss-redir)" "ss-redir" $log_file -c "$config_file" -v
-		;;
-		ss-rust)
-			local plugin_sh="${config_file%.json}_plugin.sh"
-			json_add_string "plugin_sh" "$plugin_sh"
-			json_add_string "local_udp_redir_port" "$local_port"
-			lua $UTIL_SS gen_config "$(json_dump)" > $config_file
-			ln_run "$(first_type sslocal)" "sslocal" $log_file -c "$config_file" -v
 		;;
 		hysteria)
 			json_add_string "local_udp_redir_port" "$local_port"
@@ -861,31 +838,6 @@ run_redir() {
 			json_add_string "local_port" "$local_port"
 			lua $UTIL_SS gen_config "$(json_dump)" > $config_file
 			ln_run "$(first_type ss-redir)" "ss-redir" $log_file -c "$config_file" -v
-		;;
-		ss-rust)
-			json_add_string "local_tcp_redir_port" "$local_port"
-			[ "${TCP_PROXY_WAY}" = "tproxy" ] && json_add_string "tcp_tproxy" "true"
-			[ "$tcp_node_socks" = "1" ] && {
-				tcp_node_socks_flag=1
-				config_file="${config_file//TCP/TCP_SOCKS}"
-				json_add_string "local_socks_address" "${tcp_node_socks_bind}"
-				json_add_string "local_socks_port" "${tcp_node_socks_port}"
-			}
-			[ "$tcp_node_http" = "1" ] && {
-				tcp_node_http_flag=1
-				config_file="${config_file//TCP/TCP_HTTP}"
-				json_add_string "local_http_port" "${tcp_node_http_port}"
-			}
-			[ "$TCP_UDP" = "1" ] && {
-				config_file="${config_file//TCP/TCP_UDP}"
-				UDP_REDIR_PORT=$TCP_REDIR_PORT
-				unset UDP_NODE
-				json_add_string "local_udp_redir_port" "$local_port"
-			}
-			local plugin_sh="${config_file%.json}_plugin.sh"
-			json_add_string "plugin_sh" "$plugin_sh"
-			lua $UTIL_SS gen_config "$(json_dump)" > $config_file
-			ln_run "$(first_type sslocal)" "sslocal" $log_file -c "$config_file" -v
 		;;
 		hysteria)
 			json_add_string "local_tcp_redir_port" "$local_port"
@@ -1983,8 +1935,8 @@ get_config() {
 	FILTER_PROXY_IPV6=$(config_t_get global filter_proxy_ipv6 0)
 	DNS_REDIRECT=$(config_t_get global dns_redirect 1)
 
-	REDIRECT_LIST="socks ss ss-rust sing-box xray hysteria"
-	TPROXY_LIST="socks ss ss-rust sing-box xray hysteria"
+	REDIRECT_LIST="socks ss sing-box xray hysteria"
+	TPROXY_LIST="socks ss sing-box xray hysteria"
 
 	NEXT_DNS_LISTEN_PORT=15353
 	TUN_DNS="127.0.0.1#${NEXT_DNS_LISTEN_PORT}"

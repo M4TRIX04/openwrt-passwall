@@ -460,12 +460,6 @@ run_socks() {
 		lua $UTIL_SS gen_config "$(json_dump)" > $config_file
 		[ -n "$no_run" ] || ln_run "$(first_type ss-local)" "ss-local" $log_file -c "$config_file" -v
 	;;
-	ssr)
-		json_add_string "local_addr" "$bind"
-		json_add_string "local_port" "$socks_port"
-		lua $UTIL_SS gen_config "$(json_dump)" > $config_file
-		[ -n "$no_run" ] || ln_run "$(first_type ssr-local)" "ssr-local" $log_file -c "$config_file" -v -u
-	;;
 	ss-rust)
 		[ "$http_port" != "0" ] && {
 			http_flag=1
@@ -623,12 +617,6 @@ run_redir() {
 			json_add_string "mode" "udp_only"
 			lua $UTIL_SS gen_config "$(json_dump)" > $config_file
 			ln_run "$(first_type ss-redir)" "ss-redir" $log_file -c "$config_file" -v
-		;;
-		ssr)
-			json_add_string "local_addr" "0.0.0.0"
-			json_add_string "local_port" "$local_port"
-			lua $UTIL_SS gen_config "$(json_dump)" > $config_file
-			ln_run "$(first_type ssr-redir)" "ssr-redir" $log_file -c "$config_file" -v -U
 		;;
 		ss-rust)
 			local plugin_sh="${config_file%.json}_plugin.sh"
@@ -873,20 +861,6 @@ run_redir() {
 			json_add_string "local_port" "$local_port"
 			lua $UTIL_SS gen_config "$(json_dump)" > $config_file
 			ln_run "$(first_type ss-redir)" "ss-redir" $log_file -c "$config_file" -v
-		;;
-		ssr)
-			[ "${TCP_PROXY_WAY}" = "tproxy" ] && json_add_string "tcp_tproxy" "true"
-			local _extra_param
-			[ "$TCP_UDP" = "1" ] && {
-				config_file="${config_file//TCP/TCP_UDP}"
-				UDP_REDIR_PORT=$TCP_REDIR_PORT
-				unset UDP_NODE
-				_extra_param="-u"
-			}
-			json_add_string "local_addr" "0.0.0.0"
-			json_add_string "local_port" "$local_port"
-			lua $UTIL_SS gen_config "$(json_dump)" > $config_file
-			ln_run "$(first_type ssr-redir)" "ssr-redir" $log_file -c "$config_file" -v ${_extra_param}
 		;;
 		ss-rust)
 			json_add_string "local_tcp_redir_port" "$local_port"
@@ -2009,8 +1983,8 @@ get_config() {
 	FILTER_PROXY_IPV6=$(config_t_get global filter_proxy_ipv6 0)
 	DNS_REDIRECT=$(config_t_get global dns_redirect 1)
 
-	REDIRECT_LIST="socks ss ss-rust ssr sing-box xray hysteria"
-	TPROXY_LIST="socks ss ss-rust ssr sing-box xray hysteria"
+	REDIRECT_LIST="socks ss ss-rust sing-box xray hysteria"
+	TPROXY_LIST="socks ss ss-rust sing-box xray hysteria"
 
 	NEXT_DNS_LISTEN_PORT=15353
 	TUN_DNS="127.0.0.1#${NEXT_DNS_LISTEN_PORT}"

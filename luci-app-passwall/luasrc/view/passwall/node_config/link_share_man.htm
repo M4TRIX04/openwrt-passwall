@@ -167,9 +167,6 @@ local current_node = map:get(section)
 		if (v_type === "SS-Rust") {
 			dom_prefix = "ssrust_"
 			protocol = "ss"
-		} else if (v_type === "SSR") {
-			dom_prefix = "ssr_"
-			protocol = "ssr"
 		} else if (v_type === "Hysteria2") {
 			dom_prefix = "hysteria2_"
 			protocol = "hysteria2"
@@ -341,24 +338,6 @@ local current_node = map:get(section)
 				params = params.substring(1);
 			}
 			url += params;
-		} else if (v_type === "SSR") {
-			var v_port = opt.get(dom_prefix + "port");
-			var v_protocol = opt.get(dom_prefix + "protocol");
-			var v_method = opt.get(dom_prefix + "method");
-			var v_obfs = opt.get(dom_prefix + "obfs");
-			var v_password = opt.get(dom_prefix + "password");
-			var v_obfs_param = opt.get(dom_prefix + "obfs_param");
-			var v_protocol_param = opt.get(dom_prefix + "protocol_param");
-			var ssr_str = _address + ":" +
-				v_port.value + ":" +
-				v_protocol.value + ":" +
-				v_method.value + ":" +
-				v_obfs.value + ":" +
-				b64encsafe(v_password.value) +
-				"/?obfsparam=" + b64encsafe(v_obfs_param.value) +
-				"&protoparam=" + b64encsafe(v_protocol_param.value) +
-				"&remarks=" + b64encutf8safe(v_alias.value);
-			url = b64encsafe(ssr_str);
 		} else if ((v_type === "sing-box" || v_type === "Xray") && opt.get(dom_prefix + "protocol").value === "vmess") {
 			protocol = "vmess";
 			var info = {};
@@ -875,44 +854,6 @@ local current_node = map:get(section)
 
 		var dom_prefix = null
 
-		if (ssu[0] === "ssr") {
-			dom_prefix = "ssr_"
-			//var b64c = ssu[1].match(/([A-Za-z0-9_-]+)/);
-			var sstr = b64decsafe((ssu[1] || "").replace(/#.*/, "").trim());
-			var ploc = sstr.indexOf("/?");
-			var url0 = "", param = "";
-			if (ploc > 0) {
-				url0 = sstr.substr(0, ploc);
-				param = sstr.substr(ploc + 2);
-			} else {
-				var url0 = sstr;
-			}
-			var ssm = url0.match(/^(.+):([^:]+):([^:]*):([^:]+):([^:]*):([^:]+)/);
-			if (!ssm || ssm.length < 7) {
-				s.innerHTML = "<font color='red'><%:Invalid Share URL Format%></font>";
-				return false;
-			}
-			var pdict = {};
-			if (param.length > 2) {
-				var a = param.split('&');
-				for (var i = 0; i < a.length; i++) {
-					var b = a[i].split('=');
-					pdict[decodeURIComponent(b[0])] = decodeURIComponent(b[1] || '');
-				}
-			}
-			opt.set('type', "SSR");
-			opt.set(dom_prefix + 'address', unbracketIP(ssm[1]));
-			opt.set(dom_prefix + 'port', ssm[2]);
-			opt.set(dom_prefix + 'protocol', ssm[3]);
-			opt.set(dom_prefix + 'method', ssm[4]);
-			opt.set(dom_prefix + 'obfs', ssm[5]);
-			opt.set(dom_prefix + 'password', b64decsafe(ssm[6]));
-			opt.set(dom_prefix + 'obfs_param', dictvalue(pdict, 'obfsparam'));
-			opt.set(dom_prefix + 'protocol_param', dictvalue(pdict, 'protoparam'));
-			var rem = pdict['remarks'];
-			if (typeof (rem) !== 'undefined' && rem !== '' && rem.length > 0)
-				opt.set('remarks', b64decutf8safe(rem));
-		}
 		if (ssu[0] === "ss") {
 			var url0 = ssu[1] || "";
 			param = "";

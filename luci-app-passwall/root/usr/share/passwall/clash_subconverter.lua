@@ -459,23 +459,6 @@ local function encode_anytls(node)
 	return link .. "#" .. urlencode(node.name or "")
 end
 
--- SSR
-local function encode_ssr(node)
-	local link = host_format(node.server) .. ":" .. node.port .. ":" .. (node.protocol or "") .. ":" ..
-			(node.cipher or "") .. ":" .. (node.obfs or "") .. ":" .. base64(node.password)
-	local p = {}
-
-	if node["obfs-param"] then table.insert(p, "obfsparam=" .. base64(node["obfs-param"])) end
-	if node["protocol-param"] then table.insert(p, "protoparam=" .. base64(node["protocol-param"])) end
-	table.insert(p, "remarks=" .. base64(node.name))
-
-	if #p > 0 then
-		link = link .. "?" .. table.concat(p, "&")
-	end
-
-	return "ssr://" .. base64(link)
-end
-
 local function encode_node(node)
 	if (not node.type) or (not node.name) then return nil end
 
@@ -489,7 +472,6 @@ local function encode_node(node)
 	elseif t == "hysteria2" then return encode_hysteria2(node)
 	elseif t == "tuic" then return encode_tuic(node)
 	elseif t == "anytls" then return encode_anytls(node)
-	elseif t == "ssr" then return encode_ssr(node)
 	else api.log("订阅转换 → 丢弃不支持的节点：" .. node.name .. "，节点类型：" .. t)
 	end
 end

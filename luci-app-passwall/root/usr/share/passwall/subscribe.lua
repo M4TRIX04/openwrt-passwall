@@ -25,7 +25,6 @@ local uci = api.uci
 local fs = api.fs
 
 local has_ss_rust = api.is_finded("sslocal")
-local has_ssr = api.is_finded("ssr-local") and api.is_finded("ssr-redir")
 local has_singbox = api.finded_com("sing-box")
 local has_xray = api.finded_com("xray")
 local has_hysteria2 = api.finded_com("hysteria")
@@ -509,39 +508,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		add_mode = add_mode, --0为手动配置,1为导入,2为订阅
 		group = group
 	}
-	--ssr://base64(host:port:protocol:method:obfs:base64pass/?obfsparam=base64param&protoparam=base64param&remarks=base64remarks&group=base64group&udpport=0&uot=0)
-	if szType == 'ssr' then
-		if not has_ssr then
-			log("跳过 SSR 节点，因未安装 SSR 核心程序 shadowsocksr-libev。")
-			return nil
-		end
-		result.type = "SSR"
-
-		local dat = split(content:gsub("/%?", "?"), "%?")
-		local hostInfo = split(dat[1], ':')
-		if dat[1]:match('%[(.*)%]') then
-			result.address = dat[1]:match('%[(.*)%]')
-		else
-			result.address = hostInfo[#hostInfo-5]
-		end
-		result.port = hostInfo[#hostInfo-4]
-		result.protocol = hostInfo[#hostInfo-3]
-		result.method = hostInfo[#hostInfo-2]
-		result.obfs = hostInfo[#hostInfo-1]
-		result.password = base64Decode(hostInfo[#hostInfo])	
-		local params = {}
-		for _, v in pairs(split(dat[2], '&')) do
-			local s = v:find("=", 1, true)
-			if s and s > 1 then
-				params[v:sub(1, s - 1)] = v:sub(s + 1)
-			end
-		end
-		result.obfs_param = base64Decode(params.obfsparam)
-		result.protocol_param = base64Decode(params.protoparam)
-		-- local ssr_group = base64Decode(params.group)
-		-- if ssr_group then result.ssr_group = ssr_group end
-		result.remarks = base64Decode(params.remarks)
-	elseif szType == 'vmess' then
+	if szType == 'vmess' then
 		local info = jsonParse(content)
 		if sub_vmess_type == "sing-box" and has_singbox then
 			result.type = 'sing-box'
@@ -2052,7 +2019,7 @@ local function parse_link(raw, add_mode, group, sub_cfg)
 						local node = api.trim(v)
 						local dat = split(node, "://")
 						if dat and dat[1] and dat[2] then
-							if dat[1] == 'vmess' or dat[1] == 'ssr' then
+							if dat[1] == 'vmess' then
 								local link = api.trim(dat[2]:gsub("#.*$", ""))
 								result = processData(dat[1], base64Decode(link), add_mode, group, sub_cfg)
 							else

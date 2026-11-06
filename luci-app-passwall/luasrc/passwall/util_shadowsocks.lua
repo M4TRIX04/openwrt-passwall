@@ -18,13 +18,6 @@ function gen_config_server(node)
 		config.server = {"[::0]", "0.0.0.0"}
 	end
 
-	if node.type == "SSR" then
-		config.protocol = node.protocol
-		config.protocol_param = node.protocol_param
-		config.obfs = node.obfs
-		config.obfs_param = node.obfs_param
-	end
-
 	return config
 end
 
@@ -84,11 +77,6 @@ function gen_config(var)
 		config.plugin = plugin_file or nil
 		config.plugin_opts = (plugin_file) and node.plugin_opts or nil
 		config.mode = mode
-	elseif node.type == "SSR" then
-		config.protocol = node.protocol
-		config.protocol_param = node.protocol_param
-		config.obfs = node.obfs
-		config.obfs_param = node.obfs_param
 	elseif node.type == "SS-Rust" then
 		config = {
 			servers = {

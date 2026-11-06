@@ -2137,3 +2137,22 @@ msgstr "并发隧道连接数"
 
 msgid "Processing, please wait…"
 msgstr "正在处理，请稍候…"
+
+msgid "Direct"
+msgstr "直连"
+
+msgid "Custom Node"
+msgstr "自定义节点"
+
+msgid "Follow the global settings"
+msgstr "跟随主设置"
+
+msgid "Bypass PassWall completely"
+msgstr "完全绕过 PassWall"
+
+msgid "Direct mode bypasses PassWall for both traffic and DNS."
+msgstr "直连模式下，该来源的流量与 DNS 都不经过 PassWall。"
+
+msgid "Custom Node exposes the advanced per-ACL settings below."
+msgstr "自定义节点会展开下方所有高级设置。"
+

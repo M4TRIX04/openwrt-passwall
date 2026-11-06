@@ -21,6 +21,10 @@ s.addremove = true
 s.extedit = api.url("acl_config", "%s")
 function s.create(e, t)
 	t = TypedSection.create(e, t)
+	-- 新建的 ACL 默认走「代理（跟随主设置）」，与配置页的默认值保持一致；
+	-- 否则空 ACL 会被底层当成直连处理，界面上却看不出区别。
+	m:set(t, "acl_mode", "proxy")
+	m:set(t, "use_global_config", "1")
 	luci.http.redirect(e.extedit:format(t))
 end
 function s.remove(e, t)
@@ -61,6 +65,18 @@ o.cfgvalue = function(t, n)
 		e = e .. a
 	end)
 	return e
+end
+
+o = s:option(DummyValue, "acl_mode", translate("Proxy Mode"))
+o.rawhtml = true
+o.cfgvalue = function(t, n)
+	local mode = api.get_acl_mode(n)
+	if mode == "proxy" then
+		return translate("Proxy")
+	elseif mode == "direct" then
+		return "<span style='color:gray'>" .. translate("Direct") .. "</span>"
+	end
+	return translate("Custom Node")
 end
 
 o = s:option(DummyValue, "interface", translate("Source Interface"))

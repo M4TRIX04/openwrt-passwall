@@ -71,6 +71,75 @@ s = m:section(NamedSection, arg[1], translate("ACLs"), translate("ACLs"))
 s.addremove = false
 s.dynamic = false
 
+-- 旧配置没有 acl_mode 字段，这里按底层字段反推后写进内存态，
+-- 让 depends 在首次渲染时就能正确求值（GET 请求不会落盘，保存时才写入）。
+local valid_mode = function(v)
+	return v == "proxy" or v == "direct" or v == "custom"
+end
+
+if not valid_mode(m:get(arg[1], "acl_mode")) then
+	m:set(arg[1], "acl_mode", api.get_acl_mode(arg[1]))
+end
+
+---- Proxy Mode
+-- proxy  = 跟随主设置（复用全局节点与全局 DNS，不额外起进程）
+-- direct = 完全直连（TCP/UDP 与 DNS 都不进入 PassWall 的处理链）
+-- custom = 自定义节点（保留原有的独立节点、独立 DNS、独立端口设置）
+o = s:option(ListValue, "acl_mode", translate("Proxy Mode"))
+o.default = "proxy"
+o.rmempty = false
+o:value("proxy", translate("Proxy") .. " (" .. translate("Follow the global settings") .. ")")
+o:value("direct", translate("Direct") .. " (" .. translate("Bypass PassWall completely") .. ")")
+o:value("custom", translate("Custom Node"))
+o.description = translate("Direct mode bypasses PassWall for both traffic and DNS.") .. "<br />" ..
+	translate("Custom Node exposes the advanced per-ACL settings below.")
+o.cfgvalue = function(self, section)
+	local v = m:get(section, "acl_mode")
+	if valid_mode(v) then
+		return v
+	end
+	return api.get_acl_mode(section)
+end
+o.write = function(self, section, value)
+	value = value or "proxy"
+	m:set(section, "acl_mode", value)
+
+	-- 把模式语义下沉到下面这几个字段上（见 acl_mode_of 的用法）。
+	-- 这里先兜底写一遍，保证即使某个字段被 depends 隐藏、没有参与提交，
+	-- 底层字段也不会残留上一种模式的值。
+	if value == "direct" then
+		m:set(section, "use_global_config", "0")
+		m:set(section, "tcp_no_redir_ports", "1:65535")
+		m:set(section, "udp_no_redir_ports", "1:65535")
+	elseif value == "proxy" then
+		m:set(section, "use_global_config", "1")
+		m:del(section, "tcp_no_redir_ports")
+		m:del(section, "udp_no_redir_ports")
+	end
+end
+
+-- 读取当前表单里的模式（还没保存时也能拿到正确值）
+local acl_mode_of = function(section)
+	local f = s.fields["acl_mode"]
+	local v = f and f:formvalue(section)
+	if valid_mode(v) then
+		return v
+	end
+	return api.get_acl_mode(section)
+end
+
+-- proxy / direct 模式下，端口字段一律由模式决定取值；
+-- 这样即使 LuCI 仍然把这些被隐藏的字段写回，也不会破坏模式语义。
+local mode_bound_port_write = function(self, section, value)
+	local mode = acl_mode_of(section)
+	if mode == "direct" then
+		value = "1:65535"
+	elseif mode == "proxy" then
+		value = ""
+	end
+	return Value.write(self, section, value)
+end
+
 ---- Enable
 o = s:option(Flag, "enabled", translate("Enable"))
 o.default = 1
@@ -187,6 +256,8 @@ o:value("", translate("Use global config") .. "(" .. TCP_NO_REDIR_PORTS .. ")")
 o:value("disable", translate("No patterns are used"))
 o:value("1:65535", translate("All"))
 o.validate = port_validate
+o:depends({ acl_mode = "custom" })
+o.write = mode_bound_port_write
 
 ---- UDP No Redir Ports
 local UDP_NO_REDIR_PORTS = m:get("@global_forwarding[0]", "udp_no_redir_ports")
@@ -198,23 +269,34 @@ o:value("", translate("Use global config") .. "(" .. UDP_NO_REDIR_PORTS .. ")")
 o:value("disable", translate("No patterns are used"))
 o:value("1:65535", translate("All"))
 o.validate = port_validate
+o:depends({ acl_mode = "custom" })
+o.write = mode_bound_port_write
 
 o = s:option(DummyValue, "_hide_node_option", "")
 o.template = "passwall/cbi/hidevalue"
 o.value = "1"
-o:depends({ tcp_no_redir_ports = "1:65535", udp_no_redir_ports = "1:65535" })
+o:depends({ acl_mode = "custom", tcp_no_redir_ports = "1:65535", udp_no_redir_ports = "1:65535" })
 if TCP_NO_REDIR_PORTS == "1:65535" and UDP_NO_REDIR_PORTS == "1:65535" then
-	o:depends({ tcp_no_redir_ports = "", udp_no_redir_ports = "" })
+	o:depends({ acl_mode = "custom", tcp_no_redir_ports = "", udp_no_redir_ports = "" })
 end
 
 o = s:option(Flag, "use_global_config", translatef("Use global config"))
 o.default = "0"
 o.rmempty = false
-o:depends({ _hide_node_option = "1",  ['!reverse'] = true })
+o:depends({ acl_mode = "custom", _hide_node_option = "1",  ['!reverse'] = true })
+o.write = function(self, section, value)
+	local mode = acl_mode_of(section)
+	if mode == "proxy" then
+		value = "1"
+	elseif mode == "direct" then
+		value = "0"
+	end
+	return Flag.write(self, section, value)
+end
 
 o = s:option(ListValue, "tcp_node", "<a style='color: red'>" .. translate("TCP Node") .. "</a>")
 o.default = ""
-o:depends({ _hide_node_option = false, use_global_config = false })
+o:depends({ acl_mode = "custom", _hide_node_option = false, use_global_config = false })
 o.template = appname .. "/cbi/nodes_listvalue"
 o.group = {}
 o.remove = function(self, section)
@@ -225,13 +307,13 @@ end
 o = s:option(DummyValue, "_tcp_node_bool", "")
 o.template = "passwall/cbi/hidevalue"
 o.value = "1"
-o:depends({ tcp_node = "",  ['!reverse'] = true })
+o:depends({ acl_mode = "custom", tcp_node = "",  ['!reverse'] = true })
 
 o = s:option(ListValue, "udp_node", "<a style='color: red'>" .. translate("UDP Node") .. "</a>")
 o.default = ""
 o:value("", translate("Close"))
 o:value("tcp", translate("Same as the tcp node"))
-o:depends({ _tcp_node_bool = "1", _node_sel_other = "1" })
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1", _node_sel_other = "1" })
 o.template = appname .. "/cbi/nodes_listvalue"
 o.group = {"",""}
 o.remove = function(self, section)
@@ -244,7 +326,7 @@ end
 o = s:option(ListValue, "shunt_udp_node", "<a style='color: red'>" .. translate("UDP Node") .. "</a>")
 o:value("close", translate("Close"))
 o:value("tcp", translate("Same as the tcp node"))
-o:depends({ _tcp_node_bool = "1", _node_sel_shunt = "1" })
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1", _node_sel_shunt = "1" })
 o.cfgvalue = function(self, section)
 	local v = m:get(section, "udp_node") or ""
 	if v == "" then v = "close" end
@@ -259,8 +341,8 @@ end
 o = s:option(DummyValue, "_udp_node_bool", "")
 o.template = "passwall/cbi/hidevalue"
 o.value = "1"
-o:depends({ udp_node = "",  ['!reverse'] = true })
-o:depends({ shunt_udp_node = "tcp" })
+o:depends({ acl_mode = "custom", udp_node = "",  ['!reverse'] = true })
+o:depends({ acl_mode = "custom", shunt_udp_node = "tcp" })
 
 ---- TCP Proxy Drop Ports
 local TCP_PROXY_DROP_PORTS = m:get("@global_forwarding[0]", "tcp_proxy_drop_ports")
@@ -268,8 +350,8 @@ o = s:option(Value, "tcp_proxy_drop_ports", translate("TCP Proxy Drop Ports"))
 o:value("", translate("Use global config") .. "(" .. TCP_PROXY_DROP_PORTS .. ")")
 o:value("disable", translate("No patterns are used"))
 o.validate = port_validate
-o:depends({ use_global_config = true })
-o:depends({ _tcp_node_bool = "1" })
+o:depends({ acl_mode = "custom", use_global_config = true })
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 ---- UDP Proxy Drop Ports
 local UDP_PROXY_DROP_PORTS = m:get("@global_forwarding[0]", "udp_proxy_drop_ports")
@@ -278,8 +360,8 @@ o:value("", translate("Use global config") .. "(" .. UDP_PROXY_DROP_PORTS .. ")"
 o:value("disable", translate("No patterns are used"))
 o:value("443", translate("QUIC"))
 o.validate = port_validate
-o:depends({ use_global_config = true })
-o:depends({ _tcp_node_bool = "1" })
+o:depends({ acl_mode = "custom", use_global_config = true })
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 ---- TCP Redir Ports
 local TCP_REDIR_PORTS = m:get("@global_forwarding[0]", "tcp_redir_ports")
@@ -290,8 +372,8 @@ o:value("80,443", "80,443")
 o:value("80:65535", "80 " .. translate("or more"))
 o:value("1:443", "443 " .. translate("or less"))
 o.validate = port_validate
-o:depends({ use_global_config = true })
-o:depends({ _tcp_node_bool = "1" })
+o:depends({ acl_mode = "custom", use_global_config = true })
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 ---- UDP Redir Ports
 local UDP_REDIR_PORTS = m:get("@global_forwarding[0]", "udp_redir_ports")
@@ -300,8 +382,8 @@ o:value("", translate("Use global config") .. "(" .. UDP_REDIR_PORTS .. ")")
 o:value("1:65535", translate("All"))
 o:value("53", "53")
 o.validate = port_validate
-o:depends({ use_global_config = true })
-o:depends({ _udp_node_bool = "1" })
+o:depends({ acl_mode = "custom", use_global_config = true })
+o:depends({ acl_mode = "custom", _udp_node_bool = "1" })
 
 o = s:option(DummyValue, "tips", "　")
 o.rawhtml = true
@@ -309,25 +391,25 @@ o.cfgvalue = function(t, n)
 	return string.format('<font color="red">%s</font>',
 	translate("The port settings support single ports and ranges.<br>Separate multiple ports with commas (,).<br>Example: 21,80,443,1000:2000."))
 end
-o:depends({ use_global_config = true })
-o:depends({ _tcp_node_bool = "1" })
+o:depends({ acl_mode = "custom", use_global_config = true })
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 o = s:option(Flag, "use_direct_list", translatef("Use %s", translate("Direct List")))
 o.default = "1"
-o:depends({ _tcp_node_bool = "1" })
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 o = s:option(Flag, "use_proxy_list", translatef("Use %s", translate("Proxy List")))
 o.default = "1"
-o:depends({ _tcp_node_bool = "1" })
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 o = s:option(Flag, "use_block_list", translatef("Use %s", translate("Block List")))
 o.default = "1"
-o:depends({ _tcp_node_bool = "1" })
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 if has_gfwlist then
 	o = s:option(Flag, "use_gfw_list", translatef("Use %s", translate("GFW List")))
 	o.default = "1"
-	o:depends({ _tcp_node_bool = "1" })
+	o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 end
 
 if has_chnlist or has_chnroute then
@@ -336,47 +418,48 @@ if has_chnlist or has_chnroute then
 	o:value("direct", translate("Direct Connection"))
 	o:value("proxy", translate("Proxy"))
 	o.default = "direct"
-	o:depends({ _tcp_node_bool = "1" })
+	o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 end
 
 o = s:option(ListValue, "tcp_proxy_mode", "TCP " .. translate("Proxy Mode"))
 o:value("disable", translate("No Proxy"))
 o:value("proxy", translate("Proxy"))
-o:depends({ _tcp_node_bool = "1" })
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 o = s:option(ListValue, "udp_proxy_mode", "UDP " .. translate("Proxy Mode"))
 o:value("disable", translate("No Proxy"))
 o:value("proxy", translate("Proxy"))
-o:depends({ _udp_node_bool = "1" })
+o:depends({ acl_mode = "custom", _udp_node_bool = "1" })
 
 o = s:option(DummyValue, "switch_mode", " ")
 o.template = appname .. "/global/proxy"
-o:depends({ _tcp_node_bool = "1" })
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 -- Node → DNS Depends Settings
 o = s:option(DummyValue, "_node_sel_shunt", "")
 o.template = appname .. "/cbi/hidevalue"
 o.value = "1"
-o:depends({ tcp_node = "__always__" })
+o:depends({ acl_mode = "custom", tcp_node = "__always__" })
 
 o = s:option(DummyValue, "_node_sel_other", "")
 o.template = appname .. "/cbi/hidevalue"
 o.value = "1"
-o:depends({ _node_sel_shunt = "1",  ['!reverse'] = true })
+o:depends({ acl_mode = "custom", _node_sel_shunt = "1",  ['!reverse'] = true })
 
 ---- DNS
 o = s:option(ListValue, "dns_shunt", "DNS " .. translate("Shunt"))
 o.default = "chinadns-ng"
 o:value("dnsmasq", "Dnsmasq")
 o:value("chinadns-ng", translate("ChinaDNS-NG (recommended)"))
-o:depends({ _tcp_node_bool = "1" })
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 o = s:option(DummyValue, "view_chinadns_log", " ")
 o.template = appname .. "/acl/view_chinadns_log"
+o:depends({ acl_mode = "custom" })
 
 o = s:option(Flag, "filter_proxy_ipv6", translate("Filter Proxy Host IPv6"), translate("Experimental feature."))
 o.default = "0"
-o:depends({ _tcp_node_bool = "1" })
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 ---- DNS Forward Mode
 o = s:option(ListValue, "dns_mode", translate("Filter Mode"))
@@ -389,7 +472,7 @@ end
 if has_xray then
 	o:value("xray", "Xray")
 end
-o:depends({ _tcp_node_bool = "1", _node_sel_other = "1" })
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1", _node_sel_other = "1" })
 o.write = function(self, section, value)
 	if value == "dns2socks" then
 		m:del(section, "v2ray_dns_mode")
@@ -423,7 +506,7 @@ o.default = "tcp"
 o:value("tcp", "TCP")
 o:value("udp", "UDP")
 o:value("doh", "DoH")
-o:depends("dns_mode", "xray")
+o:depends({ acl_mode = "custom", dns_mode = "xray" })
 o.cfgvalue = function(self, section)
 	return m:get(section, "v2ray_dns_mode")
 end
@@ -439,7 +522,7 @@ o:value("tcp", "TCP")
 o:value("udp", "UDP")
 o:value("doh", "DoH")
 o:value("http3", "HTTP3(DoH3)")
-o:depends("dns_mode", "sing-box")
+o:depends({ acl_mode = "custom", dns_mode = "sing-box" })
 o.cfgvalue = function(self, section)
 	return m:get(section, "v2ray_dns_mode")
 end
@@ -460,11 +543,11 @@ o:value("9.9.9.9", "9.9.9.9 (Quad9-Recommended)")
 o:value("149.112.112.112", "149.112.112.112 (Quad9-Recommended)")
 o:value("208.67.220.220", "208.67.220.220 (OpenDNS)")
 o:value("208.67.222.222", "208.67.222.222 (OpenDNS)")
-o:depends({dns_mode = "dns2socks"})
-o:depends({xray_dns_mode = "udp"})
-o:depends({xray_dns_mode = "tcp"})
-o:depends({singbox_dns_mode = "udp"})
-o:depends({singbox_dns_mode = "tcp"})
+o:depends({ acl_mode = "custom", dns_mode = "dns2socks"})
+o:depends({ acl_mode = "custom", xray_dns_mode = "udp"})
+o:depends({ acl_mode = "custom", xray_dns_mode = "tcp"})
+o:depends({ acl_mode = "custom", singbox_dns_mode = "udp"})
+o:depends({ acl_mode = "custom", singbox_dns_mode = "tcp"})
 
 o = s:option(Value, "remote_dns_doh", translate("Remote DNS DoH"))
 o.description = translate("Format: URL[,IP] (optional IP to map the domain in the URL)")
@@ -501,23 +584,23 @@ o.validate = function(self, value, t)
 	end
 	return nil, translate("DoH request address") .. " " .. translate("Format must be:") .. " URL,IP"
 end
-o:depends({xray_dns_mode = "doh"})
-o:depends({singbox_dns_mode = "doh"})
-o:depends({singbox_dns_mode = "http3"})
+o:depends({ acl_mode = "custom", xray_dns_mode = "doh"})
+o:depends({ acl_mode = "custom", singbox_dns_mode = "doh"})
+o:depends({ acl_mode = "custom", singbox_dns_mode = "http3"})
 
 o = s:option(Value, "remote_dns_client_ip", translate("EDNS Client Subnet"))
 o.description = translate("Notify the DNS server when the DNS query is notified, the location of the client (cannot be a private IP address).") .. "<br />" ..
 		translate("This feature requires the DNS server to support the Edns Client Subnet (RFC7871).")
 o.datatype = "ipaddr"
-o:depends({dns_mode = "sing-box"})
-o:depends({dns_mode = "xray"})
-o:depends({_node_sel_shunt = "1"})
+o:depends({ acl_mode = "custom", dns_mode = "sing-box"})
+o:depends({ acl_mode = "custom", dns_mode = "xray"})
+o:depends({ acl_mode = "custom", _node_sel_shunt = "1"})
 
 o = s:option(Flag, "remote_fakedns", "FakeDNS", translate("Use FakeDNS work in the domain that proxy."))
 o.default = "0"
 o.rmempty = false
-o:depends({dns_mode = "sing-box"})
-o:depends({dns_mode = "xray"})
+o:depends({ acl_mode = "custom", dns_mode = "sing-box"})
+o:depends({ acl_mode = "custom", dns_mode = "xray"})
 o.validate = function(self, value, t)
 	if value and value == "1" then
 		local _dns_mode = s.fields["dns_mode"]:formvalue(t)
@@ -547,19 +630,19 @@ o.description = desc
 		.. "<li>" .. translate("Do not accept: Wait and use Remote DNS Reply.") .. "</li>"
 		.. "<li>" .. translate("Accept: Trust the Reply, using this option can improve DNS resolution speeds for some mainland IPv4-only sites.") .. "</li>"
 		.. "</ul>"
-o:depends({dns_shunt = "chinadns-ng", tcp_proxy_mode = "proxy", chn_list = "direct"})
+o:depends({ acl_mode = "custom", dns_shunt = "chinadns-ng", tcp_proxy_mode = "proxy", chn_list = "direct"})
 
 o = s:option(Flag, "force_https_soa", translate("Force HTTPS SOA"), translate("Force queries with qtype 65 to respond with an SOA record."))
 o.default = "0"
 o.rmempty = false
-o:depends({dns_shunt = "chinadns-ng"})
+o:depends({ acl_mode = "custom", dns_shunt = "chinadns-ng"})
 
 o = s:option(ListValue, "use_default_dns", translate("Default DNS"))
 o.default = "direct"
 o:value("remote", translate("Remote DNS"))
 o:value("direct", translate("Direct DNS"))
 o.description = desc .. "</ul>"
-o:depends({dns_shunt = "dnsmasq", tcp_proxy_mode = "proxy", chn_list = "direct"})
+o:depends({ acl_mode = "custom", dns_shunt = "dnsmasq", tcp_proxy_mode = "proxy", chn_list = "direct"})
 
 local tcp = s.fields["tcp_node"]
 local udp = s.fields["udp_node"]
@@ -571,7 +654,7 @@ for k, v in pairs(socks_list) do
 end
 for k, v in pairs(nodes_table) do
 	if #normal_list == 0 then
-		s.fields["dns_mode"]:depends({ _tcp_node_bool = "1" })
+		s.fields["dns_mode"]:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 		break
 	end
 	if v.protocol == "_shunt" then
@@ -581,8 +664,8 @@ for k, v in pairs(nodes_table) do
 			udp:value(v.id, v["remark"])
 			udp.group[#udp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 
-			s.fields["xray_dns_mode"]:depends({ _tcp_node_bool = "1", tcp_node = v.id })
-			s.fields["_node_sel_shunt"]:depends({ tcp_node = v.id })
+			s.fields["xray_dns_mode"]:depends({ acl_mode = "custom", _tcp_node_bool = "1", tcp_node = v.id })
+			s.fields["_node_sel_shunt"]:depends({ acl_mode = "custom", tcp_node = v.id })
 		end
 		if v.type == "sing-box" and has_singbox then
 			tcp:value(v.id, v["remark"])
@@ -590,8 +673,8 @@ for k, v in pairs(nodes_table) do
 			udp:value(v.id, v["remark"])
 			udp.group[#udp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 
-			s.fields["singbox_dns_mode"]:depends({ _tcp_node_bool = "1", tcp_node = v.id })
-			s.fields["_node_sel_shunt"]:depends({ tcp_node = v.id })
+			s.fields["singbox_dns_mode"]:depends({ acl_mode = "custom", _tcp_node_bool = "1", tcp_node = v.id })
+			s.fields["_node_sel_shunt"]:depends({ acl_mode = "custom", tcp_node = v.id })
 		end
 	else
 		tcp:value(v.id, v["remark"])

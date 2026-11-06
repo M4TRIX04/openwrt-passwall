@@ -454,6 +454,42 @@ function get_domain_from_url(url)
 	return url
 end
 
+-- 读取 ACL 的代理模式：proxy（跟随主设置）/ direct（完全直连）/ custom（自定义节点）
+-- 旧配置没有 acl_mode 字段，按底层字段反推，保证升级后语义不漂移。
+function get_acl_mode(section)
+	if not section or section == "" then
+		return "direct"
+	end
+
+	local mode = uci:get(appname, section, "acl_mode")
+	if mode == "proxy" or mode == "direct" or mode == "custom" then
+		return mode
+	end
+
+	-- 旧逻辑里「TCP/UDP 端口全部不代理」等价于直连
+	local function is_all_ports(v)
+		if type(v) ~= "string" or v == "" then return false end
+		return (v:gsub(":", "-")) == "1-65535"
+	end
+
+	if is_all_ports(uci:get(appname, section, "tcp_no_redir_ports")) and
+	   is_all_ports(uci:get(appname, section, "udp_no_redir_ports")) then
+		return "direct"
+	end
+
+	if uci:get(appname, section, "use_global_config") == "1" then
+		return "proxy"
+	end
+
+	local tcp_node = uci:get(appname, section, "tcp_node")
+	local udp_node = uci:get(appname, section, "udp_node")
+	if (tcp_node and tcp_node ~= "") or (udp_node and udp_node ~= "") then
+		return "custom"
+	end
+
+	return "direct"
+end
+
 function get_valid_nodes()
 	local show_node_info = uci_get_type("global_other", "show_node_info", "0")
 	local nodes = {}

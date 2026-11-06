@@ -410,7 +410,7 @@ load_acl() {
 					fi
 				}
 
-				local dns_redirect
+				local dns_redirect is_direct_acl
 				[ $(config_t_get global dns_redirect "1") = "1" ] && dns_redirect=53
 				if ([ -n "$tcp_port" ] && [ -n "${tcp_proxy_mode}" ]) || ([ -n "$udp_port" ] && [ -n "${udp_proxy_mode}" ]); then
 					[ "${use_proxy_list}" = "1" ] && {
@@ -439,9 +439,25 @@ load_acl() {
 					}
 					[ -n "${dns_redirect_port}" ] && dns_redirect=${dns_redirect_port}
 				else
-					[ -n "${DIRECT_DNSMASQ_PORT}" ] && dns_redirect=${DIRECT_DNSMASQ_PORT}
+					if [ -n "${DIRECT_DNSMASQ_PORT}" ]; then
+						dns_redirect=${DIRECT_DNSMASQ_PORT}
+					else
+						# 该 ACL 没有任何代理端口 = 直连模式，DNS 也不劫持
+						is_direct_acl=1
+						unset dns_redirect
+					fi
 				fi
-				if [ -n "${dns_redirect}" ]; then
+				if [ "${is_direct_acl}" = "1" ]; then
+					# 直连：TCP/UDP 与 DNS 全部放行，等同于该来源不受 PassWall 影响。
+					# 必须在 PSW_DNS 里显式 return，否则会落到后面「默认」那条无源限制的 redirect。
+					nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol udp ${_ipt_source} udp dport 53 counter return comment \"$remarks\""
+					[ "$_ipv4" != "1" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE_V6 meta l4proto udp ${_ipt_source} udp dport 53 counter return comment \"$remarks\""
+					nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol tcp ${_ipt_source} tcp dport 53 counter return comment \"$remarks\""
+					[ "$_ipv4" != "1" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE_V6 meta l4proto tcp ${_ipt_source} tcp dport 53 counter return comment \"$remarks\""
+					nft "add rule $NFTABLE_NAME PSW_DNS meta l4proto udp ${_ipt_source} udp dport 53 counter return comment \"$remarks\""
+					nft "add rule $NFTABLE_NAME PSW_DNS meta l4proto tcp ${_ipt_source} tcp dport 53 counter return comment \"$remarks\""
+					echolog "     - ${msg}直连，DNS 不劫持"
+				elif [ -n "${dns_redirect}" ]; then
 					nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol udp ${_ipt_source} udp dport 53 counter return comment \"$remarks\""
 					[ "$_ipv4" != "1" ] && nft "add rule $NFTABLE_NAME PSW_MANGLE_V6 meta l4proto udp ${_ipt_source} udp dport 53 counter return comment \"$remarks\""
 					nft "add rule $NFTABLE_NAME PSW_MANGLE ip protocol tcp ${_ipt_source} tcp dport 53 counter return comment \"$remarks\""
@@ -593,7 +609,7 @@ load_acl() {
 				unset nft_chain nft_j _ipt_source msg msg2 _ipv4
 			done
 			unset enabled sid remarks sources use_global_config use_direct_list use_proxy_list use_block_list use_gfw_list chn_list tcp_proxy_mode udp_proxy_mode dns_redirect_port tcp_no_redir_ports udp_no_redir_ports tcp_proxy_drop_ports udp_proxy_drop_ports tcp_redir_ports udp_redir_ports tcp_node udp_node interface
-			unset tcp_port udp_port tcp_node_remark udp_node_remark _acl_list use_shunt_tcp use_shunt_udp dns_redirect use_fakedns
+			unset tcp_port udp_port tcp_node_remark udp_node_remark _acl_list use_shunt_tcp use_shunt_udp dns_redirect is_direct_acl use_fakedns
 		done
 	}
 

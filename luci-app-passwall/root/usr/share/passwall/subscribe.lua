@@ -33,6 +33,9 @@ local SS_AEAD_METHODS = {
 	["chacha20-ietf-poly1305"] = true,
 	["xchacha20-ietf-poly1305"] = true,
 }
+local nodeResult = {} -- update result
+local isDebug = false
+
 local log = function(...)
 	if isDebug == true then
 		local result = os.date("%Y-%m-%d %H:%M:%S: ") .. table.concat({...}, " ")

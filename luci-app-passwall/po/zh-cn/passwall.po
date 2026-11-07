@@ -64,8 +64,6 @@ msgstr "运行日志"
 msgid "Node Config"
 msgstr "节点配置"
 
-msgid "Shunt Policy Config"
-msgstr "分流方案配置"
 
 msgid "Running Status"
 msgstr "运行状态"
@@ -124,8 +122,6 @@ msgstr "与 TCP 节点相同"
 msgid "Current node: %s"
 msgstr "当前节点：%s"
 
-msgid "DNS Shunt"
-msgstr "DNS分流"
 
 msgid "Domestic group name"
 msgstr "国内分组名"
@@ -460,14 +456,8 @@ msgstr "拖动以重排"
 msgid "Type"
 msgstr "类型"
 
-msgid "_balancing"
-msgstr "负载均衡"
 
-msgid "_shunt"
-msgstr "分流"
 
-msgid "_iface"
-msgstr "接口"
 
 msgid "Balancing"
 msgstr "负载均衡"
@@ -547,8 +537,6 @@ msgstr "分流"
 msgid "Preproxy"
 msgstr "前置代理"
 
-msgid "Preproxy Node"
-msgstr "前置代理节点"
 
 msgid "Set the node to be used as a pre-proxy."
 msgstr "设置用作前置代理的节点。"
@@ -571,8 +559,6 @@ msgstr "黑洞（屏蔽）"
 msgid "There are no available nodes, please add or subscribe nodes first."
 msgstr "没有可用节点，请先添加或订阅节点。"
 
-msgid "No shunt rules? Click me to go to add."
-msgstr "没有分流规则？点我前往去添加。"
 
 msgid "When using, localhost will connect this node first and then use this node to connect the default node."
 msgstr "当使用时，本机将首先连接到此节点，然后再使用此节点连接到默认节点落地。"
@@ -1060,17 +1046,11 @@ msgstr "小时"
 msgid "Hour"
 msgstr "小时"
 
-msgid "GeoIP Update URL"
-msgstr "GeoIP 更新URL"
 
-msgid "Geosite Update URL"
-msgstr "Geosite 更新URL"
 
 msgid "Location of Geo rule files"
 msgstr "Geo 规则文件目录"
 
-msgid "This variable specifies a directory where geoip.dat and geosite.dat files are."
-msgstr "此变量指定 geoip.dat 和 geosite.dat 文件所在的目录。"
 
 msgid "Generate Rule List from Geo"
 msgstr "从 Geo 文件生成规则"
@@ -1084,17 +1064,9 @@ msgstr "启用此选项后手动更新时,即使没有新版本也会从现有 G
 msgid "Enable Geo Data Parsing"
 msgstr "开启 Geo 数据解析"
 
-msgid "Analyzes and preloads GeoIP/Geosite data to enhance the shunt performance of Sing-box/Xray."
-msgstr "分析和预加载 GeoIP/Geosite 数据，以增强 Sing-box/Xray 的分流效果。"
 
-msgid "Once enabled, the rule list can support GeoIP/Geosite rules."
-msgstr "启用后，规则列表可以支持 GeoIP/Geosite 规则。"
 
-msgid "Note: Increases resource usage; Geosite analysis is only supported in ChinaDNS-NG and SmartDNS modes."
-msgstr "注：会增加一些系统资源的开销，仅在 ChinaDNS-NG 和 SmartDNS 模式下支持分析 Geosite 。"
 
-msgid "Shunt Rule"
-msgstr "分流规则"
 
 msgid "Please note attention to the priority, the higher the order, the higher the priority."
 msgstr "请注意优先级问题，排序越上面优先级越高。"
@@ -1354,11 +1326,7 @@ msgstr "子域名 (推荐): 由'domain:'开始，余下部分是一个域名。�
 msgid "Full domain: Begining with 'full:' and the rest is a domain. When the targeting domain is exactly the value, the rule takes effect. Example: rule 'domain:v2ray.com' matches 'v2ray.com', but not 'www.v2ray.com'."
 msgstr "完整匹配: 由'full:'开始，余下部分是一个域名。当此域名完整匹配目标域名时，该规则生效。例如'full:v2ray.com'匹配'v2ray.com'但不匹配'www.v2ray.com'。"
 
-msgid "Pre-defined domain list: Begining with 'geosite:' and the rest is a name, such as geosite:google or geosite:cn."
-msgstr "预定义域名列表：由'geosite:'开头，余下部分是一个名称，如geosite:google或者geosite:cn。"
 
-msgid "Sing-Box is compatible with Geo rules and rule-set. rule-set begin with 'rule-set:remote:' or 'rule-set:local:'."
-msgstr "Sing-Box 可兼容 Geo 规则和规则集，规则集由 'rule-set:remote:' 或 'rule-set:local:' 开始。"
 
 msgid "Such as:"
 msgstr "例如："
@@ -1369,8 +1337,6 @@ msgstr "注释: 由 # 开头"
 msgid "Invert match result."
 msgstr "反选匹配结果。"
 
-msgid "Only support Sing-Box."
-msgstr "只支持 Sing-Box。"
 
 msgid "IP: such as '127.0.0.1'."
 msgstr "IP: 形如'127.0.0.1'。"
@@ -1378,8 +1344,6 @@ msgstr "IP: 形如'127.0.0.1'。"
 msgid "CIDR: such as '127.0.0.0/8'."
 msgstr "CIDR: 形如'10.0.0.0/8'."
 
-msgid "GeoIP: such as 'geoip:cn'. It begins with geoip: (lower case) and followed by two letter of country code."
-msgstr "GeoIP: 形如'geoip:cn'，必须以geoip:（小写）开头，后面跟双字符国家代码，支持几乎所有可以上网的国家。"
 
 msgid "Clear logs"
 msgstr "清空日志"
@@ -1801,11 +1765,7 @@ msgstr "握手服务器"
 msgid "Handshake Server Port"
 msgstr "握手服务器端口"
 
-msgid "Override the connection destination address with the sniffed domain.<br />Otherwise use sniffed domain for routing only.<br />If using shunt nodes, configure the domain shunt rules correctly."
-msgstr "用探测出的域名覆盖连接目标地址。<br />否则仅将探测得到的域名用于路由。<br />如使用分流节点，请正确设置域名分流规则。"
 
-msgid "Override the connection destination address with the sniffed domain.<br />When enabled, traffic will match only by domain, ignoring IP rules.<br />If using shunt nodes, configure the domain shunt rules correctly."
-msgstr "用探测出的域名覆盖连接目标地址。<br />启用后仅使用域名进行流量匹配，将忽略IP规则。<br />如使用分流节点，请正确设置域名分流规则。"
 
 msgid "Protocol parameter. Will waste traffic randomly if enabled."
 msgstr "协议参数。如果启用会随机浪费流量。"
@@ -1924,8 +1884,6 @@ msgstr "如果节点地址是域名，则将使用此 DNS 进行解析。"
 msgid "Note: For node-specific DNS only. Keep Auto to avoid extra overhead."
 msgstr "注意：仅用于节点专用 DNS，通常请保持自动，以免增加开销。"
 
-msgid "Supports only Xray or Sing-box node types."
-msgstr "仅支持 Xray 或 Sing-box 类型节点。"
 
 msgid "Chain Proxy"
 msgstr "链式代理"
@@ -1933,18 +1891,6 @@ msgstr "链式代理"
 msgid "Outbound Interface"
 msgstr "出站接口"
 
-msgid "Landing Node"
-msgstr "落地节点"
-
-msgid "Only support a layer of proxy."
-msgstr "仅支持一层代理。"
-
-msgid ""
-"Chained proxy works only with Xray or Sing-box nodes.<br>"
-"You can only use manual or imported nodes as chained nodes."
-msgstr ""
-"链式代理仅支持 Xray 或 Sing-box 节点。<br>"
-"仅支持手动添加或导入的节点用作链式节点。"
 
 msgid "Only work with using the %s node."
 msgstr "与使用 %s 节点时生效。"
@@ -2012,8 +1958,6 @@ msgstr "URLTest"
 msgid "URLTest node list"
 msgstr "URLTest 节点列表"
 
-msgid "List of nodes to test, <a target='_blank' href='https://sing-box.sagernet.org/configuration/outbound/urltest'>document</a>"
-msgstr "要测试的节点列表，<a target='_blank' href='https://sing-box.sagernet.org/zh/configuration/outbound/urltest'>文档原理</a>"
 
 msgid "Test interval"
 msgstr "测试间隔"
@@ -2075,14 +2019,10 @@ msgstr "所在规则列表："
 msgid "Domain/IP Query"
 msgstr "域名/IP 查询"
 
-msgid "GeoIP/Geosite Query"
-msgstr "GeoIP/Geosite 查询"
 
 msgid "Enter a domain or IP to query the Geo rule list they belong to."
 msgstr "输入域名/IP，查询它们所在的 Geo 规则列表。"
 
-msgid "Enter a GeoIP or Geosite to extract the domains/IPs they contain. Format: geoip:cn or geosite:gfw"
-msgstr "输入 GeoIP/Geosite，提取它们所包含的域名/IP。格式：geoip:cn 或 geosite:gfw"
 
 msgid "Tips:"
 msgstr "小贴士："
@@ -2090,11 +2030,7 @@ msgstr "小贴士："
 msgid "By entering a domain or IP, you can query the Geo rule list they belong to."
 msgstr "可以通过输入域名/IP，查询它们所在的 Geo 规则列表。"
 
-msgid "By entering a GeoIP or Geosite, you can extract the domains/IPs they contain."
-msgstr "可以通过输入 GeoIP/Geosite，提取它们所包含的域名/IP。"
 
-msgid "Use the GeoIP/Geosite query function to verify if the entered Geo rules are correct."
-msgstr "利用 GeoIP/Geosite 查询功能，可以验证输入的 Geo 规则是否正确。"
 
 msgid "Private Key Passphrase"
 msgstr "私钥指纹"

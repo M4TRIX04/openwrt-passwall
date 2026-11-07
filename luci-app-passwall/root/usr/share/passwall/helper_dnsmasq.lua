@@ -181,11 +181,7 @@ function add_rule(var)
 	local CACHE_DNS_PATH = CACHE_PATH .. "/" .. CACHE_FLAG
 	local CACHE_TEXT_FILE = CACHE_DNS_PATH .. ".txt"
 	local USE_CHINADNS_NG = "0"
-	local IS_SHUNT_NODE = uci:get(appname, TCP_NODE, "protocol") == "_shunt"
 
-	if IS_SHUNT_NODE then
-		REMOTE_FAKEDNS = uci:get(appname, TCP_NODE, "fakedns") or "0"
-	end
 
 	local list1 = {}
 	local excluded_domain = {}
@@ -551,89 +547,6 @@ function add_rule(var)
 		end
 
 		--分流规则
-		if IS_SHUNT_NODE and USE_CHINADNS_NG == "0" then
-			local t = uci:get_all(appname, TCP_NODE)
-			local default_node_id = t["default_node"] or "_direct"
-			uci:foreach(appname, "shunt_rules", function(s)
-				local _node_id = t[s[".name"]]
-				if _node_id and _node_id ~= "_blackhole" then
-					if _node_id == "_default" then
-						_node_id = default_node_id
-					end
-
-					fwd_dns = nil
-					no_ipv6 = nil
-
-					local sets = {}
-
-					if _node_id == "_direct" then
-						fwd_dns = LOCAL_DNS
-						if USE_DIRECT_LIST == "1" then
-							table.insert(sets, setflag_4 .. "psw_white")
-							table.insert(sets, setflag_6 .. "psw_white6")
-						else
-							local set_name = "psw_shunt"
-							local set6_name = "psw_shunt6"
-							if FLAG ~= "default" then
-								set_name = "psw_" .. FLAG .. "_shunt"
-								set6_name = "psw_" .. FLAG .. "_shunt6"
-							end
-							table.insert(sets, setflag_4 .. set_name)
-							table.insert(sets, setflag_6 .. set6_name)
-						end
-					else
-						local set_name = "psw_shunt"
-						local set6_name = "psw_shunt6"
-						if FLAG ~= "default" then
-							set_name = "psw_" .. FLAG .. "_shunt"
-							set6_name = "psw_" .. FLAG .. "_shunt6"
-						end
-						fwd_dns = TUN_DNS
-						table.insert(sets, setflag_4 .. set_name)
-						if NO_PROXY_IPV6 ~= "1" then
-							table.insert(sets, setflag_6 .. set6_name)
-						else
-							no_ipv6 = true
-						end
-						if not only_global then
-							if REMOTE_FAKEDNS == "1" then
-								sets = {}
-							end
-						end
-					end
-
-					local domain_list = s.domain_list or ""
-					for line in string.gmatch(domain_list, "[^\r\n]+") do
-						if line ~= "" and not line:find("#") and not line:find("regexp:") and not line:find("geosite:") and not line:find("ext:") then
-							if line:find("domain:") or line:find("full:") then
-								line = string.match(line, ":([^:]+)$")
-							end
-							line = api.get_std_domain(line)
-							add_excluded_domain(line)
-
-							if no_ipv6 then
-								set_domain_address(line, "::")
-							end
-							set_domain_dns(line, fwd_dns)
-							set_domain_ipset(line, table.concat(sets, ","))
-						end
-					end
-					if _node_id ~= "_direct" then
-						log(string.format("  - 分流规则(%s)：%s", s.remarks, fwd_dns or "默认"))
-					end
-				end
-			end)
-		elseif only_global == 1 and NO_PROXY_IPV6 == "1" then
-			--节点：固定节点
-			--代理模式：全局模式
-			--过滤代理域名 IPv6：启用
-			--禁止解析所有IPv6记录
-			list1["#"] = {
-				dns = {},
-				ipsets = {},
-				address = "::"
-			}
-		end
 
 		if list1 and next(list1) then
 			local address_out = io.open(CACHE_DNS_PATH .. "/000-address.conf", "a")

@@ -73,6 +73,7 @@ function index()
 	entry({"admin", "services", appname, "socks_status"}, call("socks_status")).leaf = true
 	entry({"admin", "services", appname, "connect_status"}, call("connect_status")).leaf = true
 	entry({"admin", "services", appname, "ping_node"}, call("ping_node")).leaf = true
+	entry({"admin", "services", appname, "urltest_node"}, call("urltest_node")).leaf = true
 	entry({"admin", "services", appname, "add_node"}, call("add_node")).leaf = true
 	entry({"admin", "services", appname, "update_node"}, call("update_node")).leaf = true
 	entry({"admin", "services", appname, "set_node"}, call("set_node")).leaf = true
@@ -367,6 +368,28 @@ function connect_status()
 	end
 	http_write_json(e)
 end
+
+function urltest_node()
+	local index = http.formvalue("index")
+	local id = http.formvalue("id")
+	local e = {}
+	e.index = index
+	local result = luci.sys.exec(string.format("/usr/share/passwall/test.sh url_test_node %s %s", id, "urltest_node"))
+	local code = tonumber(luci.sys.exec("echo -n '" .. result .. "' | awk -F ':' '{print $1}'") or "0")
+	if code ~= 0 then
+		local use_time_str = luci.sys.exec("echo -n '" .. result .. "' | awk -F ':' '{print $2}'")
+		local use_time = tonumber(use_time_str)
+		if use_time then
+			if use_time_str:find("%.") then
+				e.use_time = string.format("%.2f", use_time * 1000)
+			else
+				e.use_time = string.format("%.2f", use_time / 1000)
+			end
+		end
+	end
+	http_write_json(e)
+end
+
 
 function ping_node()
 	local index = http.formvalue("index")

@@ -35,7 +35,6 @@ local appname = api.appname
 </style>
 <script type="text/javascript">
 	//<![CDATA[
-	const shunt_list = JSON.parse('<%=self.shunt_list%>');
 
 	function to_edit_node(btn) {
 		if (!btn) return;
@@ -248,46 +247,5 @@ local appname = api.appname
 		};
 	})();
 
-	document.addEventListener("DOMContentLoaded", () => setTimeout(() => {
-		const hiddenSelect = document.getElementById("cbid.<%=appname%>.<%=self.global_cfgid%>.tcp_node");
-		let o_val = hiddenSelect.value
-		const o_hasItem = shunt_list.find(element => element.id == o_val);
-		hiddenSelect.addEventListener("change", function(el){
-			let new_val = el.target.value
-			const new_hasItem = shunt_list.find(element => element.id == new_val);
-			if (new_hasItem) {
-				XHR.get('<%=api.url("update_node")%>', {
-					id: "<%=self.global_cfgid%>",
-					data: JSON.stringify({
-						tcp_node: new_val
-					})
-				},
-				function(x, data) {
-					if (x && x.status == 200 && data.code == 1) {
-						window.location.reload();
-					}
-					else {
-						alert("<%:Error%>");
-					}
-				});
-			} else {
-				try {
-					document.getElementById("tab.<%=appname%>.<%=self.global_cfgid%>.Shunt").classList.add('shunt-tab-hidden');
-					document.getElementById("tab.<%=appname%>.<%=self.global_cfgid%>.Shunt").style.display = "none";
-				} catch (error) {}
-				try {
-					document.querySelector('li[data-tab*="Shunt"]').classList.add('shunt-tab-hidden');
-					document.querySelector('li[data-tab*="Shunt"]').style.display = "none";
-				} catch (error) {}
-			}
-		});
-		let shunt_taboption = document.getElementById("container.<%=appname%>.<%=self.global_cfgid%>.Shunt");
-		if (shunt_taboption) {
-			let shunt_option_list = document.getElementById("cbi-<%=appname%>-shunt_option_list");
-			if (shunt_option_list) {
-				shunt_taboption.appendChild(shunt_option_list);
-			}
-		}
-	}, 100));
 	//]]>
 </script>

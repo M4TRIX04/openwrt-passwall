@@ -42,9 +42,6 @@ config global_forwarding
 	option tcp_proxy_way 'redirect'
 	option ipv6_tproxy '0'
 
-config global_xray
-	option sniffing_override_dest '0'
-
 config global_singbox
 
 config global_other
@@ -73,7 +70,6 @@ config global_rules
 config global_app
 	option geoview_file '/usr/bin/geoview'
 	option sing_box_file '/usr/bin/sing-box'
-	option xray_file '/usr/bin/xray'
 	option hysteria_file '/usr/bin/hysteria'
 
 config global_subscribe
@@ -87,7 +83,7 @@ config global_subscribe
 
 config nodes 'myshunt'
 	option remarks '分流总节点'
-	option type 'Xray'
+	option type 'sing-box'
 	option protocol '_shunt'
 	option DirectGame '_direct'
 	option ProxyGame '_default'
@@ -96,7 +92,6 @@ config nodes 'myshunt'
 	option Proxy '_default'
 	option Direct '_direct'
 	option default_node '_direct'
-	option domainStrategy 'IPOnDemand'
 
 config shunt_rules 'DirectGame'
 	option remarks 'DirectGame'

@@ -13,7 +13,6 @@ m:append(Template(appname .. "/cbi/nodes_dynamiclist_com"))
 m:append(Template(appname .. "/cbi/nodes_listvalue_com"))
 
 local has_singbox = api.finded_com("sing-box")
-local has_xray = api.finded_com("xray")
 
 local nodes_table = {}
 for k, e in ipairs(api.get_valid_nodes()) do
@@ -67,7 +66,7 @@ o.default = n + 1080
 o.datatype = "port"
 o.rmempty = false
 
-if has_singbox or has_xray then
+if has_singbox then
 	o = s:option(Value, "http_port", "HTTP " .. translate("Listen Port") .. " " .. translate("0 is not use"))
 	o.default = 0
 	o.datatype = "port"

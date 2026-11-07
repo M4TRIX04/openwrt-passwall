@@ -5,21 +5,19 @@ local appname = api.appname
 local map = self.map
 
 local has_singbox = api.finded_com("sing-box")
-local has_xray = api.finded_com("xray")
 local has_hysteria2 = api.finded_com("hysteria")
 
-local ss_type = api.get_core("ss_type", {{has_singbox,"sing-box"},{has_xray,"xray"}})
-local trojan_type = api.get_core("trojan_type", {{has_singbox,"sing-box"},{has_xray,"xray"}})
-local vmess_type = api.get_core("vmess_type", {{has_xray,"xray"},{has_singbox,"sing-box"}})
-local vless_type = api.get_core("vless_type", {{has_xray,"xray"},{has_singbox,"sing-box"}})
-local hysteria2_type = api.get_core("hysteria2_type", {{has_hysteria2,"hysteria2"},{has_singbox,"sing-box"}, {has_xray,"xray"}})
+local ss_type = api.get_core("ss_type", {{has_singbox,"sing-box"}})
+local trojan_type = api.get_core("trojan_type", {{has_singbox,"sing-box"}})
+local vmess_type = api.get_core("vmess_type", {{has_singbox,"sing-box"}})
+local vless_type = api.get_core("vless_type", {{has_singbox,"sing-box"}})
+local hysteria2_type = api.get_core("hysteria2_type", {{has_hysteria2,"hysteria2"},{has_singbox,"sing-box"}})
 
 local current_node = map:get(section)
 -%>
 <script src="<%=resource%>/view/<%=appname%>/qrcode.min.js"></script>
 <script type="text/javascript">//<![CDATA[
 	let has_singbox = "<%=has_singbox%>"
-	let has_xray = "<%=has_xray%>"
 	let has_hysteria2 = "<%=has_hysteria2%>"
 	let ss_type = "<%=ss_type%>"
 	let trojan_type = "<%=trojan_type%>"
@@ -172,8 +170,6 @@ local current_node = map:get(section)
 		} else if (v_type === "Hysteria2") {
 			dom_prefix = "hysteria2_"
 			protocol = "hysteria2"
-		} else if (v_type === "Xray") {
-			dom_prefix = "xray_"
 		} else if (v_type === "sing-box") {
 			dom_prefix = "singbox_"
 		}
@@ -191,7 +187,7 @@ local current_node = map:get(section)
 			}
 		}
 		var url = null;
-		if (v_type === "SS" || ((v_type === "sing-box" || v_type === "Xray") && opt.get(dom_prefix + "protocol").value === "shadowsocks")) {
+		if (v_type === "SS" || (v_type === "sing-box" && opt.get(dom_prefix + "protocol").value === "shadowsocks")) {
 			protocol = "ss"
 			var v_port = opt.get(dom_prefix + "port");
 			var v_method = opt.get(dom_prefix + "method") || opt.get(dom_prefix + "ss_method");
@@ -245,7 +241,7 @@ local current_node = map:get(section)
 						shadow_tls = 1;
 					}
 				}
-			} else if (v_type === "sing-box" || v_type === "Xray") {
+			} else if (v_type === "sing-box") {
 				var v_transport = opt.get(dom_prefix + "transport").value;
 				if (v_transport === "ws") {
 					params += opt.query("host", dom_prefix + "ws_host");
@@ -340,7 +336,7 @@ local current_node = map:get(section)
 				params = params.substring(1);
 			}
 			url += params;
-		} else if ((v_type === "sing-box" || v_type === "Xray") && opt.get(dom_prefix + "protocol").value === "vmess") {
+		} else if (v_type === "sing-box" && opt.get(dom_prefix + "protocol").value === "vmess") {
 			protocol = "vmess";
 			var info = {};
 			info.v = "2";
@@ -401,7 +397,7 @@ local current_node = map:get(section)
 			}
 
 			url = b64EncodeUnicode(JSON.stringify(info));
-		} else if ((v_type === "sing-box" || v_type === "Xray") && opt.get(dom_prefix + "protocol").value === "vless") {
+		} else if (v_type === "sing-box" && opt.get(dom_prefix + "protocol").value === "vless") {
 			protocol = "vless";
 			var v_password = opt.get(dom_prefix + "uuid");
 			var v_port = opt.get(dom_prefix + "port");
@@ -494,7 +490,7 @@ local current_node = map:get(section)
 				params = params.substring(1);
 			}
 			url += params;
-		} else if ((v_type === "sing-box" || v_type === "Xray") && opt.get(dom_prefix + "protocol").value === "trojan") {
+		} else if (v_type === "sing-box" && opt.get(dom_prefix + "protocol").value === "trojan") {
 			protocol = "trojan"
 			var v_password = opt.get(dom_prefix + "password");
 			var v_port = opt.get(dom_prefix + "port");
@@ -565,7 +561,7 @@ local current_node = map:get(section)
 				params = params.substring(1);
 			}
 			url += params;
-		} else if ((v_type === "Hysteria2") || ((v_type === "sing-box" || v_type === "Xray") && opt.get(dom_prefix + "protocol").value === "hysteria2")) {
+		} else if ((v_type === "Hysteria2") || (v_type === "sing-box" && opt.get(dom_prefix + "protocol").value === "hysteria2")) {
 			protocol = "hysteria2"
 			var v_port = opt.get(dom_prefix + "port");
 			var params = "";
@@ -945,14 +941,10 @@ local current_node = map:get(section)
 				pluginOpts = pluginParams.join(";");
 			}
 
-			const needUpgrade = ss_type !== "Xray" && ss_type !== "sing-box" &&
+			const needUpgrade = ss_type !== "sing-box" &&
 					queryParam.type && queryParam.type !== "tcp" &&
 					queryParam.headerType && queryParam.headerType !== "none";
-			if (has_xray && (ss_type == "xray" || needUpgrade || queryParam.type === "xhttp")) {
-				dom_prefix = "xray_"
-				opt.set('type', "Xray");
-				opt.set(dom_prefix + 'protocol', "shadowsocks");
-			} else if (has_singbox && (ss_type == "sing-box" || needUpgrade)) {
+			if (has_singbox && (ss_type == "sing-box" || needUpgrade)) {
 				dom_prefix = "singbox_"
 				opt.set('type', "sing-box");
 				opt.set(dom_prefix + 'protocol', "shadowsocks");
@@ -986,23 +978,6 @@ local current_node = map:get(section)
 				opt.set(dom_prefix + 'plugin_enabled', true);
 				opt.set(dom_prefix + 'plugin', plugin || "none");
 				opt.set(dom_prefix + 'plugin_opts', pluginOpts || "");
-				//obfs-local插件转换成xray支持的格式
-				if (plugin == "obfs-local" && dom_prefix == "xray_") {
-					var obfs = pluginOpts.match(/obfs=([^;]+)/);
-					var obfs_host = pluginOpts.match(/obfs-host=([^;]+)/);
-					obfs = obfs ? obfs[1] : "";
-					obfs_host = obfs_host ? obfs_host[1] : "";
-					if (obfs === "http") {
-						opt.set(dom_prefix + 'transport', "raw");
-						opt.set(dom_prefix + 'tcp_guise', "http");
-						opt.set(dom_prefix + 'tcp_guise_http_host', obfs_host || '');
-						opt.set(dom_prefix + 'tcp_guise_http_path', '/');
-					} else if (obfs === "tls") {
-						opt.set(dom_prefix + 'tls', true);
-						opt.set(dom_prefix + 'tls_serverName', obfs_host || '');
-						opt.set(dom_prefix + 'tls_allowInsecure', true);
-					}
-				}
 			} else {
 				opt.set(dom_prefix + 'plugin', "none");
 			}
@@ -1057,14 +1032,8 @@ local current_node = map:get(section)
 				}
 				if (dom_prefix == "singbox_" && queryParam.type === "raw") {
 					queryParam.type = "tcp";
-				} else if (dom_prefix == "xray_" && queryParam.type === "tcp") {
-					queryParam.type = "raw";
 				}
-				if (dom_prefix == "xray_" && queryParam.type === "http") {
-					opt.set(dom_prefix + 'transport', "xhttp");
-				} else {
-					opt.set(dom_prefix + 'transport', queryParam.type);
-				}
+				opt.set(dom_prefix + 'transport', queryParam.type);
 				if (queryParam.type === "raw" || queryParam.type === "tcp") {
 					opt.set(dom_prefix + 'tcp_guise', queryParam.headerType || "none");
 					if (queryParam.headerType && queryParam.headerType != "none") {
@@ -1093,14 +1062,8 @@ local current_node = map:get(section)
 						}
 					}
 				} else if (queryParam.type === "http") {
-					if (dom_prefix == "xray_") {
-						opt.set(dom_prefix + 'xhttp_mode', "stream-one");
-						opt.set(dom_prefix + 'xhttp_host', queryParam.host || "");
-						opt.set(dom_prefix + 'xhttp_path', queryParam.path || "");
-					} else {
-						opt.set(dom_prefix + 'http_host', queryParam.host || "");
-						opt.set(dom_prefix + 'http_path', queryParam.path || "");
-					}
+					opt.set(dom_prefix + 'http_host', queryParam.host || "");
+					opt.set(dom_prefix + 'http_path', queryParam.path || "");
 				} else if (queryParam.type === "quic") {
 					opt.set(dom_prefix + 'quic_guise', queryParam.headerType || "none");
 					opt.set(dom_prefix + 'quic_security', queryParam.quicSecurity);
@@ -1164,11 +1127,8 @@ local current_node = map:get(section)
 				dom_prefix = "singbox_"
 				opt.set('type', "sing-box");
 				opt.set(dom_prefix + 'protocol', "trojan");
-			} else if (trojan_type == "xray" && has_xray) {
-				dom_prefix = "xray_"
-				opt.set('type', "Xray");
-				opt.set(dom_prefix + 'protocol', "trojan");
 			}
+
 			var m = parseNodeUrl(ssrurl);
 			var password = m.passwd;
 			if (password === "") {
@@ -1199,14 +1159,8 @@ local current_node = map:get(section)
 			}
 			if (dom_prefix == "singbox_" && queryParam.type === "raw") {
 				queryParam.type = "tcp";
-			} else if (dom_prefix == "xray_" && queryParam.type === "tcp") {
-				queryParam.type = "raw";
 			}
-			if (dom_prefix == "xray_" && queryParam.type === "http") {
-				opt.set(dom_prefix + 'transport', "xhttp");
-			} else {
-				opt.set(dom_prefix + 'transport', queryParam.type);
-			}
+			opt.set(dom_prefix + 'transport', queryParam.type);
 			if (queryParam.type === "raw" || queryParam.type === "tcp") {
 				opt.set(dom_prefix + 'tcp_guise', queryParam.headerType || "none");
 				if (queryParam.headerType && queryParam.headerType != "none") {
@@ -1235,14 +1189,8 @@ local current_node = map:get(section)
 					}
 				}
 			} else if (queryParam.type === "http") {
-				if (dom_prefix == "xray_") {
-					opt.set(dom_prefix + 'xhttp_mode', "stream-one");
-					opt.set(dom_prefix + 'xhttp_host', queryParam.host || "");
-					opt.set(dom_prefix + 'xhttp_path', queryParam.path || "");
-				} else {
-					opt.set(dom_prefix + 'http_host', queryParam.host || "");
-					opt.set(dom_prefix + 'http_path', queryParam.path || "");
-				}
+				opt.set(dom_prefix + 'http_host', queryParam.host || "");
+				opt.set(dom_prefix + 'http_path', queryParam.path || "");
 			} else if (queryParam.type === "quic") {
 				opt.set(dom_prefix + 'quic_guise', queryParam.headerType || "none");
 				opt.set(dom_prefix + 'quic_security', queryParam.quicSecurity);
@@ -1281,9 +1229,6 @@ local current_node = map:get(section)
 			if (vmess_type == "sing-box" && has_singbox) {
 				dom_prefix = "singbox_"
 				opt.set('type', "sing-box");
-			} else if (has_xray) {
-				dom_prefix = "xray_"
-				opt.set('type', "Xray");
 			}
 			opt.set(dom_prefix + 'protocol', "vmess");
 			var url0, param = "";
@@ -1316,17 +1261,11 @@ local current_node = map:get(section)
 				ssm.net = "mkcp"
 			if (dom_prefix == "singbox_" && ssm.net === "raw") {
 				ssm.net = "tcp";
-			} else if (dom_prefix == "xray_" && ssm.net === "tcp") {
-				ssm.net = "raw";
 			}
 			if (ssm.net === "h2" || ssm.net === "http") {
 				ssm.net = "http";
 			}
-			if (dom_prefix == "xray_" && ssm.net === "http") {
-				opt.set(dom_prefix + 'transport', "xhttp");
-			} else {
-				opt.set(dom_prefix + 'transport', ssm.net);
-			}
+			opt.set(dom_prefix + 'transport', ssm.net);
 			if (ssm.net === "raw" || ssm.net === "tcp") {
 				opt.set(dom_prefix + 'tcp_guise', (ssm.host && ssm.host != "") ? "http" : "none");
 				if (ssm.host && ssm.host != "") {
@@ -1355,14 +1294,8 @@ local current_node = map:get(section)
 					}
 				}
 			} else if (ssm.net === "http") {
-				if (dom_prefix == "xray_") {
-					opt.set(dom_prefix + 'xhttp_mode', "stream-one");
-					opt.set(dom_prefix + 'xhttp_host', ssm.host || "");
-					opt.set(dom_prefix + 'xhttp_path', ssm.path || "");
-				} else {
-					opt.set(dom_prefix + 'http_host', ssm.host || "");
-					opt.set(dom_prefix + 'http_path', ssm.path || "");
-				}
+				opt.set(dom_prefix + 'http_host', ssm.host || "");
+				opt.set(dom_prefix + 'http_path', ssm.path || "");
 			} else if (ssm.net === "quic") {
 				opt.set(dom_prefix + 'quic_security', ssm.securty);
 				opt.set(dom_prefix + 'quic_key', ssm.key);
@@ -1380,11 +1313,8 @@ local current_node = map:get(section)
 			if (vless_type == "sing-box" && has_singbox) {
 				dom_prefix = "singbox_"
 				opt.set('type', "sing-box");
-			} else if (has_xray) {
-				dom_prefix = "xray_"
-				opt.set('type', "Xray");
 			}
-			
+
 			var m = parseNodeUrl(ssrurl);
 			var password = m.passwd;
 			if (password === "") {
@@ -1404,10 +1334,7 @@ local current_node = map:get(section)
 			}
 
 			queryParam.type = queryParam.type.toLowerCase();
-			if (["xhttp", "kcp", "mkcp"].includes(queryParam.type) && vless_type !== "xray" && has_xray) {
-				dom_prefix = "xray_"
-				opt.set('type', "Xray");
-			}
+
 			opt.set(dom_prefix + 'protocol', "vless");
 			opt.set(dom_prefix + 'uuid', password);
 			opt.set(dom_prefix + 'address', unbracketIP(m.hostname));
@@ -1461,14 +1388,8 @@ local current_node = map:get(section)
 			}
 			if (dom_prefix == "singbox_" && queryParam.type === "raw") {
 				queryParam.type = "tcp";
-			} else if (dom_prefix == "xray_" && queryParam.type === "tcp") {
-				queryParam.type = "raw";
 			}
-			if (dom_prefix == "xray_" && queryParam.type === "http") {
-				opt.set(dom_prefix + 'transport', "xhttp");
-			} else {
-				opt.set(dom_prefix + 'transport', queryParam.type);
-			}
+			opt.set(dom_prefix + 'transport', queryParam.type);
 			if (queryParam.type === "raw" || queryParam.type === "tcp") {
 				opt.set(dom_prefix + 'tcp_guise', queryParam.headerType || "none");
 				if (queryParam.headerType && queryParam.headerType != "none") {
@@ -1497,14 +1418,8 @@ local current_node = map:get(section)
 					}
 				}
 			} else if (queryParam.type === "h2" || queryParam.type === "http") {
-				if (dom_prefix == "xray_") {
-					opt.set(dom_prefix + 'xhttp_mode', "stream-one");
-					opt.set(dom_prefix + 'xhttp_host', queryParam.host || "");
-					opt.set(dom_prefix + 'xhttp_path', queryParam.path || "");
-				} else {
-					opt.set(dom_prefix + 'http_host', queryParam.host || "");
-					opt.set(dom_prefix + 'http_path', queryParam.path || "");
-				}
+				opt.set(dom_prefix + 'http_host', queryParam.host || "");
+				opt.set(dom_prefix + 'http_path', queryParam.path || "");
 			} else if (queryParam.type === "quic") {
 				opt.set(dom_prefix + 'quic_guise', queryParam.headerType || "none");
 				opt.set(dom_prefix + 'quic_security', queryParam.quicSecurity);
@@ -1552,10 +1467,9 @@ local current_node = map:get(section)
 					queryParam[decodeURIComponent(params[0])] = decodeURIComponent(params[1] || '');
 				}
 			}
-			if ((hysteria2_type == "sing-box" && has_singbox) || (hysteria2_type == "xray" && has_xray)) {
-				var is_singbox = hysteria2_type == "sing-box" && has_singbox;
-				opt.set('type', is_singbox ? "sing-box" : "Xray");
-				dom_prefix = is_singbox ? "singbox_" : "xray_";
+			if (hysteria2_type == "sing-box" && has_singbox) {
+				opt.set('type', "sing-box");
+				dom_prefix = "singbox_";
 				opt.set(dom_prefix + 'protocol', "hysteria2");
 				opt.set(dom_prefix + 'hysteria2_auth_password', decodeURIComponent(password));
 				if (queryParam["obfs-password"] || queryParam["obfs_password"]) {

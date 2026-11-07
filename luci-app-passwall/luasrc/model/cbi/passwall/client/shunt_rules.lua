@@ -2,7 +2,7 @@ local api = require "luci.passwall.api"
 local appname = "passwall"
 local datatypes = api.datatypes
 
-m = Map(appname, "Sing-Box/Xray " .. translate("Shunt Rule"))
+m = Map(appname, "Sing-Box " .. translate("Shunt Rule"))
 m.redirect = api.url("rule")
 api.set_apply_on_parse(m)
 

@@ -3,14 +3,12 @@ local uci = api.uci
 local appname = "passwall"
 local has_ss = api.is_finded("ss-redir")
 local has_singbox = api.finded_com("sing-box")
-local has_xray = api.finded_com("xray")
 local has_hysteria2 = api.finded_com("hysteria")
 local ss_type = {}
 local trojan_type = {}
 local vmess_type = {}
 local vless_type = {}
 local hysteria2_type = {}
-local xray_version = api.get_app_version("xray")
 if has_ss then
 	local s = "shadowsocks-libev"
 	table.insert(ss_type, s)
@@ -22,16 +20,6 @@ if has_singbox then
 	table.insert(vmess_type, s)
 	table.insert(vless_type, s)
 	table.insert(hysteria2_type, s)
-end
-if has_xray then
-	local s = "xray"
-	table.insert(trojan_type, s)
-	table.insert(ss_type, s)
-	table.insert(vmess_type, s)
-	table.insert(vless_type, s)
-	if api.compare_versions(xray_version, ">=", "26.1.13") then
-		table.insert(hysteria2_type, s)
-	end
 end
 if has_hysteria2 then
 	local s = "hysteria2"
@@ -166,7 +154,7 @@ o.write = function(self, section, value)
 			if e["group"] and e["group"]:lower() == old:lower() then
 				m.uci:set(appname, e[".name"], "group", value)
 			end
-			if e["protocol"] and (e["protocol"] == "_balancing" or e["protocol"] == "_urltest") and e["node_group"] then
+			if e["protocol"] and e["protocol"] == "_urltest" and e["node_group"] then
 				local gs = ""
 				for g in e["node_group"]:gmatch("%S+") do
 					if api.UrlEncode(old) == g then

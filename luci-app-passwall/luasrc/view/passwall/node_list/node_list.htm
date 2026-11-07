@@ -865,12 +865,10 @@ table td, .table .td {
 		let remarks = o["remarks"] || "";
 		let type = o["type"] || "";
 		str += "<input type='hidden' id='cbid.<%=appname%>." + o[".name"] + ".type' value='" + type + "'/>";
-		if (type == "sing-box" || type == "Xray") {
+		if (type == "sing-box") {
 			let protocol = o["protocol"]
 			let p = "";
-			if (protocol == "_balancing") {
-				p = "<%:Balancing%>";
-			} else if (protocol == "_urltest") {
+			if (protocol == "_urltest") {
 				p = "URLTest";
 			} else if (protocol == "_shunt") {
 				p = "<%:Shunt%>";

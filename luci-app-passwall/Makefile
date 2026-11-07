@@ -22,9 +22,7 @@ PKG_CONFIG_DEPENDS:= \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Simple_Obfs \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_SingBox \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_Geodata \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_Plugin \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Xray \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Xray_Plugin
+	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_Plugin
 
 LUCI_TITLE:=LuCI support for PassWall
 LUCI_PKGARCH:=all
@@ -107,17 +105,6 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_Plugin
 	select PACKAGE_v2ray-plugin
 	default n
 
-config PACKAGE_$(PKG_NAME)_INCLUDE_Xray
-	bool "Include Xray"
-	select PACKAGE_xray-core
-	select PACKAGE_unzip
-	default n
-
-config PACKAGE_$(PKG_NAME)_INCLUDE_Xray_Plugin
-	bool "Include Xray-Plugin (Shadowsocks Plugin)"
-	select PACKAGE_xray-plugin
-	default n
-
 endmenu
 endef
 
@@ -132,7 +119,6 @@ define Package/$(PKG_NAME)/conffiles
 /usr/share/passwall/rules/block_ip
 /usr/share/passwall/rules/lanlist_ipv4
 /usr/share/passwall/rules/lanlist_ipv6
-/usr/share/passwall/rules/domains_excluded
 endef
 
 define Package/$(PKG_NAME)/postrm

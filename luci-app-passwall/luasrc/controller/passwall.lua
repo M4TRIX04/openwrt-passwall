@@ -113,7 +113,6 @@ function index()
 	--[[geoview]]
 	entry({"admin", "services", appname, "geo_view"}, call("geo_view")).leaf = true
 
-	entry({"admin", "services", appname, "fetch_certsha256"}, call("fetch_certsha256")).leaf = true
 end
 
 local function http_write_json(content)
@@ -463,7 +462,7 @@ function set_node()
 			local dns_shunt = uci:get(appname, "@global[0]", "dns_shunt")
 			local dns_key = (dns_shunt == "smartdns") and "smartdns_dns_mode" or "dns_mode"
 			local dns_mode = uci:get(appname, "@global[0]", dns_key)
-			local new_dns_mode = (type == "Xray") and "xray" or "sing-box"
+			local new_dns_mode = "sing-box"
 			if dns_mode ~= new_dns_mode then
 				uci:set(appname, "@global[0]", dns_key, new_dns_mode)
 				uci:set(appname, "@global[0]", "v2ray_dns_mode", "tcp")
@@ -1039,14 +1038,3 @@ function flush_set()
 	end
 end
 
-function fetch_certsha256()
-	local id = http.formvalue("id") or ""
-	local address = (id ~= "") and uci:get(appname, id, "address") or ""
-	local port = (id ~= "") and uci:get(appname, id, "port") or 0
-	if id == "" or address == "" or not api.datatypes.hostname(address) or port == 0 then
-		http_write_json_error()
-		return
-	end
-	local data = api.fetch_cert_sha256(address, port, 5)
-	http_write_json(data ~= "" and { code = 1, data = data } or { code = 0 })
-end

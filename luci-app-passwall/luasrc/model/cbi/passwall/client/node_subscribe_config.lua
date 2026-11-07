@@ -18,14 +18,12 @@ m:append(Template(appname .. "/cbi/nodes_listvalue_com"))
 
 local has_ss = api.is_finded("ss-redir")
 local has_singbox = api.finded_com("sing-box")
-local has_xray = api.finded_com("xray")
 local has_hysteria2 = api.finded_com("hysteria")
 local ss_type = {}
 local trojan_type = {}
 local vmess_type = {}
 local vless_type = {}
 local hysteria2_type = {}
-local xray_version = api.get_app_version("xray")
 if has_ss then
 	local s = "shadowsocks-libev"
 	table.insert(ss_type, s)
@@ -37,16 +35,6 @@ if has_singbox then
 	table.insert(vmess_type, s)
 	table.insert(vless_type, s)
 	table.insert(hysteria2_type, s)
-end
-if has_xray then
-	local s = "xray"
-	table.insert(trojan_type, s)
-	table.insert(ss_type, s)
-	table.insert(vmess_type, s)
-	table.insert(vless_type, s)
-	if api.compare_versions(xray_version, ">=", "26.1.13") then
-		table.insert(hysteria2_type, s)
-	end
 end
 if has_hysteria2 then
 	local s = "hysteria2"
@@ -96,7 +84,7 @@ o.write = function(self, section, value)
 			if e["group"] and e["group"]:lower() == old:lower() then
 				m.uci:set(appname, e[".name"], "group", value)
 			end
-			if e["protocol"] and (e["protocol"] == "_balancing" or e["protocol"] == "_urltest") and e["node_group"] then
+			if e["protocol"] and e["protocol"] == "_urltest" and e["node_group"] then
 				local gs = ""
 				for g in e["node_group"]:gmatch("%S+") do
 					if api.UrlEncode(old) == g then
@@ -125,7 +113,7 @@ end
 
 o = s:option(ListValue, "domain_resolver", translate("Domain DNS Resolve"))
 o.description = translate("If the node address is a domain name, this DNS will be used for resolution.") .. "<br>" ..
-		translate("Supports only Xray or Sing-box node types.") .. "<br>" .. string.format('<font color="red">%s</font>',
+		translate("Supports only Sing-box node types.") .. "<br>" .. string.format('<font color="red">%s</font>',
 		translate("Note: For node-specific DNS only. Keep Auto to avoid extra overhead."))
 o:value("", translate("Auto"))
 o:value("tcp", "TCP")
@@ -298,7 +286,7 @@ o:value("1", translate("Preproxy Node"))
 o:value("2", translate("Landing Node"))
 o:value("3", translate("Outbound Interface"))
 
-local descrStr = "Chained proxy works only with Xray or Sing-box nodes.<br>"
+local descrStr = "Chained proxy works only with Sing-box nodes.<br>"
 descrStr = descrStr .. "You can only use manual or imported nodes as chained nodes."
 descrStr = translate(descrStr) .. "<br>" .. translate("Only support a layer of proxy.")
 
@@ -323,7 +311,7 @@ for _, d in ipairs(iface) do
 end
 
 for k, v in pairs(nodes_table) do
-	if (v.type == "Xray" or v.type == "sing-box") and (not v.chain_proxy or v.chain_proxy == "") and v.add_mode ~= "2" then
+	if v.type == "sing-box" and (not v.chain_proxy or v.chain_proxy == "") and v.add_mode ~= "2" then
 		o1:value(v.id, v.remark)
 		o1.group[#o1.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 		o2:value(v.id, v.remark)

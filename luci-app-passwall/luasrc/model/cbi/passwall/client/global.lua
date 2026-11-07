@@ -3,7 +3,6 @@ appname = "passwall"
 datatypes = api.datatypes
 local fs = api.fs
 has_singbox = api.finded_com("sing-box")
-has_xray = api.finded_com("xray")
 local has_gfwlist = fs.access("/usr/share/passwall/rules/gfwlist")
 local has_chnlist = fs.access("/usr/share/passwall/rules/chnlist")
 local has_chnroute = fs.access("/usr/share/passwall/rules/chnroute")
@@ -19,16 +18,12 @@ for _, e in ipairs(api.get_valid_nodes()) do
 end
 
 local normal_list = {}
-local balancing_list = {}
 local urltest_list = {}
 local shunt_list = {}
 local iface_list = {}
 for _, v in pairs(nodes_table) do
 	if v.node_type == "normal" then
 		normal_list[#normal_list + 1] = v
-	end
-	if v.protocol and v.protocol == "_balancing" then
-		balancing_list[#balancing_list + 1] = v
 	end
 	if v.protocol and v.protocol == "_urltest" then
 		urltest_list[#urltest_list + 1] = v
@@ -143,7 +138,7 @@ o.write = function(self, section, value)
 end
 
 -- Shunt Start
-if (has_singbox or has_xray) and #nodes_table > 0 then
+if has_singbox and #nodes_table > 0 then
 	if #normal_list > 0 or #iface_list > 0 then
 		current_node_id = m.uci:get(appname, global_cfgid, "tcp_node")
 		current_node = current_node_id and m.uci:get_all(appname, current_node_id) or {}
@@ -154,7 +149,6 @@ if (has_singbox or has_xray) and #nodes_table > 0 then
 				node = current_node,
 				socks_list = socks_list,
 				urltest_list = urltest_list,
-				balancing_list = balancing_list,
 				iface_list = iface_list,
 				normal_list = normal_list,
 				verify_option = s.fields["tcp_node"],
@@ -172,9 +166,6 @@ if (has_singbox or has_xray) and #nodes_table > 0 then
 		for k, v in pairs(shunt_list) do
 			tips:depends("tcp_node", v.id)
 		end
-		for k, v in pairs(balancing_list) do
-			tips:depends("tcp_node", v.id)
-		end
 	end
 end
 
@@ -183,7 +174,7 @@ o.default = 1070
 o.datatype = "port"
 o:depends({ tcp_node = "", ["!reverse"] = true })
 --[[
-if has_singbox or has_xray then
+if has_singbox then
 	o = s:taboption("Main", Value, "tcp_node_http_port", translate("TCP Node") .. " HTTP " .. translate("Listen Port") .. " " .. translate("0 is not use"))
 	o.default = 0
 	o.datatype = "port"
@@ -266,18 +257,18 @@ function dns_mode_save(section)
 	for _, v in pairs(shunt_list) do
 		if v.id == id_val then
 			local type_val = v.type
-			if type_val and (type_val == "Xray" or type_val == "sing-box") then
+			if type_val and type_val == "sing-box" then
 				local dns_shunt_val = s.fields["dns_shunt"]:formvalue(section)
 				local dns_mode_val = (dns_shunt_val ~= "smartdns") and "dns_mode" or "smartdns_dns_mode"
 				local current_val = m:get(section, dns_mode_val) or ""
-				local new_val = (type_val == "Xray") and "xray" or "sing-box"
+				local new_val = "sing-box"
 
 				if current_val ~= new_val then
 					m:set(section, dns_mode_val, new_val)
 					m:del(section, (dns_mode_val == "dns_mode") and "smartdns_dns_mode" or "dns_mode")
 				end
 
-				local dns_field = s.fields[type_val == "Xray" and "xray_dns_mode" or "singbox_dns_mode"]
+				local dns_field = s.fields["singbox_dns_mode"]
 				local v2ray_dns_mode = dns_field and dns_field:formvalue(section)
 				if v2ray_dns_mode and m:get(section, "v2ray_dns_mode") ~= v2ray_dns_mode then
 					m:set(section, "v2ray_dns_mode", v2ray_dns_mode)
@@ -300,13 +291,10 @@ end
 if has_singbox then
 	o:value("sing-box", "Sing-Box")
 end
-if has_xray then
-	o:value("xray", "Xray")
-end
 o:depends({ dns_shunt = "chinadns-ng", _node_sel_other = "1" })
 o:depends({ dns_shunt = "dnsmasq", _node_sel_other = "1" })
 o.write = function(self, section, value)
-	if value ~= "sing-box" and value ~= "xray" then
+	if value ~= "sing-box" then
 		m:del(section, "v2ray_dns_mode")
 	end
 	return ListValue.write(self, section, value)
@@ -325,9 +313,6 @@ if api.is_finded("smartdns") then
 	o:value("socks", "Socks")
 	if has_singbox then
 		o:value("sing-box", "Sing-Box")
-	end
-	if has_xray then
-		o:value("xray", "Xray")
 	end
 	o:depends({ dns_shunt = "smartdns", _node_sel_other = "1" })
 	o.write = function(self, section, value)
@@ -387,23 +372,6 @@ if api.is_finded("smartdns") then
 	end
 end
 
-o = s:taboption("DNS", ListValue, "xray_dns_mode", translate("Remote DNS") .. " " .. translate("Request protocol"))
-o.default = "tcp"
-o:value("tcp", "TCP")
-o:value("udp", "UDP")
-o:value("doh", "DoH")
-o:depends("dns_mode", "xray")
-o:depends("smartdns_dns_mode", "xray")
-o.cfgvalue = function(self, section)
-	return m:get(section, "v2ray_dns_mode")
-end
-o.write = function(self, section, value)
-	local f = s.fields["smartdns_dns_mode"]
-	if s.fields["dns_mode"]:formvalue(section) == "xray" or (f and f:formvalue(section) == "xray") then
-		return m:set(section, "v2ray_dns_mode", value)
-	end
-end
-
 o = s:taboption("DNS", ListValue, "singbox_dns_mode", translate("Remote DNS") .. " " .. translate("Request protocol"))
 o.default = "tcp"
 o:value("tcp", "TCP")
@@ -448,8 +416,6 @@ o:value("208.67.222.222", "208.67.222.222 (OpenDNS)")
 o:depends({dns_mode = "dns2socks"})
 o:depends({dns_mode = "tcp"})
 o:depends({dns_mode = "udp"})
-o:depends({xray_dns_mode = "udp"})
-o:depends({xray_dns_mode = "tcp"})
 o:depends({singbox_dns_mode = "udp"})
 o:depends({singbox_dns_mode = "tcp"})
 
@@ -468,7 +434,6 @@ o:value("https://dns.adguard.com/dns-query,94.140.14.14", "94.140.14.14 (AdGuard
 o:value("https://doh.libredns.gr/dns-query,116.202.176.26", "116.202.176.26 (LibreDNS)")
 o:value("https://doh.libredns.gr/ads,116.202.176.26", "116.202.176.26 (LibreDNS-NoAds)")
 o.validate = doh_validate
-o:depends({xray_dns_mode = "doh"})
 o:depends({singbox_dns_mode = "doh"})
 o:depends({singbox_dns_mode = "http3"})
 
@@ -477,7 +442,6 @@ o.description = translate("Notify the DNS server when the DNS query is notified,
 		translate("This feature requires the DNS server to support the Edns Client Subnet (RFC7871).")
 o.datatype = "ipaddr"
 o:depends({dns_mode = "sing-box"})
-o:depends({dns_mode = "xray"})
 o:depends("dns_shunt", "smartdns")
 o:depends("_node_sel_shunt", "1")
 
@@ -486,9 +450,6 @@ o.default = "0"
 o:depends({dns_mode = "sing-box", dns_shunt = "dnsmasq"})
 o:depends({dns_mode = "sing-box", dns_shunt = "chinadns-ng"})
 o:depends({smartdns_dns_mode = "sing-box", dns_shunt = "smartdns"})
-o:depends({dns_mode = "xray", dns_shunt = "dnsmasq"})
-o:depends({dns_mode = "xray", dns_shunt = "chinadns-ng"})
-o:depends({smartdns_dns_mode = "xray", dns_shunt = "smartdns"})
 --o:depends("_node_sel_shunt", "1")
 o.validate = function(self, value, t)
 	if value and value == "1" then
@@ -644,7 +605,7 @@ o = s:taboption("log", Flag, "log_udp", translate("Enable") .. " " .. translatef
 o.default = "0"
 o.rmempty = false
 
-o = s:taboption("log", ListValue, "loglevel", "Sing-Box/Xray " .. translate("Log Level"))
+o = s:taboption("log", ListValue, "loglevel", "Sing-Box " .. translate("Log Level"))
 o.default = "warning"
 o:value("debug")
 o:value("info")
@@ -783,7 +744,7 @@ o.default = n + 1080
 o.datatype = "port"
 o.rmempty = false
 
-if has_singbox or has_xray then
+if has_singbox then
 	o = s2:option(Value, "http_port", "HTTP " .. translate("Listen Port"))
 	o.default = 0
 	o.datatype = "port"
@@ -803,18 +764,14 @@ for k, v in pairs(nodes_table) do
 		break
 	end
 	if v.protocol == "_shunt" then
-		if has_singbox or has_xray then
+		if has_singbox then
 			tcp:value(v.id, v["remark"])
 			tcp.group[#tcp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 			udp:value(v.id, v["remark"])
 			udp.group[#udp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 
 			s.fields["_node_sel_shunt"]:depends({ tcp_node = v.id })
-			if m:get(v.id, "type") == "Xray" then
-				s.fields["xray_dns_mode"]:depends({ tcp_node = v.id })
-			else
-				s.fields["singbox_dns_mode"]:depends({ tcp_node = v.id })
-			end
+			s.fields["singbox_dns_mode"]:depends({ tcp_node = v.id })
 		end
 	else
 		tcp:value(v.id, v["remark"])
@@ -823,7 +780,7 @@ for k, v in pairs(nodes_table) do
 		udp.group[#udp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 	end
 	if v.type == "Socks" then
-		if has_singbox or has_xray then
+		if has_singbox then
 			socks:value(v.id, v["remark"])
 			socks.group[#socks.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 		end

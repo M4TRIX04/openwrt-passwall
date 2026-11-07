@@ -14,7 +14,6 @@ m:append(Template(appname .. "/cbi/nodes_listvalue_com"))
 local fs = api.fs
 local sys = api.sys
 local has_singbox = api.finded_com("sing-box")
-local has_xray = api.finded_com("xray")
 local has_gfwlist = fs.access("/usr/share/passwall/rules/gfwlist")
 local has_chnlist = fs.access("/usr/share/passwall/rules/chnlist")
 local has_chnroute = fs.access("/usr/share/passwall/rules/chnroute")
@@ -468,9 +467,6 @@ end
 if has_singbox then
 	o:value("sing-box", "Sing-Box")
 end
-if has_xray then
-	o:value("xray", "Xray")
-end
 o:depends({ acl_mode = "custom", _tcp_node_bool = "1", _node_sel_other = "1" })
 o.write = function(self, section, value)
 	if value == "dns2socks" then
@@ -486,10 +482,10 @@ o.remove = function(self, section)
 	end
 	for _, v in pairs(nodes_table) do
 		if v.id == id_val then
-			local new_val = (v.type == "Xray") and "xray" or "sing-box"
+			local new_val = "sing-box"
 			m:set(section, self.option, new_val)
 
-			local dns_field = s.fields[v.type == "Xray" and "xray_dns_mode" or "singbox_dns_mode"]
+			local dns_field = s.fields["singbox_dns_mode"]
 			local v2ray_dns_mode = dns_field and dns_field:formvalue(section)
 			if v2ray_dns_mode then
 				m:set(section, "v2ray_dns_mode", v2ray_dns_mode)
@@ -497,21 +493,6 @@ o.remove = function(self, section)
 
 			break
 		end
-	end
-end
-
-o = s:option(ListValue, "xray_dns_mode", translate("Request protocol"))
-o.default = "tcp"
-o:value("tcp", "TCP")
-o:value("udp", "UDP")
-o:value("doh", "DoH")
-o:depends({ acl_mode = "custom", dns_mode = "xray" })
-o.cfgvalue = function(self, section)
-	return m:get(section, "v2ray_dns_mode")
-end
-o.write = function(self, section, value)
-	if s.fields["dns_mode"]:formvalue(section) == "xray" then
-		return m:set(section, "v2ray_dns_mode", value)
 	end
 end
 
@@ -543,8 +524,6 @@ o:value("149.112.112.112", "149.112.112.112 (Quad9-Recommended)")
 o:value("208.67.220.220", "208.67.220.220 (OpenDNS)")
 o:value("208.67.222.222", "208.67.222.222 (OpenDNS)")
 o:depends({ acl_mode = "custom", dns_mode = "dns2socks"})
-o:depends({ acl_mode = "custom", xray_dns_mode = "udp"})
-o:depends({ acl_mode = "custom", xray_dns_mode = "tcp"})
 o:depends({ acl_mode = "custom", singbox_dns_mode = "udp"})
 o:depends({ acl_mode = "custom", singbox_dns_mode = "tcp"})
 
@@ -583,7 +562,6 @@ o.validate = function(self, value, t)
 	end
 	return nil, translate("DoH request address") .. " " .. translate("Format must be:") .. " URL,IP"
 end
-o:depends({ acl_mode = "custom", xray_dns_mode = "doh"})
 o:depends({ acl_mode = "custom", singbox_dns_mode = "doh"})
 o:depends({ acl_mode = "custom", singbox_dns_mode = "http3"})
 
@@ -592,14 +570,12 @@ o.description = translate("Notify the DNS server when the DNS query is notified,
 		translate("This feature requires the DNS server to support the Edns Client Subnet (RFC7871).")
 o.datatype = "ipaddr"
 o:depends({ acl_mode = "custom", dns_mode = "sing-box"})
-o:depends({ acl_mode = "custom", dns_mode = "xray"})
 o:depends({ acl_mode = "custom", _node_sel_shunt = "1"})
 
 o = s:option(Flag, "remote_fakedns", "FakeDNS", translate("Use FakeDNS work in the domain that proxy."))
 o.default = "0"
 o.rmempty = false
 o:depends({ acl_mode = "custom", dns_mode = "sing-box"})
-o:depends({ acl_mode = "custom", dns_mode = "xray"})
 o.validate = function(self, value, t)
 	if value and value == "1" then
 		local _dns_mode = s.fields["dns_mode"]:formvalue(t)
@@ -657,15 +633,6 @@ for k, v in pairs(nodes_table) do
 		break
 	end
 	if v.protocol == "_shunt" then
-		if v.type == "Xray" and has_xray then
-			tcp:value(v.id, v["remark"])
-			tcp.group[#tcp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-			udp:value(v.id, v["remark"])
-			udp.group[#udp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-
-			s.fields["xray_dns_mode"]:depends({ acl_mode = "custom", _tcp_node_bool = "1", tcp_node = v.id })
-			s.fields["_node_sel_shunt"]:depends({ acl_mode = "custom", tcp_node = v.id })
-		end
 		if v.type == "sing-box" and has_singbox then
 			tcp:value(v.id, v["remark"])
 			tcp.group[#tcp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")

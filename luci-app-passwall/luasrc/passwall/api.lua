@@ -349,7 +349,7 @@ function strToTable(str)
 end
 
 function is_normal_node(e)
-	if e and e.type and e.protocol and (e.protocol == "_balancing" or e.protocol == "_shunt" or e.protocol == "_iface" or e.protocol == "_urltest") then
+	if e and e.type and e.protocol and (e.protocol == "_shunt" or e.protocol == "_iface" or e.protocol == "_urltest") then
 		return false
 	end
 	return true
@@ -503,7 +503,7 @@ function get_valid_nodes()
 		if e.type and e.remarks then
 			local type_name = e.type
 			if e.type == "sing-box" then type_name = "Sing-Box" end
-			if e.protocol and (e.protocol == "_balancing" or e.protocol == "_shunt" or e.protocol == "_iface" or e.protocol == "_urltest") then
+			if e.protocol and (e.protocol == "_shunt" or e.protocol == "_iface" or e.protocol == "_urltest") then
 				e["remark"] = trim("%s：[%s]" % {type_name .. " " .. i18n.translatef(e.protocol), e.remarks})
 				e["node_type"] = "special"
 				if not e.group or e.group == "" then
@@ -517,7 +517,7 @@ function get_valid_nodes()
 			if (port and e.address) or is_realm then
 				local address = e.address
 				if is_ip(address) or datatypes.hostname(address) or is_realm then
-					if (e.type == "sing-box" or e.type == "Xray") and e.protocol then
+					if e.type == "sing-box" and e.protocol then
 						local protocol = e.protocol
 						if protocol == "vmess" then
 							protocol = "VMess"
@@ -611,10 +611,10 @@ function get_node_remarks(n)
 	if n then
 		local type_name = n.type
 		if n.type == "sing-box" then type_name = "Sing-Box" end
-		if n.protocol and (n.protocol == "_balancing" or n.protocol == "_shunt" or n.protocol == "_iface" or n.protocol == "_urltest") then
+		if n.protocol and (n.protocol == "_shunt" or n.protocol == "_iface" or n.protocol == "_urltest") then
 			remarks = trim("%s：[%s]" % {type_name .. " " .. i18n.translatef(n.protocol), n.remarks})
 		else
-			if (n.type == "sing-box" or n.type == "Xray") and n.protocol then
+			if n.type == "sing-box" and n.protocol then
 				local protocol = n.protocol
 				if protocol == "vmess" then
 					protocol = "VMess"
@@ -1607,34 +1607,6 @@ function cleanEmptyTables(t)
 		end
 	end
 	return next(t) and t or nil
-end
-
-function fetch_cert_sha256(host, port, timeout)
-	if not host or not datatypes.hostname(host) then return "" end
-	port = tonumber(port) or 443
-	timeout = tonumber(timeout) or 5
-	local xray = finded_com("xray")
-	local cmd
-	if xray then
-		cmd = string.format(
-			"timeout %d %q tls ping %s:%d 2>/dev/null " ..
-			"| awk 'tolower($0) ~ /without sni/ {f=1} tolower($0) ~ /with sni/ {f=0} " ..
-			"f && tolower($0) ~ /cert.*leaf.*sha256/ {sub(/.*:/,\"\"); gsub(/[[:space:]]/,\"\"); print; exit}'",
-			timeout, xray, host, port
-		)
-	else
-		cmd = string.format(
-			"timeout %d openssl s_client -connect %s:%d -servername %s -showcerts </dev/null 2>/dev/null " ..
-			"| awk 'BEGIN{c=0}/BEGIN CERT/{c++} c==1{print} /END CERT/{if(c==1)exit}' " ..
-			"| openssl x509 -outform der 2>/dev/null " ..
-			"| sha256sum 2>/dev/null",
-			timeout, host, port, host
-		)
-	end
-	local out = trim(sys.exec(cmd))
-	local fp = out:match("^([0-9a-fA-F]+)")
-	if not fp then return "" end
-	return fp:upper()
 end
 
 function vps_domain_exclude(domain)

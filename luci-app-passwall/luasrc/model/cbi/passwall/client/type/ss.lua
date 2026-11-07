@@ -53,7 +53,6 @@ o.default = 0
 o = s:option(ListValue, _n("plugin"), "SIP003 " .. translate("plugin"))
 o.default = "none"
 o:value("none", translate("none"))
-if api.is_finded("xray-plugin") then o:value("xray-plugin") end
 if api.is_finded("v2ray-plugin") then o:value("v2ray-plugin") end
 if api.is_finded("obfs-local") then o:value("obfs-local") end
 o:depends({ [_n("plugin_enabled")] = true })

@@ -26,7 +26,6 @@ local fs = api.fs
 
 local has_ss = api.is_finded("ss-redir")
 local has_singbox = api.finded_com("sing-box")
-local has_xray = api.finded_com("xray")
 local has_hysteria2 = api.finded_com("hysteria")
 local DEFAULT_ALLOWINSECURE = true
 -- SS 只接受 AEAD 加密，与服务端/客户端 UI 的白名单保持一致
@@ -41,13 +40,12 @@ local DEFAULT_FILTER_KEYWORD_MODE = uci:get(appname, "@global_subscribe[0]", "fi
 local DEFAULT_FILTER_KEYWORD_DISCARD_LIST = uci:get(appname, "@global_subscribe[0]", "filter_discard_list") or {}
 local DEFAULT_FILTER_KEYWORD_KEEP_LIST = uci:get(appname, "@global_subscribe[0]", "filter_keep_list") or {}
 -- 取节点使用core类型（节点订阅页面未设置时，自动取默认）
-local DEFAULT_SS_TYPE = api.get_core("ss_type", {{has_ss,"shadowsocks-libev"},{has_singbox,"sing-box"},{has_xray,"xray"}})
-local DEFAULT_TROJAN_TYPE =  api.get_core("trojan_type", {{has_singbox,"sing-box"},{has_xray,"xray"}})
-local DEFAULT_VMESS_TYPE = api.get_core("vmess_type", {{has_xray,"xray"},{has_singbox,"sing-box"}})
-local DEFAULT_VLESS_TYPE = api.get_core("vless_type", {{has_xray,"xray"},{has_singbox,"sing-box"}})
-local DEFAULT_HYSTERIA2_TYPE = api.get_core("hysteria2_type", {{has_hysteria2,"hysteria2"},{has_singbox,"sing-box"},{has_xray,"xray"}})
+local DEFAULT_SS_TYPE = api.get_core("ss_type", {{has_ss,"shadowsocks-libev"},{has_singbox,"sing-box"}})
+local DEFAULT_TROJAN_TYPE =  api.get_core("trojan_type", {{has_singbox,"sing-box"}})
+local DEFAULT_VMESS_TYPE = api.get_core("vmess_type", {{has_singbox,"sing-box"}})
+local DEFAULT_VLESS_TYPE = api.get_core("vless_type", {{has_singbox,"sing-box"}})
+local DEFAULT_HYSTERIA2_TYPE = api.get_core("hysteria2_type", {{has_hysteria2,"hysteria2"},{has_singbox,"sing-box"}})
 local core_has = {
-	["xray"] = has_xray,
 	["sing-box"] = has_singbox,
 	["shadowsocks-libev"] = has_ss,
 	["hysteria2"] = has_hysteria2
@@ -279,59 +277,6 @@ do
 					}
 				end
 			end
-		elseif node.protocol and node.protocol == '_balancing' then
-			local flag = "Xray负载均衡节点[" .. node_id .. "]列表"
-			local currentNodes = {}
-			local newNodes = {}
-			if node.balancing_node then
-				for k, node in pairs(node.balancing_node) do
-					currentNodes[#currentNodes + 1] = {
-						log = true,
-						node = node,
-						currentNode = (function()
-							if node and node:find("Socks_") then
-								return { Socks = node }
-							end
-							return node and uci:get_all(appname, node) or nil
-						end)(),
-						remarks = node,
-						set = function(o, server)
-							if o and server and server ~= "nil" then
-								table.insert(o.newNodes, server)
-							end
-						end
-					}
-				end
-			end
-			CONFIG[#CONFIG + 1] = {
-				remarks = flag,
-				currentNodes = currentNodes,
-				newNodes = newNodes,
-				set = function(o, newNodes)
-					if o then
-						if not newNodes then newNodes = o.newNodes end
-						uci:set_list(appname, node_id, "balancing_node", newNodes or {})
-					end
-				end
-			}
-
-			--后备节点
-			local currentNode = uci:get_all(appname, node_id) or nil
-			if currentNode and currentNode.fallback_node and not currentNode.fallback_node:find("Socks_") then
-				CONFIG[#CONFIG + 1] = {
-					log = true,
-					id = node_id,
-					remarks = "Xray负载均衡节点[" .. node_id .. "]后备节点",
-					currentNode = uci:get_all(appname, currentNode.fallback_node) or nil,
-					set = function(o, server)
-						uci:set(appname, node_id, "fallback_node", server)
-						o.newNodeId = server
-					end,
-					delete = function(o)
-						uci:delete(appname, node_id, "fallback_node")
-					end
-				}
-			end
 		elseif node.protocol and node.protocol == '_urltest' then
 			local flag = "Sing-Box URLTest节点[" .. node_id .. "]列表"
 			local currentNodes = {}
@@ -460,10 +405,6 @@ end
 local function set_ss_implementation(ss_type, result)
 	if ss_type == "shadowsocks-libev" and has_ss then
 		result.type = 'SS'
-	elseif ss_type == "xray" and has_xray then
-		result.type = 'Xray'
-		result.protocol = 'shadowsocks'
-		result.transport = 'raw'
 	elseif ss_type == "sing-box" and has_singbox then
 		result.type = 'sing-box'
 		result.protocol = 'shadowsocks'
@@ -520,8 +461,6 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		local info = jsonParse(content)
 		if sub_vmess_type == "sing-box" and has_singbox then
 			result.type = 'sing-box'
-		elseif sub_vmess_type == "xray" and has_xray then
-			result.type = "Xray"
 		else
 			log("跳过 VMess 节点，因未适配到 VMess 核心程序，或未正确设置节点使用类型。")
 			return nil
@@ -541,12 +480,10 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		info.net = string.lower(info.net)
 		if result.type == "sing-box" and info.net == "raw" then 
 			info.net = "tcp"
-		elseif result.type == "Xray" and info.net == "tcp" then
-			info.net = "raw"
 		end
 		if info.net == 'h2' or info.net == 'http' then
 			info.net = "http"
-			result.transport = (result.type == "Xray") and "xhttp" or "http"
+			result.transport = "http"
 		else
 			result.transport = info.net
 		end
@@ -570,14 +507,8 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			end
 		end
 		if info.net == "http" then
-			if result.type == "Xray" then
-				result.xhttp_mode = "stream-one"
-				result.xhttp_host = info.host
-				result.xhttp_path = info.path
-			else
-				result.http_host = (info.host and info.host ~= "") and { info.host } or nil
-				result.http_path = info.path
-			end
+			result.http_host = (info.host and info.host ~= "") and { info.host } or nil
+			result.http_path = info.path
 		end
 		if info.net == 'raw' or info.net == 'tcp' then
 			if info.type and info.type ~= "http" then
@@ -637,7 +568,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		result.finalmask = (info.fm and info.fm ~= "") and api.base64Encode(info.fm) or nil
 
 		if result.type == "sing-box" and (result.transport == "mkcp" or result.transport == "xhttp") then
-			log("跳过节点:" .. result.remarks .."，因Sing-Box不支持" .. szType .. "协议的" .. result.transport .. "传输方式，需更换Xray。")
+			log("跳过节点:" .. result.remarks .."，因Sing-Box不支持" .. szType .. "协议的" .. result.transport .. "传输方式。")
 			return nil
 		end
 	elseif szType == "ss" then
@@ -745,42 +676,16 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.use_finalmask = (params.fm and params.fm ~= "") and "1" or nil
 			result.finalmask = (params.fm and params.fm ~= "") and api.base64Encode(params.fm) or nil
 
-			local need_upgrade = (result.type ~= "Xray" and result.type ~= "sing-box")
+			local need_upgrade = (result.type ~= "sing-box")
 				and (params.type and params.type ~= "tcp")
 				and (params.headerType and params.headerType ~= "none")
-			if has_xray and (need_upgrade or params.type == "xhttp") then
-				result.type = "Xray"
-				result.protocol = "shadowsocks"
-			elseif has_singbox and need_upgrade then
+			if has_singbox and need_upgrade then
 				result.type = "sing-box"
 				result.protocol = "shadowsocks"
 			end
 
 			if result.plugin then
-				if result.type == 'Xray' then
-					-- obfs-local插件转换成xray支持的格式
-					if result.plugin ~= "obfs-local" then
-						result.error_msg = "Xray 不支持 SS " .. result.plugin .. " 插件。"
-					else
-						local obfs = result.plugin_opts:match("obfs=([^;]+)") or ""
-						local obfs_host = result.plugin_opts:match("obfs%-host=([^;]+)") or ""
-						if obfs == "" or obfs_host == "" then
-							result.error_msg = "SS " .. result.plugin .. " 插件选项不完整。"
-						end
-						if obfs == "http" then
-							result.transport = "raw"
-							result.tcp_guise = "http"
-							result.tcp_guise_http_host = (obfs_host and obfs_host ~= "") and { obfs_host } or nil
-							result.tcp_guise_http_path = { "/" }
-						elseif obfs == "tls" then
-							result.tls = "1"
-							result.tls_serverName = obfs_host
-							result.tls_allowInsecure = "1"
-						end
-						result.plugin = nil
-						result.plugin_opts = nil
-					end
-				elseif result.type == 'sing-box' then
+				if result.type == 'sing-box' then
 					if result.plugin ~= "obfs-local" and result.plugin ~= "v2ray-plugin" then
 						result.error_msg = "Sing-Box 不支持 SS " .. result.plugin .. " 插件。"
 					else
@@ -795,12 +700,10 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 				params.type = string.lower(params.type)
 				if result.type == "sing-box" and params.type == "raw" then 
 					params.type = "tcp"
-				elseif result.type == "Xray" and params.type == "tcp" then
-					params.type = "raw"
 				end
 				if params.type == "h2" or params.type == "http" then
 					params.type = "http"
-					result.transport = (result.type == "Xray") and "xhttp" or "http"
+					result.transport = "http"
 				else
 					result.transport = params.type
 				end
@@ -824,16 +727,9 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 					end
 				end
 				if params.type == "http" then
-					if result.type == "sing-box" then
-						result.transport = "http"
-						result.http_host = (params.host and params.host ~= "") and { params.host } or nil
-						result.http_path = params.path
-					elseif result.type == "Xray" then
-						result.transport = "xhttp"
-						result.xhttp_mode = "stream-one"
-						result.xhttp_host = params.host
-						result.xhttp_path = params.path
-					end
+					result.transport = "http"
+					result.http_host = (params.host and params.host ~= "") and { params.host } or nil
+					result.http_path = params.path
 				end
 				if params.type == 'raw' or params.type == 'tcp' then
 					result.tcp_guise = params.headerType or "none"
@@ -856,9 +752,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 					result.grpc_mode = params.mode or "gun"
 				end
 				if params.type == 'xhttp' then
-					if result.type ~= "Xray" then
-						result.error_msg = "请更换 Xray 以支持 xhttp 传输方式。"
-					end
+					result.error_msg = "Sing-Box 不支持 xhttp 传输方式。"
 					result.xhttp_host = params.host
 					result.xhttp_path = params.path
 					result.xhttp_mode = params.mode or "auto"
@@ -943,9 +837,6 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		if sub_trojan_type == "sing-box" and has_singbox then
 			result.type = 'sing-box'
 			result.protocol = 'trojan'
-		elseif sub_trojan_type == "xray" and has_xray then
-			result.type = 'Xray'
-			result.protocol = 'trojan'
 		else
 			log("跳过 Trojan 节点，因未适配到 Trojan 核心程序，或未正确设置节点使用类型。")
 			return nil
@@ -998,12 +889,10 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			params.type = string.lower(params.type)
 			if result.type == "sing-box" and params.type == "raw" then 
 				params.type = "tcp"
-			elseif result.type == "Xray" and params.type == "tcp" then
-				params.type = "raw"
 			end
 			if params.type == "h2" or params.type == "http" then
 				params.type = "http"
-				result.transport = (result.type == "Xray") and "xhttp" or "http"
+				result.transport = "http"
 			else
 				result.transport = params.type
 			end
@@ -1027,16 +916,9 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 				end
 			end
 			if params.type == "http" then
-				if result.type == "sing-box" then
-					result.transport = "http"
-					result.http_host = (params.host and params.host ~= "") and { params.host } or nil
-					result.http_path = params.path
-				elseif result.type == "Xray" then
-					result.transport = "xhttp"
-					result.xhttp_mode = "stream-one"
-					result.xhttp_host = params.host
-					result.xhttp_path = params.path
-				end
+				result.transport = "http"
+				result.http_host = (params.host and params.host ~= "") and { params.host } or nil
+				result.http_path = params.path
 			end
 			if params.type == 'raw' or params.type == 'tcp' then
 				result.tcp_guise = params.headerType or "none"
@@ -1072,7 +954,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.finalmask = (params.fm and params.fm ~= "") and api.base64Encode(params.fm) or nil
 
 			if result.type == "sing-box" and (result.transport == "mkcp" or result.transport == "xhttp") then
-				log("跳过节点：" .. result.remarks .."，因 Sing-Box 不支持 " .. szType .. " 协议的 " .. result.transport .. " 传输方式，需更换 Xray。")
+				log("跳过节点：" .. result.remarks .."，因 Sing-Box 不支持 " .. szType .. " 协议的 " .. result.transport .. " 传输方式。")
 				return nil
 			end
 		end
@@ -1091,8 +973,6 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 	elseif szType == "vless" then
 		if sub_vless_type == "sing-box" and has_singbox then
 			result.type = 'sing-box'
-		elseif sub_vless_type == "xray" and has_xray then
-			result.type = "Xray"
 		else
 			log("跳过 VLESS 节点，因未适配到 VLESS 核心程序，或未正确设置节点使用类型。")
 			return nil
@@ -1135,17 +1015,12 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 
 			if not params.type then params.type = "tcp" end
 			params.type = string.lower(params.type)
-			if ({ xhttp=true, kcp=true, mkcp=true })[params.type] and result.type ~= "Xray" and has_xray then
-				result.type = "Xray"
-			end
 			if result.type == "sing-box" and params.type == "raw" then 
 				params.type = "tcp"
-			elseif result.type == "Xray" and params.type == "tcp" then
-				params.type = "raw"
 			end
 			if params.type == "h2" or params.type == "http" then
 				params.type = "http"
-				result.transport = (result.type == "Xray") and "xhttp" or "http"
+				result.transport = "http"
 			else
 				result.transport = params.type
 			end
@@ -1169,16 +1044,9 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 				end
 			end
 			if params.type == "http" then
-				if result.type == "sing-box" then
-					result.transport = "http"
-					result.http_host = (params.host and params.host ~= "") and { params.host } or nil
-					result.http_path = params.path
-				elseif result.type == "Xray" then
-					result.transport = "xhttp"
-					result.xhttp_mode = "stream-one"
-					result.xhttp_host = params.host
-					result.xhttp_path = params.path
-				end
+				result.transport = "http"
+				result.http_host = (params.host and params.host ~= "") and { params.host } or nil
+				result.http_path = params.path
 			end
 			if params.type == 'raw' or params.type == 'tcp' then
 				result.tcp_guise = params.headerType or "none"
@@ -1253,7 +1121,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.finalmask = (params.fm and params.fm ~= "") and api.base64Encode(params.fm) or nil
 
 			if result.type == "sing-box" and (result.transport == "mkcp" or result.transport == "xhttp") then
-				log("跳过节点：" .. result.remarks .."，因 Sing-Box 不支持 " .. szType .. " 协议的 " .. result.transport .. " 传输方式，需更换 Xray。")
+				log("跳过节点：" .. result.remarks .."，因 Sing-Box 不支持 " .. szType .. " 协议的 " .. result.transport .. " 传输方式。")
 				return nil
 			end
 		end
@@ -1364,9 +1232,8 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.hysteria2_obfs_password = params["obfs-password"] or params["obfs_password"]
 		end
 
-		if (sub_hysteria2_type == "sing-box" and has_singbox) or (sub_hysteria2_type == "xray" and has_xray) then
-			local is_singbox = sub_hysteria2_type == "sing-box" and has_singbox
-			result.type = is_singbox and 'sing-box' or 'Xray'
+		if sub_hysteria2_type == "sing-box" and has_singbox then
+			result.type = 'sing-box'
 			result.protocol = "hysteria2"
 			result.use_finalmask = (params.fm and params.fm ~= "") and "1" or nil
 			result.finalmask = (params.fm and params.fm ~= "") and api.base64Encode(params.fm) or nil
@@ -1883,7 +1750,7 @@ local function update_node(manual)
 			local cp = uci:get(appname, node, "chain_proxy") or ""
 			local am = uci:get(appname, node, "add_mode") or "0"
 			chain_node_type = (cp == "" and am ~= "2") and (uci:get(appname, node, "type") or "") or ""
-			if chain_node_type ~= "Xray" and chain_node_type ~= "sing-box" then
+			if chain_node_type ~= "sing-box" then
 				chain_node_type = ""
 				return ""
 			end
@@ -1909,8 +1776,8 @@ local function update_node(manual)
 					if kkk ~= "group" or vvv ~= "default" then
 						uci:set(appname, cfgid, kkk, vvv)
 					end
-					-- sing-box/xray 节点域名解析
-					if kkk == "type" and (vvv == "Xray" or vvv == "sing-box") then
+					-- sing-box 节点域名解析
+					if kkk == "type" and vvv == "sing-box" then
 						if domain_resolver then
 							uci:set(appname, cfgid, "domain_resolver", domain_resolver)
 							if domain_resolver_dns then
@@ -1920,16 +1787,12 @@ local function update_node(manual)
 							end
 						end
 						if domain_strategy then
-							local ds = domain_strategy
-							if vvv == "sing-box" then
-								local map = { UseIPv4v6 = "prefer_ipv4", UseIPv6v4 = "prefer_ipv6", UseIPv4 = "ipv4_only", UseIPv6 = "ipv6_only" }
-								ds = map[ds] or ""
-							end
-							uci:set(appname, cfgid, "domain_strategy", ds)
+							local map = { UseIPv4v6 = "prefer_ipv4", UseIPv6v4 = "prefer_ipv6", UseIPv4 = "ipv4_only", UseIPv6 = "ipv6_only" }
+							uci:set(appname, cfgid, "domain_strategy", map[domain_strategy] or "")
 						end
 					end
 					-- 订阅组链式代理
-					if chain_node_type ~= "" and kkk == "type" and (vvv == "Xray" or vvv == "sing-box") then
+					if chain_node_type ~= "" and kkk == "type" and vvv == "sing-box" then
 						if preproxy_node_group ~="" then
 							uci:set(appname, cfgid, "chain_proxy", "1")
 							uci:set(appname, cfgid, "preproxy_node", preproxy_node_group)

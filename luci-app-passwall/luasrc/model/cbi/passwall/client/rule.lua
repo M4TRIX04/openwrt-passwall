@@ -1,6 +1,5 @@
 local api = require "luci.passwall.api"
 local appname = "passwall"
-local has_xray = api.finded_com("xray")
 local has_singbox = api.finded_com("sing-box")
 
 m = Map(appname)
@@ -51,7 +50,7 @@ o:value("https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/apple-
 o:value("https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/google-cn.txt", translate("Loyalsoldier/google-cn"))
 o:value("https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/ChinaMax/ChinaMax_Domain.txt", translate("ios_rule_script/ChinaMax_Domain"))
 
-if has_xray or has_singbox then
+if has_singbox then
 	o = s:option(Value, "geoip_url", translate("GeoIP Update URL"))
 	o:value("https://github.com/Loyalsoldier/geoip/releases/latest/download/geoip.dat", translate("Loyalsoldier/geoip"))
 	o:value("https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/geoip.dat", translate("MetaCubeX/geoip"))
@@ -83,7 +82,7 @@ if has_xray or has_singbox then
 		o.rmempty = false
 		o.description = "<ul>"
 			.. "<li>" .. translate("Experimental feature.") .. "</li>"
-			.. "<li>" .. "1." .. translate("Analyzes and preloads GeoIP/Geosite data to enhance the shunt performance of Sing-box/Xray.") .. "</li>"
+			.. "<li>" .. "1." .. translate("Analyzes and preloads GeoIP/Geosite data to enhance the shunt performance of Sing-box.") .. "</li>"
 			.. "<li>" .. "2." .. translate("Once enabled, the rule list can support GeoIP/Geosite rules.") .. "</li>"
 			.. "<li>" .. translate("Note: Increases resource usage; Geosite analysis is only supported in ChinaDNS-NG and SmartDNS modes.") .. "</li>"
 			.. "</ul>"
@@ -150,8 +149,8 @@ end
 
 s:append(Template(appname .. "/rule/rule_version"))
 
-if has_xray or has_singbox then
-	s = m:section(TypedSection, "shunt_rules", "Sing-Box/Xray " .. translate("Shunt Rule"), "<a style='color: red'>" .. translate("Please note attention to the priority, the higher the order, the higher the priority.") .. "</a>")
+if has_singbox then
+	s = m:section(TypedSection, "shunt_rules", "Sing-Box " .. translate("Shunt Rule"), "<a style='color: red'>" .. translate("Please note attention to the priority, the higher the order, the higher the priority.") .. "</a>")
 	s.template = "cbi/tblsection"
 	s.anonymous = false
 	s.addremove = true

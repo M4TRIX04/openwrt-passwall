@@ -72,22 +72,6 @@ local function add_depends(o, deps)
 	end
 end
 
-if data.node.type == "Xray" then
-	o = add_option(ListValue, "domainStrategy", translate("Domain Strategy"))
-	o:value("AsIs")
-	o:value("IPIfNonMatch")
-	o:value("IPOnDemand")
-	o.default = "IPOnDemand"
-	o.description = "<br /><ul><li>" .. translate("'AsIs': Only use domain for routing. Default value.")
-		.. "</li><li>" .. translate("'IPIfNonMatch': When no rule matches current domain, resolves it into IP addresses (A or AAAA records) and try all rules again.")
-		.. "</li><li>" .. translate("'IPOnDemand': As long as there is a IP-based rule, resolves the domain into IP immediately.")
-		.. "</li></ul>"
-
-	o = add_option(ListValue, "domainMatcher", translate("Domain matcher"))
-	o:value("hybrid")
-	o:value("linear")
-end
-
 o = add_option(Flag, "fakedns", '<a style="color:#FF8C00">FakeDNS</a>' .. " " .. translate("Main switch"), translate("Use FakeDNS work in the domain that proxy.") .. "<br>" ..
 	translate("Suitable scenarios for let the node servers get the target domain names.") .. "<br>" ..
 	translate("Such as: DNS unlocking of streaming media, reducing DNS query latency, etc."))

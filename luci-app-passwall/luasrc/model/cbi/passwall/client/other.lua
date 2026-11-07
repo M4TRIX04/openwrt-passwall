@@ -1,7 +1,6 @@
 local api = require "luci.passwall.api"
 local appname = "passwall"
 local fs = api.fs
-local has_singbox = api.finded_com("sing-box")
 
 local port_validate = function(self, value, t)
 	return value:gsub("-", ":")
@@ -160,19 +159,5 @@ o.default = 0
 o = s:option(Flag, "accept_icmpv6", translate("Hijacking ICMPv6 (IPv6 PING)"))
 o:depends("ipv6_tproxy", true)
 o.default = 0
-
-if has_singbox then
-	s = m:section(TypedSection, "global_singbox", "Sing-Box " .. translate("Settings"))
-	s.anonymous = true
-	s.addremove = false
-
-	o = s:option(Flag, "record_fragment", "TLS Record " .. translate("Fragment"),
-		translate("Split handshake data into multiple TLS records for better censorship evasion. Low overhead. Recommended to enable first."))
-	o.default = 0
-
-	o = s:option(Flag, "fragment", "TLS TCP " .. translate("Fragment"),
-		translate("Split handshake into multiple TCP segments. Enhances obfuscation. May increase delay. Use only if needed."))
-	o.default = 0
-end
 
 return m

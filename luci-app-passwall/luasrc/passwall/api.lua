@@ -348,17 +348,6 @@ function strToTable(str)
 	return loadstring("return " .. str)()
 end
 
-function is_normal_node(e)
-	if e and e.type and e.protocol and (e.protocol == "_shunt" or e.protocol == "_iface" or e.protocol == "_urltest") then
-		return false
-	end
-	return true
-end
-
-function is_special_node(e)
-	return is_normal_node(e) == false
-end
-
 function is_ip(val)
 	val = trim(val):lower()
 	local str = val:match("%[(.-)%]") or val
@@ -502,46 +491,11 @@ function get_valid_nodes()
 		e.id = e[".name"]
 		if e.type and e.remarks then
 			local type_name = e.type
-			if e.type == "sing-box" then type_name = "Sing-Box" end
-			if e.protocol and (e.protocol == "_shunt" or e.protocol == "_iface" or e.protocol == "_urltest") then
-				e["remark"] = trim("%s：[%s]" % {type_name .. " " .. i18n.translatef(e.protocol), e.remarks})
-				e["node_type"] = "special"
-				if not e.group or e.group == "" then
-					default_nodes[#default_nodes + 1] = e
-				else
-					other_nodes[#other_nodes + 1] = e
-				end
-			end
 			local port = e.port or e.hysteria_hop or e.hysteria2_hop
 			local is_realm = (e.type == "Hysteria2" or e.protocol == 'hysteria2') and e.hysteria2_realms or nil
 			if (port and e.address) or is_realm then
 				local address = e.address
 				if is_ip(address) or datatypes.hostname(address) or is_realm then
-					if e.type == "sing-box" and e.protocol then
-						local protocol = e.protocol
-						if protocol == "vmess" then
-							protocol = "VMess"
-						elseif protocol == "vless" then
-							protocol = "VLESS"
-						elseif protocol == "shadowsocks" then
-							protocol = "SS"
-						elseif protocol == "shadowsocksr" then
-							protocol = "SSR"
-						elseif protocol == "wireguard" then
-							protocol = "WG"
-						elseif protocol == "hysteria" then
-							protocol = "HY"
-						elseif protocol == "hysteria2" then
-							protocol = "HY2"
-						elseif protocol == "anytls" then
-							protocol = "AnyTLS"
-						elseif protocol == "ssh" then
-							protocol = "SSH"
-						else
-							protocol = protocol:gsub("^%l",string.upper)
-						end
-						type_name = type_name .. " " .. protocol
-					end
 					if is_ipv6(address) then address = get_ipv6_full(address) end
 					type_name = is_realm and type_name .. " Realm" or type_name
 					e["remark"] = trim("%s：[%s]" % {type_name, e.remarks})
@@ -586,7 +540,6 @@ function get_node_list()
 				id = e[".name"],
 				remark = e["remark"],
 				type = e["type"],
-				chain_proxy = e["chain_proxy"],
 				group = e["group"]
 			}
 		end
@@ -610,40 +563,10 @@ function get_node_remarks(n)
 	local remarks = ""
 	if n then
 		local type_name = n.type
-		if n.type == "sing-box" then type_name = "Sing-Box" end
-		if n.protocol and (n.protocol == "_shunt" or n.protocol == "_iface" or n.protocol == "_urltest") then
-			remarks = trim("%s：[%s]" % {type_name .. " " .. i18n.translatef(n.protocol), n.remarks})
-		else
-			if n.type == "sing-box" and n.protocol then
-				local protocol = n.protocol
-				if protocol == "vmess" then
-					protocol = "VMess"
-				elseif protocol == "vless" then
-					protocol = "VLESS"
-				elseif protocol == "shadowsocks" then
-					protocol = "SS"
-				elseif protocol == "shadowsocksr" then
-					protocol = "SSR"
-				elseif protocol == "wireguard" then
-					protocol = "WG"
-				elseif protocol == "hysteria" then
-					protocol = "HY"
-				elseif protocol == "hysteria2" then
-					protocol = "HY2"
-				elseif protocol == "anytls" then
-					protocol = "AnyTLS"
-				elseif protocol == "ssh" then
-					protocol = "SSH"
-				else
-					protocol = protocol:gsub("^%l",string.upper)
-				end
-				type_name = type_name .. " " .. protocol
-			end
-			if (n.type == "Hysteria2" or n.protocol == 'hysteria2') and n.hysteria2_realms then
-				type_name = type_name .. " Realm"
-			end
-			remarks = trim("%s：[%s]" % {type_name, n.remarks})
+		if (n.type == "Hysteria2" or n.protocol == 'hysteria2') and n.hysteria2_realms then
+			type_name = type_name .. " Realm"
 		end
+		remarks = trim("%s：[%s]" % {type_name, n.remarks})
 	end
 	return remarks
 end

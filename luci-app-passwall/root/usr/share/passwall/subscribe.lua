@@ -25,7 +25,6 @@ local uci = api.uci
 local fs = api.fs
 
 local has_ss = api.is_finded("ss-redir")
-local has_singbox = api.finded_com("sing-box")
 local has_hysteria2 = api.finded_com("hysteria")
 local DEFAULT_ALLOWINSECURE = true
 -- SS 只接受 AEAD 加密，与服务端/客户端 UI 的白名单保持一致
@@ -40,13 +39,9 @@ local DEFAULT_FILTER_KEYWORD_MODE = uci:get(appname, "@global_subscribe[0]", "fi
 local DEFAULT_FILTER_KEYWORD_DISCARD_LIST = uci:get(appname, "@global_subscribe[0]", "filter_discard_list") or {}
 local DEFAULT_FILTER_KEYWORD_KEEP_LIST = uci:get(appname, "@global_subscribe[0]", "filter_keep_list") or {}
 -- 取节点使用core类型（节点订阅页面未设置时，自动取默认）
-local DEFAULT_SS_TYPE = api.get_core("ss_type", {{has_ss,"shadowsocks-libev"},{has_singbox,"sing-box"}})
-local DEFAULT_TROJAN_TYPE =  api.get_core("trojan_type", {{has_singbox,"sing-box"}})
-local DEFAULT_VMESS_TYPE = api.get_core("vmess_type", {{has_singbox,"sing-box"}})
-local DEFAULT_VLESS_TYPE = api.get_core("vless_type", {{has_singbox,"sing-box"}})
-local DEFAULT_HYSTERIA2_TYPE = api.get_core("hysteria2_type", {{has_hysteria2,"hysteria2"},{has_singbox,"sing-box"}})
+local DEFAULT_SS_TYPE = api.get_core("ss_type", {{has_ss,"shadowsocks-libev"}})
+local DEFAULT_HYSTERIA2_TYPE = api.get_core("hysteria2_type", {{has_hysteria2,"hysteria2"}})
 local core_has = {
-	["sing-box"] = has_singbox,
 	["shadowsocks-libev"] = has_ss,
 	["hysteria2"] = has_hysteria2
 }
@@ -240,115 +235,6 @@ do
 		end)
 	end
 
-	uci:foreach(appname, "nodes", function(node)
-		local node_id = node[".name"]
-		if node.protocol and node.protocol == '_shunt' then
-			local rules = {}
-			uci:foreach(appname, "shunt_rules", function(e)
-				if e[".name"] and e.remarks then
-					table.insert(rules, e)
-					table.insert(rules, {
-						[".name"] = e[".name"] .. "_proxy_tag",
-						remarks = e.remarks .. " 前置代理"
-					})
-				end
-			end)
-			table.insert(rules, {
-				[".name"] = "default_node",
-				remarks = "默认"
-			})
-			table.insert(rules, {
-				[".name"] = "default_proxy_tag",
-				remarks = "默认 前置代理"
-			})
-
-			for k, e in pairs(rules) do
-				local _node_id = node[e[".name"]] or nil
-				if _node_id and not _node_id:find("Socks_") then
-					CONFIG[#CONFIG + 1] = {
-						log = false,
-						currentNode = _node_id and uci:get_all(appname, _node_id) or nil,
-						remarks = "分流" .. e.remarks .. "节点",
-						set = function(o, server)
-							if not server then server = "" end
-							uci:set(appname, node_id, e[".name"], server)
-							o.newNodeId = server
-						end
-					}
-				end
-			end
-		elseif node.protocol and node.protocol == '_urltest' then
-			local flag = "Sing-Box URLTest节点[" .. node_id .. "]列表"
-			local currentNodes = {}
-			local newNodes = {}
-			if node.urltest_node then
-				for k, node in pairs(node.urltest_node) do
-					currentNodes[#currentNodes + 1] = {
-						log = true,
-						node = node,
-						currentNode = (function()
-							if node and node:find("Socks_") then
-								return { Socks = node }
-							end
-							return node and uci:get_all(appname, node) or nil
-						end)(),
-						remarks = node,
-						set = function(o, server)
-							if o and server and server ~= "nil" then
-								table.insert(o.newNodes, server)
-							end
-						end
-					}
-				end
-			end
-			CONFIG[#CONFIG + 1] = {
-				remarks = flag,
-				currentNodes = currentNodes,
-				newNodes = newNodes,
-				set = function(o, newNodes)
-					if o then
-						if not newNodes then newNodes = o.newNodes end
-						uci:set_list(appname, node_id, "urltest_node", newNodes or {})
-					end
-				end
-			}
-		else
-			--前置代理节点
-			local currentNode = uci:get_all(appname, node_id) or nil
-			if currentNode and currentNode.preproxy_node and not currentNode.preproxy_node:find("Socks_") then
-				CONFIG[#CONFIG + 1] = {
-					log = true,
-					id = node_id,
-					remarks = "节点[" .. node_id .. "]前置代理节点",
-					currentNode = uci:get_all(appname, currentNode.preproxy_node) or nil,
-					set = function(o, server)
-						uci:set(appname, node_id, "preproxy_node", server)
-						o.newNodeId = server
-					end,
-					delete = function(o)
-						uci:delete(appname, node_id, "preproxy_node")
-					end
-				}
-			end
-			--落地节点
-			local currentNode = uci:get_all(appname, node_id) or nil
-			if currentNode and currentNode.to_node and not currentNode.to_node:find("Socks_") then
-				CONFIG[#CONFIG + 1] = {
-					log = true,
-					id = node_id,
-					remarks = "节点[" .. node_id .. "]落地节点",
-					currentNode = uci:get_all(appname, currentNode.to_node) or nil,
-					set = function(o, server)
-						uci:set(appname, node_id, "to_node", server)
-						o.newNodeId = server
-					end,
-					delete = function(o)
-						uci:delete(appname, node_id, "to_node")
-					end
-				}
-			end
-		end
-	end)
 
 	for k, v in pairs(CONFIG) do
 		if v.currentNodes and type(v.currentNodes) == "table" then
@@ -405,9 +291,6 @@ end
 local function set_ss_implementation(ss_type, result)
 	if ss_type == "shadowsocks-libev" and has_ss then
 		result.type = 'SS'
-	elseif ss_type == "sing-box" and has_singbox then
-		result.type = 'sing-box'
-		result.protocol = 'shadowsocks'
 	else
 		log("跳过 SS 节点，因未适配到 SS 核心程序，或未正确设置节点使用类型。")
 		return nil
@@ -420,9 +303,6 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 	--log(2, content, add_mode, group)
 	local sub_allowinsecure = DEFAULT_ALLOWINSECURE
 	local sub_ss_type = DEFAULT_SS_TYPE
-	local sub_trojan_type = DEFAULT_TROJAN_TYPE
-	local sub_vmess_type = DEFAULT_VMESS_TYPE
-	local sub_vless_type = DEFAULT_VLESS_TYPE
 	local sub_hysteria2_type = DEFAULT_HYSTERIA2_TYPE
 	local sub_hy_up_mbps, sub_hy_down_mbps = 1000, 1000
 	if sub_cfg then
@@ -432,18 +312,6 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		local ss_type = sub_cfg.ss_type or "global"
 		if ss_type ~= "global" and core_has[ss_type] then
 			sub_ss_type = ss_type
-		end
-		local trojan_type = sub_cfg.trojan_type or "global"
-		if trojan_type ~= "global" and core_has[trojan_type] then
-			sub_trojan_type = trojan_type
-		end
-		local vmess_type = sub_cfg.vmess_type or "global"
-		if vmess_type ~= "global" and core_has[vmess_type] then
-			sub_vmess_type = vmess_type
-		end
-		local vless_type = sub_cfg.vless_type or "global"
-		if vless_type ~= "global" and core_has[vless_type] then
-			sub_vless_type = vless_type
 		end
 		local hysteria2_type = sub_cfg.hysteria2_type or "global"
 		if hysteria2_type ~= "global" and core_has[hysteria2_type] then
@@ -457,121 +325,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		add_mode = add_mode, --0为手动配置,1为导入,2为订阅
 		group = group
 	}
-	if szType == 'vmess' then
-		local info = jsonParse(content)
-		if sub_vmess_type == "sing-box" and has_singbox then
-			result.type = 'sing-box'
-		else
-			log("跳过 VMess 节点，因未适配到 VMess 核心程序，或未正确设置节点使用类型。")
-			return nil
-		end
-		result.alter_id = info.aid
-		result.address = info.add
-		result.port = info.port
-		result.protocol = 'vmess'
-		result.uuid = info.id
-		result.remarks = info.ps
-		-- result.mux = 1
-		-- result.mux_concurrency = 8
-
-		info.path = (info.path and info.path ~= "") and UrlDecode(info.path) or nil
-
-		if not info.net then info.net = "tcp" end
-		info.net = string.lower(info.net)
-		if result.type == "sing-box" and info.net == "raw" then 
-			info.net = "tcp"
-		end
-		if info.net == 'h2' or info.net == 'http' then
-			info.net = "http"
-			result.transport = "http"
-		else
-			result.transport = info.net
-		end
-		if info.net == 'ws' then
-			result.ws_host = info.host
-			result.ws_path = info.path
-			if result.type == "sing-box" and info.path then
-				local ws_path_dat = split(info.path, "?")
-				local ws_path = ws_path_dat[1]
-				local ws_path_params = {}
-				for _, v in pairs(split(ws_path_dat[2], '&')) do
-					local t = split(v, '=')
-					ws_path_params[t[1]] = t[2]
-				end
-				if ws_path_params.ed and tonumber(ws_path_params.ed) then
-					result.ws_path = ws_path
-					result.ws_enableEarlyData = "1"
-					result.ws_maxEarlyData = tonumber(ws_path_params.ed)
-					result.ws_earlyDataHeaderName = "Sec-WebSocket-Protocol"
-				end
-			end
-		end
-		if info.net == "http" then
-			result.http_host = (info.host and info.host ~= "") and { info.host } or nil
-			result.http_path = info.path
-		end
-		if info.net == 'raw' or info.net == 'tcp' then
-			if info.type and info.type ~= "http" then
-				info.type = "none"
-			end
-			result.tcp_guise = info.type
-			result.tcp_guise_http_host = (info.host and info.host ~= "") and { info.host } or nil
-			result.tcp_guise_http_path = (info.path and info.path ~= "") and { info.path } or nil
-		end
-		if info.net == 'kcp' or info.net == 'mkcp' then
-			info.net = "mkcp"
-			result.mkcp_guise = info.type
-			result.mkcp_seed = info.seed
-		end
-		if info.net == 'quic' then
-			result.quic_guise = info.type
-			result.quic_key = info.key
-			result.quic_security = info.securty
-		end
-		if info.net == 'grpc' then
-			result.grpc_serviceName = info.path
-		end
-		if info.net == 'xhttp' then
-			result.xhttp_host = info.host
-			result.xhttp_path = info.path
-		end
-		if info.net == 'httpupgrade' then
-			result.httpupgrade_host = info.host
-			result.httpupgrade_path = info.path
-		end
-		result.security = info.security or info.scy or "auto"
-		if info.tls == "tls" or info.tls == "1" then
-			result.tls = "1"
-			result.alpn = info.alpn
-			if info.fp and info.fp ~= "" then
-				result.utls = "1"
-				result.fingerprint = info.fp
-			end
-			result.tls_serverName = (info.sni and info.sni ~= "") and info.sni or info.host
-			result.tls_pinSHA256 = info.pcs
-			result.tls_CertByName = info.vcn
-			local insecure = info.allowinsecure or info.allowInsecure or info.insecure
-			result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
-		else
-			result.tls = "0"
-		end
-
-		if info.ech and info.ech ~= "" then
-			result.ech = "1"
-			result.ech_config = info.ech
-		end
-
-		result.tcp_fast_open = info.tfo
-
-		info.fm = (info.fm and info.fm ~= "") and UrlDecode(info.fm) or nil
-		result.use_finalmask = (info.fm and info.fm ~= "") and "1" or nil
-		result.finalmask = (info.fm and info.fm ~= "") and api.base64Encode(info.fm) or nil
-
-		if result.type == "sing-box" and (result.transport == "mkcp" or result.transport == "xhttp") then
-			log("跳过节点:" .. result.remarks .."，因Sing-Box不支持" .. szType .. "协议的" .. result.transport .. "传输方式。")
-			return nil
-		end
-	elseif szType == "ss" then
+	if szType == "ss" then
 		result = set_ss_implementation(sub_ss_type, result)
 		if not result then return nil end
 
@@ -676,31 +430,12 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.use_finalmask = (params.fm and params.fm ~= "") and "1" or nil
 			result.finalmask = (params.fm and params.fm ~= "") and api.base64Encode(params.fm) or nil
 
-			local need_upgrade = (result.type ~= "sing-box")
-				and (params.type and params.type ~= "tcp")
-				and (params.headerType and params.headerType ~= "none")
-			if has_singbox and need_upgrade then
-				result.type = "sing-box"
-				result.protocol = "shadowsocks"
-			end
-
 			if result.plugin then
-				if result.type == 'sing-box' then
-					if result.plugin ~= "obfs-local" and result.plugin ~= "v2ray-plugin" then
-						result.error_msg = "Sing-Box 不支持 SS " .. result.plugin .. " 插件。"
-					else
-						result.plugin_enabled = "1"
-					end
-				else
-					result.plugin_enabled = "1"
-				end
+				result.plugin_enabled = "1"
 			end
 
 			if params.type then
 				params.type = string.lower(params.type)
-				if result.type == "sing-box" and params.type == "raw" then 
-					params.type = "tcp"
-				end
 				if params.type == "h2" or params.type == "http" then
 					params.type = "http"
 					result.transport = "http"
@@ -710,21 +445,6 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 				if params.type == 'ws' then
 					result.ws_host = params.host
 					result.ws_path = params.path
-					if result.type == "sing-box" and params.path then
-						local ws_path_dat = split(params.path, "%?")
-						local ws_path = ws_path_dat[1]
-						local ws_path_params = {}
-						for _, v in pairs(split(ws_path_dat[2], '&')) do
-							local t = split(v, '=')
-							ws_path_params[t[1]] = t[2]
-						end
-						if ws_path_params.ed and tonumber(ws_path_params.ed) then
-							result.ws_path = ws_path
-							result.ws_enableEarlyData = "1"
-							result.ws_maxEarlyData = tonumber(ws_path_params.ed)
-							result.ws_earlyDataHeaderName = "Sec-WebSocket-Protocol"
-						end
-					end
 				end
 				if params.type == "http" then
 					result.transport = "http"
@@ -752,7 +472,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 					result.grpc_mode = params.mode or "gun"
 				end
 				if params.type == 'xhttp' then
-					result.error_msg = "Sing-Box 不支持 xhttp 传输方式。"
+					result.error_msg = "不支持 xhttp 传输方式。"
 					result.xhttp_host = params.host
 					result.xhttp_path = params.path
 					result.xhttp_mode = params.mode or "auto"
@@ -795,170 +515,9 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			end
 
 			if params["shadow-tls"] then
-				if result.type ~= "sing-box" then
-					result.error_msg =  sub_ss_type .. " 不支持 shadow-tls 插件。"
-				else
-					-- 解析SS Shadow-TLS 插件参数
-					local function parseShadowTLSParams(b64str, out)
-						local ok, data = pcall(jsonParse, base64Decode(b64str))
-						if not ok or type(data) ~= "table" then return "" end
-						if type(out) == "table" then
-							for k, v in pairs(data) do out[k] = v end
-						end
-						local t = {}
-						if data.version then t[#t+1] = "v" .. data.version .. "=1" end
-						if data.password then t[#t+1] = "passwd=" .. data.password end
-						for k, v in pairs(data) do
-							if k ~= "version" and k ~= "password" then
-								t[#t+1] = k .. "=" .. tostring(v)
-							end
-						end
-						return table.concat(t, ";")
-					end
-
-					if result.type == "sing-box" then
-						local shadowtlsOpt = {}
-						parseShadowTLSParams(params["shadow-tls"], shadowtlsOpt)
-						if next(shadowtlsOpt) then
-							result.shadowtls = "1"
-							result.shadowtls_version = shadowtlsOpt.version or "1"
-							result.shadowtls_password = shadowtlsOpt.password
-							result.shadowtls_serverName = shadowtlsOpt.host
-							if shadowtlsOpt.fingerprint then
-								result.shadowtls_utls = "1"
-								result.shadowtls_fingerprint = shadowtlsOpt.fingerprint or "chrome"
-							end
-						end
-					end
-				end
+				result.error_msg = sub_ss_type .. " 不支持 shadow-tls 插件。"
 			end
 		end
-	elseif szType == "trojan" then
-		if sub_trojan_type == "sing-box" and has_singbox then
-			result.type = 'sing-box'
-			result.protocol = 'trojan'
-		else
-			log("跳过 Trojan 节点，因未适配到 Trojan 核心程序，或未正确设置节点使用类型。")
-			return nil
-		end
-		
-		local alias = ""
-		if content:find("#") then
-			local idx_sp = content:find("#")
-			alias = content:sub(idx_sp + 1, -1)
-			content = content:sub(0, idx_sp - 1)
-		end
-		result.remarks = UrlDecode(alias)
-		if content:find("@") then
-			local Info = split(content, "@")
-			result.password = UrlDecode(Info[1])
-			local port = "443"
-			Info[2] = (Info[2] or ""):gsub("/%?", "?")
-			local query = split(Info[2], "%?")
-			local host_port = query[1]
-			local params = {}
-			for _, v in pairs(split(query[2], '&')) do
-				local s = v:find("=", 1, true)
-				if s and s > 1 then
-					params[v:sub(1, s - 1)] = UrlDecode(v:sub(s + 1))
-				end
-			end
-			-- [2001:4860:4860::8888]:443
-			-- 8.8.8.8:443
-			if host_port:find(":") then
-				local sp = split(host_port, ":")
-				port = sp[#sp]
-				if api.is_ipv6addrport(host_port) then
-					result.address = api.get_ipv6_only(host_port)
-				else
-					result.address = sp[1]
-				end
-			else
-				result.address = host_port
-			end
-			result.port = port
-
-			result.tls = '1'
-			result.tls_serverName = params.peer or params.sni or ""
-			result.tls_pinSHA256 = params.pcs
-			result.tls_CertByName = params.vcn
-			local insecure = params.allowinsecure or params.allowInsecure or params.insecure
-			result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
-
-			if not params.type then params.type = "tcp" end
-			params.type = string.lower(params.type)
-			if result.type == "sing-box" and params.type == "raw" then 
-				params.type = "tcp"
-			end
-			if params.type == "h2" or params.type == "http" then
-				params.type = "http"
-				result.transport = "http"
-			else
-				result.transport = params.type
-			end
-			if params.type == 'ws' then
-				result.ws_host = params.host
-				result.ws_path = params.path
-				if result.type == "sing-box" and params.path then
-					local ws_path_dat = split(params.path, "%?")
-					local ws_path = ws_path_dat[1]
-					local ws_path_params = {}
-					for _, v in pairs(split(ws_path_dat[2], '&')) do
-						local t = split(v, '=')
-						ws_path_params[t[1]] = t[2]
-					end
-					if ws_path_params.ed and tonumber(ws_path_params.ed) then
-						result.ws_path = ws_path
-						result.ws_enableEarlyData = "1"
-						result.ws_maxEarlyData = tonumber(ws_path_params.ed)
-						result.ws_earlyDataHeaderName = "Sec-WebSocket-Protocol"
-					end
-				end
-			end
-			if params.type == "http" then
-				result.transport = "http"
-				result.http_host = (params.host and params.host ~= "") and { params.host } or nil
-				result.http_path = params.path
-			end
-			if params.type == 'raw' or params.type == 'tcp' then
-				result.tcp_guise = params.headerType or "none"
-				result.tcp_guise_http_host = (params.host and params.host ~= "") and { params.host } or nil
-				result.tcp_guise_http_path = (params.path and params.path ~= "") and { params.path } or nil
-			end
-			if params.type == 'kcp' or params.type == 'mkcp' then
-				result.transport = "mkcp"
-				result.mkcp_guise = params.headerType or "none"
-				result.mkcp_seed = params.seed
-			end
-			if params.type == 'quic' then
-				result.quic_guise = params.headerType or "none"
-				result.quic_key = params.key
-				result.quic_security = params.quicSecurity or "none"
-			end
-			if params.type == 'grpc' then
-				result.grpc_serviceName = params.serviceName or params.path
-				result.grpc_mode = params.mode or "gun"
-			end
-			if params.type == 'xhttp' then
-				result.xhttp_host = params.host
-				result.xhttp_path = params.path
-			end
-			if params.type == 'httpupgrade' then
-				result.httpupgrade_host = params.host
-				result.httpupgrade_path = params.path
-			end
-
-			result.alpn = params.alpn
-			result.tcp_fast_open = params.tfo
-			result.use_finalmask = (params.fm and params.fm ~= "") and "1" or nil
-			result.finalmask = (params.fm and params.fm ~= "") and api.base64Encode(params.fm) or nil
-
-			if result.type == "sing-box" and (result.transport == "mkcp" or result.transport == "xhttp") then
-				log("跳过节点：" .. result.remarks .."，因 Sing-Box 不支持 " .. szType .. " 协议的 " .. result.transport .. " 传输方式。")
-				return nil
-			end
-		end
-
 	elseif szType == "ssd" then
 		result = set_ss_implementation(sub_ss_type, result)
 		if not result then return nil end
@@ -970,169 +529,8 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		result.plugin_opts = content.plugin_options
 		result.group = content.airport
 		result.remarks = content.remarks
-	elseif szType == "vless" then
-		if sub_vless_type == "sing-box" and has_singbox then
-			result.type = 'sing-box'
-		else
-			log("跳过 VLESS 节点，因未适配到 VLESS 核心程序，或未正确设置节点使用类型。")
-			return nil
-		end
-		result.protocol = "vless"
-		local alias = ""
-		if content:find("#") then
-			local idx_sp = content:find("#")
-			alias = content:sub(idx_sp + 1, -1)
-			content = content:sub(0, idx_sp - 1)
-		end
-		result.remarks = UrlDecode(alias)
-		if content:find("@") then
-			local Info = split(content, "@")
-			result.uuid = UrlDecode(Info[1])
-			local port = "443"
-			Info[2] = (Info[2] or ""):gsub("/%?", "?")
-			local query = split(Info[2], "%?")
-			local host_port = query[1]
-			local params = {}
-			for _, v in pairs(split(query[2], '&')) do
-				local s = v:find("=", 1, true)
-				if s and s > 1 then
-					params[v:sub(1, s - 1)] = UrlDecode(v:sub(s + 1))
-				end
-			end
-			-- [2001:4860:4860::8888]:443
-			-- 8.8.8.8:443
-			if host_port:find(":") then
-				local sp = split(host_port, ":")
-				port = sp[#sp]
-				if api.is_ipv6addrport(host_port) then
-					result.address = api.get_ipv6_only(host_port)
-				else
-					result.address = sp[1]
-				end
-			else
-				result.address = host_port
-			end
-
-			if not params.type then params.type = "tcp" end
-			params.type = string.lower(params.type)
-			if result.type == "sing-box" and params.type == "raw" then 
-				params.type = "tcp"
-			end
-			if params.type == "h2" or params.type == "http" then
-				params.type = "http"
-				result.transport = "http"
-			else
-				result.transport = params.type
-			end
-			if params.type == 'ws' then
-				result.ws_host = params.host
-				result.ws_path = params.path
-				if result.type == "sing-box" and params.path then
-					local ws_path_dat = split(params.path, "%?")
-					local ws_path = ws_path_dat[1]
-					local ws_path_params = {}
-					for _, v in pairs(split(ws_path_dat[2], '&')) do
-						local t = split(v, '=')
-						ws_path_params[t[1]] = t[2]
-					end
-					if ws_path_params.ed and tonumber(ws_path_params.ed) then
-						result.ws_path = ws_path
-						result.ws_enableEarlyData = "1"
-						result.ws_maxEarlyData = tonumber(ws_path_params.ed)
-						result.ws_earlyDataHeaderName = "Sec-WebSocket-Protocol"
-					end
-				end
-			end
-			if params.type == "http" then
-				result.transport = "http"
-				result.http_host = (params.host and params.host ~= "") and { params.host } or nil
-				result.http_path = params.path
-			end
-			if params.type == 'raw' or params.type == 'tcp' then
-				result.tcp_guise = params.headerType or "none"
-				result.tcp_guise_http_host = (params.host and params.host ~= "") and { params.host } or nil
-				result.tcp_guise_http_path = (params.path and params.path ~= "") and { params.path } or nil
-			end
-			if params.type == 'kcp' or params.type == 'mkcp' then
-				result.transport = "mkcp"
-				result.mkcp_guise = params.headerType or "none"
-				result.mkcp_seed = params.seed
-			end
-			if params.type == 'quic' then
-				result.quic_guise = params.headerType or "none"
-				result.quic_key = params.key
-				result.quic_security = params.quicSecurity or "none"
-			end
-			if params.type == 'grpc' then
-				if params.path then result.grpc_serviceName = params.path end
-				if params.serviceName then result.grpc_serviceName = params.serviceName end
-				result.grpc_mode = params.mode or "gun"
-			end
-			if params.type == 'xhttp' then
-				result.xhttp_host = params.host
-				result.xhttp_path = params.path
-				result.xhttp_mode = params.mode or "auto"
-				result.use_xhttp_extra = (params.extra and params.extra ~= "") and "1" or nil
-				result.xhttp_extra = (params.extra and params.extra ~= "") and api.base64Encode(params.extra) or nil
-				local success, Data = pcall(jsonParse, params.extra)
-				if success and Data then
-					local address = (Data.extra and Data.extra.downloadSettings and Data.extra.downloadSettings.address)
-							or (Data.downloadSettings and Data.downloadSettings.address)
-					result.download_address = (address and address ~= "") and address:gsub("^%[", ""):gsub("%]$", "") or nil
-				end
-			end
-			if params.type == 'httpupgrade' then
-				result.httpupgrade_host = params.host
-				result.httpupgrade_path = params.path
-			end
-			result.encryption = params.encryption or "none"
-			result.flow = params.flow
-
-			result.tls = "0"
-			if params.security == "tls" or params.security == "reality" then
-				result.tls = "1"
-				result.tls_serverName = (params.sni and params.sni ~= "") and params.sni or params.host
-				result.alpn = params.alpn
-				if params.fp and params.fp ~= "" then
-					result.utls = "1"
-					result.fingerprint = params.fp
-				end
-				if params.ech and params.ech ~= "" then
-					result.ech = "1"
-					result.ech_config = params.ech
-				end
-				result.tls_pinSHA256 = params.pcs
-				result.tls_CertByName = params.vcn
-				if params.security == "reality" then
-					result.reality = "1"
-					result.reality_publicKey = params.pbk or nil
-					result.reality_shortId = params.sid or nil
-					result.reality_spiderX = params.spx or nil
-					result.use_mldsa65Verify = (params.pqv and params.pqv ~= "") and "1" or nil
-					result.reality_mldsa65Verify = params.pqv or nil
-				end
-				local insecure = params.allowinsecure or params.allowInsecure or params.insecure
-				result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
-			end
-
-			result.port = port
-			result.tcp_fast_open = params.tfo
-			result.use_finalmask = (params.fm and params.fm ~= "") and "1" or nil
-			result.finalmask = (params.fm and params.fm ~= "") and api.base64Encode(params.fm) or nil
-
-			if result.type == "sing-box" and (result.transport == "mkcp" or result.transport == "xhttp") then
-				log("跳过节点：" .. result.remarks .."，因 Sing-Box 不支持 " .. szType .. " 协议的 " .. result.transport .. " 传输方式。")
-				return nil
-			end
-		end
 	elseif szType == 'hysteria' then
-		if has_singbox then
-			result.type = 'sing-box'
-			result.protocol = "hysteria"
-		else
-			-- 没有 sing-box 时用原生 hysteria（v1）
-			result.type = "Hysteria"
-		end
+		result.type = "Hysteria"
 
 		local alias = ""
 		if content:find("#") then
@@ -1172,266 +570,13 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		result.tls_serverName = params.peer or params.sni or ""
 		local insecure = params.allowinsecure or params.allowInsecure or params.insecure
 		result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
-		if has_singbox then
-			result.alpn = params.alpn
-		else
-			-- 原生 hysteria 的 alpn 存带前缀的字段，protocol 是 udp/faketcp
-			result.protocol = params.protocol
-			result.hysteria_alpn = params.alpn
-		end
+		-- 原生 hysteria 的 alpn 存带前缀的字段，protocol 是 udp/faketcp
+		result.protocol = params.protocol
+		result.hysteria_alpn = params.alpn
 		result.hysteria_up_mbps = params.upmbps or sub_hy_up_mbps
 		result.hysteria_down_mbps = params.downmbps or sub_hy_down_mbps
 		result.hysteria_hop = params.mport
 
-	elseif szType == 'hysteria2' or szType == 'hy2' then
-		local alias = ""
-		if content:find("#") then
-			local idx_sp = content:find("#")
-			alias = content:sub(idx_sp + 1, -1)
-			content = content:sub(0, idx_sp - 1)
-		end
-		result.remarks = UrlDecode(alias)
-		local Info = content
-		if content:find("@") then
-			local contents = split(content, "@")
-			result.hysteria2_auth_password = UrlDecode(contents[1])
-			Info = (contents[2] or ""):gsub("/%?", "?")
-		end
-		local query = split(Info, "%?")
-		local host_port = query[1]
-		local params = {}
-		for _, v in pairs(split(query[2], '&')) do
-			local s = v:find("=", 1, true)
-			if s and s > 1 then
-				params[v:sub(1, s - 1):lower()] = UrlDecode(v:sub(s + 1))
-			end
-		end
-		-- [2001:4860:4860::8888]:443
-		-- 8.8.8.8:443
-		if host_port:find(":") then
-			local sp = split(host_port, ":")
-			result.port = sp[#sp]
-			if api.is_ipv6addrport(host_port) then
-				result.address = api.get_ipv6_only(host_port)
-			else
-				result.address = sp[1]
-			end
-		else
-			result.address = host_port
-		end
-		result.tls_serverName = params.sni
-		result.tls_pinSHA256 = params.pcs or params.pinsha256
-		result.tls_CertByName = params.vcn
-		local insecure = params.allowinsecure or params.insecure
-		result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
-		result.hysteria2_up_mbps = params.upmbps or sub_hy_up_mbps
-		result.hysteria2_down_mbps = params.downmbps or sub_hy_down_mbps
-		result.hysteria2_hop = params.mport
-		if params["obfs-password"] or params["obfs_password"] then
-			result.hysteria2_obfs_type = params.obfs or "salamander"
-			result.hysteria2_obfs_password = params["obfs-password"] or params["obfs_password"]
-		end
-
-		if sub_hysteria2_type == "sing-box" and has_singbox then
-			result.type = 'sing-box'
-			result.protocol = "hysteria2"
-			result.use_finalmask = (params.fm and params.fm ~= "") and "1" or nil
-			result.finalmask = (params.fm and params.fm ~= "") and api.base64Encode(params.fm) or nil
-		elseif has_hysteria2 then
-			result.type = "Hysteria2"
-		else
-			log("跳过 Hysteria2 节点，因未适配到 Hysteria2 核心程序，或未正确设置节点使用类型。")
-			return nil
-		end
-	elseif szType == 'tuic' then
-		if has_singbox then
-			result.type = 'sing-box'
-			result.protocol = "tuic"
-		else
-			log("跳过 Tuic 节点，因未安装 Tuic 核心程序 Sing-box。")
-			return nil
-		end
-
-		local alias = ""
-		if content:find("#") then
-			local idx_sp = content:find("#")
-			alias = content:sub(idx_sp + 1, -1)
-			content = content:sub(0, idx_sp - 1)
-		end
-		result.remarks = UrlDecode(alias)
-		local Info = content
-		if content:find("@", 1, true) then
-			local contents = split(content, "@")
-			local auth = contents[1] or ""
-			local idx = auth:find(":", 1, true)
-			if not idx then --修正某些链接会把uuid和password之间的:进行编码
-				auth = UrlDecode(auth)
-				idx = auth:find(":", 1, true)
-			end
-			if idx then
-				result.uuid = UrlDecode(auth:sub(1, idx - 1))
-				result.password = UrlDecode(auth:sub(idx + 1))
-			end
-			Info = (contents[2] or ""):gsub("/%?", "?")
-		end
-		local query = split(Info, "%?")
-		local host_port = query[1]
-		local params = {}
-		for _, v in pairs(split(query[2], '&')) do
-			local s = v:find("=", 1, true)
-			if s and s > 1 then
-				params[v:sub(1, s - 1):lower()] = UrlDecode(v:sub(s + 1))
-			end
-		end
-		if host_port:find(":") then
-			local sp = split(host_port, ":")
-			result.port = sp[#sp]
-			if api.is_ipv6addrport(host_port) then
-				result.address = api.get_ipv6_only(host_port)
-			else
-				result.address = sp[1]
-			end
-		else
-			result.address = host_port
-		end
-		result.tls_serverName = params.sni
-		result.tls_disable_sni = params.disable_sni
-		result.tuic_alpn = params.alpn or "h3"
-		result.tuic_congestion_control = params.congestion_control or "cubic"
-		result.tuic_udp_relay_mode = params.udp_relay_mode or "native"
-		local insecure = params.allowinsecure or params.insecure or params.allow_insecure
-		result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
-	elseif szType == "anytls" then
-		if has_singbox then
-			result.type = 'sing-box'
-			result.protocol = "anytls"
-		else
-			log("跳过 AnyTLS 节点，因未安装 AnyTLS 核心程序 Sing-box 1.12。")
-			return nil
-		end
-
-		local alias = ""
-		if content:find("#") then
-			local idx_sp = content:find("#")
-			alias = content:sub(idx_sp + 1, -1)
-			content = content:sub(0, idx_sp - 1)
-		end
-		result.remarks = UrlDecode(alias)
-		if content:find("@") then
-			local Info = split(content, "@")
-			result.password = UrlDecode(Info[1])
-			local port = "443"
-			Info[2] = (Info[2] or ""):gsub("/%?", "?")
-			local query = split(Info[2], "%?")
-			local host_port = query[1]
-			local params = {}
-			for _, v in pairs(split(query[2], '&')) do
-				local s = v:find("=", 1, true)
-				if s and s > 1 then
-					params[v:sub(1, s - 1):lower()] = UrlDecode(v:sub(s + 1))
-				end
-			end
-			-- [2001:4860:4860::8888]:443
-			-- 8.8.8.8:443
-			if host_port:find(":") then
-				local sp = split(host_port, ":")
-				port = sp[#sp]
-				if api.is_ipv6addrport(host_port) then
-					result.address = api.get_ipv6_only(host_port)
-				else
-					result.address = sp[1]
-				end
-			else
-				result.address = host_port
-			end
-			result.tls = "0"
-			if not params.security or params.security == "" then
-				params.security = "tls"
-			end
-			if params.security == "tls" or params.security == "reality" then
-				result.tls = "1"
-				result.tls_serverName = params.sni
-				result.alpn = params.alpn
-				if params.fp and params.fp ~= "" then
-					result.utls = "1"
-					result.fingerprint = params.fp
-				end
-				if params.security == "reality" then
-					result.reality = "1"
-					result.reality_publicKey = params.pbk or nil
-					result.reality_shortId = params.sid or nil
-				end
-				if params.ech and params.ech ~= "" then
-					result.ech = "1"
-					result.ech_config = params.ech
-				end
-			end
-			result.port = port
-			local insecure = params.allowinsecure or params.insecure
-			result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
-		end
-	elseif szType == 'naive+https' or szType == 'naive+quic' then
-		if has_singbox then
-			result.type = 'sing-box'
-			result.protocol = "naive"
-		else
-			log("跳过 NaïveProxy 节点，因未安装 NaïveProxy 核心程序 Sing-box。")
-			return nil
-		end
-
-		local alias = ""
-		if content:find("#") then
-			local idx_sp = content:find("#")
-			alias = content:sub(idx_sp + 1, -1)
-			content = content:sub(0, idx_sp - 1)
-		end
-		result.remarks = UrlDecode(alias)
-		local Info = content
-		if content:find("@", 1, true) then
-			local contents = split(content, "@")
-			local auth = contents[1] or ""
-			local idx = auth:find(":", 1, true)
-			if not idx then --修正某些链接会把username和password之间的:进行编码
-				auth = UrlDecode(auth)
-				idx = auth:find(":", 1, true)
-			end
-			if idx then
-				result.username = UrlDecode(auth:sub(1, idx - 1))
-				result.password = UrlDecode(auth:sub(idx + 1))
-			end
-			Info = (contents[2] or ""):gsub("/%?", "?")
-		end
-		local query = split(Info, "%?")
-		local host_port = query[1]
-		local params = {}
-		for _, v in pairs(split(query[2], '&')) do
-			local s = v:find("=", 1, true)
-			if s and s > 1 then
-				params[v:sub(1, s - 1)] = UrlDecode(v:sub(s + 1))
-			end
-		end
-		if host_port:find(":") then
-			local sp = split(host_port, ":")
-			result.port = sp[#sp]
-			if api.is_ipv6addrport(host_port) then
-				result.address = api.get_ipv6_only(host_port)
-			else
-				result.address = sp[1]
-			end
-		else
-			result.address = host_port
-		end
-		result.tls_serverName = params.sni
-		result.uot = params.uot
-		result.naive_insecure_concurrency = params["insecure-concurrency"] or "0"
-		if params.ech and params.ech ~= "" then
-			result.ech = "1"
-			result.ech_config = params.ech
-		end
-		if szType == "naive+quic" then
-			result.naive_quic = "1"
-			result.naive_congestion_control = params.congestion_control or "bbr"
-		end
 	else
 		log("暂时不支持 " .. szType .. " 类型的节点订阅，跳过此节点。")
 		return nil
@@ -1742,31 +887,6 @@ local function update_node(manual)
 		local remark = v["remark"]
 		local list = v["list"]
 		local sub_cfg = v["sub_cfg"]
-		local domain_resolver, domain_resolver_dns, domain_resolver_dns_https, domain_strategy
-		local preproxy_node_group, to_node_group, outbound_iface_group, chain_node_type = "", "", "", ""
-		-- Subscription Group Chain Agent
-		local function valid_chain_node(node)
-			if not node then return "" end
-			local cp = uci:get(appname, node, "chain_proxy") or ""
-			local am = uci:get(appname, node, "add_mode") or "0"
-			chain_node_type = (cp == "" and am ~= "2") and (uci:get(appname, node, "type") or "") or ""
-			if chain_node_type ~= "sing-box" then
-				chain_node_type = ""
-				return ""
-			end
-			return node
-		end
-		if sub_cfg then
-			domain_resolver = sub_cfg.domain_resolver
-			domain_resolver_dns = sub_cfg.domain_resolver_dns
-			domain_resolver_dns_https = sub_cfg.domain_resolver_dns_https
-			local map = { UseIPv4v6 = 1, UseIPv6v4 = 1, UseIPv4 = 1, UseIPv6 = 1 }
-			domain_strategy = (sub_cfg.domain_strategy and map[sub_cfg.domain_strategy]) and sub_cfg.domain_strategy or nil
-			preproxy_node_group = (sub_cfg.chain_proxy == "1") and valid_chain_node(sub_cfg.preproxy_node) or ""
-			to_node_group = (sub_cfg.chain_proxy == "2") and valid_chain_node(sub_cfg.to_node) or ""
-			outbound_iface_group = (sub_cfg.chain_proxy == "3") and sub_cfg.outbound_iface or ""
-			chain_node_type = (outbound_iface_group ~= "") and "iface" or chain_node_type
-		end
 		for _, vv in ipairs(list) do
 			local cfgid = uci:section(appname, "nodes", api.gen_short_uuid())
 			for kkk, vvv in pairs(vv) do
@@ -1776,34 +896,6 @@ local function update_node(manual)
 					if kkk ~= "group" or vvv ~= "default" then
 						uci:set(appname, cfgid, kkk, vvv)
 					end
-					-- sing-box 节点域名解析
-					if kkk == "type" and vvv == "sing-box" then
-						if domain_resolver then
-							uci:set(appname, cfgid, "domain_resolver", domain_resolver)
-							if domain_resolver_dns then
-								uci:set(appname, cfgid, "domain_resolver_dns", domain_resolver_dns)
-							elseif domain_resolver_dns_https then
-								uci:set(appname, cfgid, "domain_resolver_dns_https", domain_resolver_dns_https)
-							end
-						end
-						if domain_strategy then
-							local map = { UseIPv4v6 = "prefer_ipv4", UseIPv6v4 = "prefer_ipv6", UseIPv4 = "ipv4_only", UseIPv6 = "ipv6_only" }
-							uci:set(appname, cfgid, "domain_strategy", map[domain_strategy] or "")
-						end
-					end
-					-- 订阅组链式代理
-					if chain_node_type ~= "" and kkk == "type" and vvv == "sing-box" then
-						if preproxy_node_group ~="" then
-							uci:set(appname, cfgid, "chain_proxy", "1")
-							uci:set(appname, cfgid, "preproxy_node", preproxy_node_group)
-						elseif to_node_group ~= "" then
-							uci:set(appname, cfgid, "chain_proxy", "2")
-							uci:set(appname, cfgid, "to_node", to_node_group)
-						elseif outbound_iface_group ~= "" then
-							uci:set(appname, cfgid, "chain_proxy", "3")
-							uci:set(appname, cfgid, "outbound_iface", outbound_iface_group)
-						end
-					end		
 				end
 			end
 		end

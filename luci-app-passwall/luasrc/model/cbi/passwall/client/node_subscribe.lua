@@ -2,7 +2,6 @@ local api = require "luci.passwall.api"
 local uci = api.uci
 local appname = "passwall"
 local has_ss = api.is_finded("ss-redir")
-local has_singbox = api.finded_com("sing-box")
 local has_hysteria2 = api.finded_com("hysteria")
 local ss_type = {}
 local trojan_type = {}
@@ -12,14 +11,6 @@ local hysteria2_type = {}
 if has_ss then
 	local s = "shadowsocks-libev"
 	table.insert(ss_type, s)
-end
-if has_singbox then
-	local s = "sing-box"
-	table.insert(trojan_type, s)
-	table.insert(ss_type, s)
-	table.insert(vmess_type, s)
-	table.insert(vless_type, s)
-	table.insert(hysteria2_type, s)
 end
 if has_hysteria2 then
 	local s = "hysteria2"
@@ -153,18 +144,6 @@ o.write = function(self, section, value)
 		m.uci:foreach(appname, "nodes", function(e)
 			if e["group"] and e["group"]:lower() == old:lower() then
 				m.uci:set(appname, e[".name"], "group", value)
-			end
-			if e["protocol"] and e["protocol"] == "_urltest" and e["node_group"] then
-				local gs = ""
-				for g in e["node_group"]:gmatch("%S+") do
-					if api.UrlEncode(old) == g then
-						gs = gs .. " " .. api.UrlEncode(value)
-					else
-						gs = gs .. " " .. g
-					end
-				end
-				gs = api.trim(gs)
-				m.uci:set(appname, e[".name"], "node_group", gs)
 			end
 		end)
 	end

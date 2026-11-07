@@ -583,7 +583,7 @@ if IS_SHUNT_NODE then
 			end
 
 			if _node_id ~= "_direct" then
-				log(string.format("  - Sing-Box分流规则(%s)使用分组：%s", s.remarks, REMOTE_GROUP or "默认"))
+				log(string.format("  - 分流规则(%s)使用分组：%s", s.remarks, REMOTE_GROUP or "默认"))
 			end
 		end
 	end)

@@ -2,7 +2,6 @@ api = require "luci.passwall.api"
 appname = "passwall"
 datatypes = api.datatypes
 local fs = api.fs
-has_singbox = api.finded_com("sing-box")
 local has_gfwlist = fs.access("/usr/share/passwall/rules/gfwlist")
 local has_chnlist = fs.access("/usr/share/passwall/rules/chnlist")
 local has_chnroute = fs.access("/usr/share/passwall/rules/chnroute")
@@ -18,21 +17,9 @@ for _, e in ipairs(api.get_valid_nodes()) do
 end
 
 local normal_list = {}
-local urltest_list = {}
-local shunt_list = {}
-local iface_list = {}
 for _, v in pairs(nodes_table) do
 	if v.node_type == "normal" then
 		normal_list[#normal_list + 1] = v
-	end
-	if v.protocol and v.protocol == "_urltest" then
-		urltest_list[#urltest_list + 1] = v
-	end
-	if v.protocol and v.protocol == "_shunt" then
-		shunt_list[#shunt_list + 1] = v
-	end
-	if v.protocol and v.protocol == "_iface" then
-		iface_list[#iface_list + 1] = v
 	end
 end
 
@@ -65,29 +52,6 @@ m.uci:foreach(appname, "socks", function(s)
 	end
 end)
 
-local doh_validate = function(self, value, t)
-	value = value:gsub("%s+", "")
-	if value ~= "" then
-		local flag = 0
-		local util = require "luci.util"
-		local val = util.split(value, ",")
-		local url = val[1]
-		val[1] = nil
-		for i = 1, #val do
-			local v = val[i]
-			if v then
-				if not datatypes.ipmask4(v) and not datatypes.ipmask6(v) then
-					flag = 1
-				end
-			end
-		end
-		if flag == 0 then
-			return value
-		end
-	end
-	return nil, translatef("%s request address","DoH") .. " " .. translate("Format must be:") .. " URL,IP"
-end
-
 m:append(Template(appname .. "/global/status"))
 
 global_cfgid = (m:get("@global[0]") or {})[".name"] or ""
@@ -114,87 +78,16 @@ o.template = appname .. "/cbi/nodes_listvalue"
 o:value("", translate("Close"))
 o:value("tcp", translate("Same as the tcp node"))
 o.group = {"",""}
-o:depends("_node_sel_other", "1")
-o.remove = function(self, section)
-	local v = s.fields["shunt_udp_node"]:formvalue(section)
-	if not v then
-		return m:del(section, self.option)
-	end
-end
-
-o = s:taboption("Main", ListValue, "shunt_udp_node", "<a style='color: red'>" .. translate("UDP Node") .. "</a>")
-o:value("close", translate("Close"))
-o:value("tcp", translate("Same as the tcp node"))
-o:depends("_node_sel_shunt", "1")
-o.cfgvalue = function(self, section)
-	local v = m:get(section, "udp_node") or ""
-	if v == "" then v = "close" end
-	if v ~= "close" and v ~= "tcp" then v = "tcp" end
-	return v
-end
-o.write = function(self, section, value)
-	if value == "close" then value = "" end
-	return m:set(section, "udp_node", value)
-end
-
--- Shunt Start
-if has_singbox and #nodes_table > 0 then
-	if #normal_list > 0 or #iface_list > 0 then
-		current_node_id = m.uci:get(appname, global_cfgid, "tcp_node")
-		current_node = current_node_id and m.uci:get_all(appname, current_node_id) or {}
-		if current_node.protocol == "_shunt" then
-			local shunt_lua = loadfile("/usr/lib/lua/luci/model/cbi/passwall/client/include/shunt_options.lua")
-			setfenv(shunt_lua, getfenv(1))(m, s, {
-				node_id = current_node_id,
-				node = current_node,
-				socks_list = socks_list,
-				urltest_list = urltest_list,
-				iface_list = iface_list,
-				normal_list = normal_list,
-				verify_option = s.fields["tcp_node"],
-				tab = "Shunt",
-				tab_desc = translate("Shunt Rule")
-			})
-		end
-	else
-		local tips = s:taboption("Main", DummyValue, "tips", "　")
-		tips.rawhtml = true
-		tips.cfgvalue = function(t, n)
-			return string.format('<a style="color: red">%s</a>', translate("There are no available nodes, please add or subscribe nodes first."))
-		end
-		tips:depends({ tcp_node = "", ["!reverse"] = true })
-		for k, v in pairs(shunt_list) do
-			tips:depends("tcp_node", v.id)
-		end
-	end
-end
 
 o = s:taboption("Main", Value, "tcp_node_socks_port", translate("TCP Node") .. " Socks " .. translate("Listen Port"))
 o.default = 1070
 o.datatype = "port"
 o:depends({ tcp_node = "", ["!reverse"] = true })
---[[
-if has_singbox then
-	o = s:taboption("Main", Value, "tcp_node_http_port", translate("TCP Node") .. " HTTP " .. translate("Listen Port") .. " " .. translate("0 is not use"))
-	o.default = 0
-	o.datatype = "port"
-end
-]]--
 o = s:taboption("Main", Flag, "tcp_node_socks_bind_local", translate("TCP Node") .. " Socks " .. translate("Bind Local"), translate("When selected, it can only be accessed localhost."))
 o.default = "1"
 o:depends({ tcp_node = "", ["!reverse"] = true })
 
 -- Node → DNS Depends Settings
-o = s:taboption("Main", DummyValue, "_node_sel_shunt", "")
-o.template = appname .. "/cbi/hidevalue"
-o.value = "1"
-o:depends({ tcp_node = "__always__" })
-
-o = s:taboption("Main", DummyValue, "_node_sel_other", "")
-o.template = appname .. "/cbi/hidevalue"
-o.value = "1"
-o:depends({ _node_sel_shunt = "1",  ['!reverse'] = true })
-
 -- [[ DNS Settings ]]--
 s:tab("DNS", translate("DNS"))
 
@@ -248,38 +141,6 @@ o = s:taboption("DNS", Flag, "filter_proxy_ipv6", translate("Filter Proxy Host I
 o.default = "0"
 
 -- TCP分流时dns过滤模式保存逻辑
-function dns_mode_save(section)
-	local f = s.fields["tcp_node"]
-	local id_val = f and f:formvalue(section) or ""
-	if id_val == "" then
-		return
-	end
-	for _, v in pairs(shunt_list) do
-		if v.id == id_val then
-			local type_val = v.type
-			if type_val and type_val == "sing-box" then
-				local dns_shunt_val = s.fields["dns_shunt"]:formvalue(section)
-				local dns_mode_val = (dns_shunt_val ~= "smartdns") and "dns_mode" or "smartdns_dns_mode"
-				local current_val = m:get(section, dns_mode_val) or ""
-				local new_val = "sing-box"
-
-				if current_val ~= new_val then
-					m:set(section, dns_mode_val, new_val)
-					m:del(section, (dns_mode_val == "dns_mode") and "smartdns_dns_mode" or "dns_mode")
-				end
-
-				local dns_field = s.fields["singbox_dns_mode"]
-				local v2ray_dns_mode = dns_field and dns_field:formvalue(section)
-				if v2ray_dns_mode and m:get(section, "v2ray_dns_mode") ~= v2ray_dns_mode then
-					m:set(section, "v2ray_dns_mode", v2ray_dns_mode)
-				end
-
-				break
-			end
-		end
-	end
-end
-
 ---- DNS Forward Mode
 o = s:taboption("DNS", ListValue, "dns_mode", translate("Filter Mode"))
 o.default = "tcp"
@@ -288,47 +149,11 @@ o:value("tcp", translatef("Requery DNS By %s", "TCP"))
 if api.is_finded("dns2socks") then
 	o:value("dns2socks", "dns2socks")
 end
-if has_singbox then
-	o:value("sing-box", "Sing-Box")
-end
-o:depends({ dns_shunt = "chinadns-ng", _node_sel_other = "1" })
-o:depends({ dns_shunt = "dnsmasq", _node_sel_other = "1" })
-o.write = function(self, section, value)
-	if value ~= "sing-box" then
-		m:del(section, "v2ray_dns_mode")
-	end
-	return ListValue.write(self, section, value)
-end
-o.remove = function(self, section)
-	local f = s.fields["smartdns_dns_mode"]
-	if f and f:formvalue(section) then
-		return m:del(section, self.option)
-	end
-	dns_mode_save(section)
-end
+o:depends("dns_shunt", "chinadns-ng")
+o:depends("dns_shunt", "dnsmasq")
 
 ---- SmartDNS Forward Mode
 if api.is_finded("smartdns") then
-	o = s:taboption("DNS", ListValue, "smartdns_dns_mode", translate("Filter Mode"))
-	o:value("socks", "Socks")
-	if has_singbox then
-		o:value("sing-box", "Sing-Box")
-	end
-	o:depends({ dns_shunt = "smartdns", _node_sel_other = "1" })
-	o.write = function(self, section, value)
-		if value == "socks" then
-			m:del(section, "v2ray_dns_mode")
-		end
-		return ListValue.write(self, section, value)
-	end
-	o.remove = function(self, section)
-		local f = s.fields["dns_mode"]
-		if f and f:formvalue(section) then
-			return m:del(section, self.option)
-		end
-		dns_mode_save(section)
-	end
-
 	o = s:taboption("DNS", DynamicList, "smartdns_remote_dns", translate("Remote DNS"))
 	o:value("tcp://1.1.1.1")
 	o:value("tcp://8.8.4.4")
@@ -348,7 +173,7 @@ if api.is_finded("smartdns") then
 	o:value("https://dns.adguard.com/dns-query,94.140.14.14")
 	o:value("https://doh.libredns.gr/dns-query,116.202.176.26")
 	o:value("https://doh.libredns.gr/ads,116.202.176.26")
-	o:depends({ dns_shunt = "smartdns", smartdns_dns_mode = "socks" })
+	o:depends("dns_shunt", "smartdns")
 	o.cfgvalue = function(self, section)
 		return m:get(section, self.option) or {"tcp://1.1.1.1"}
 	end
@@ -369,24 +194,6 @@ if api.is_finded("smartdns") then
 			t = { value }
 		end
 		return DynamicList.write(self, section, t)
-	end
-end
-
-o = s:taboption("DNS", ListValue, "singbox_dns_mode", translate("Remote DNS") .. " " .. translate("Request protocol"))
-o.default = "tcp"
-o:value("tcp", "TCP")
-o:value("udp", "UDP")
-o:value("doh", "DoH")
-o:value("http3", "HTTP3(DoH3)")
-o:depends("dns_mode", "sing-box")
-o:depends("smartdns_dns_mode", "sing-box")
-o.cfgvalue = function(self, section)
-	return m:get(section, "v2ray_dns_mode")
-end
-o.write = function(self, section, value)
-	local f = s.fields["smartdns_dns_mode"]
-	if s.fields["dns_mode"]:formvalue(section) == "sing-box" or (f and f:formvalue(section) == "sing-box") then
-		return m:set(section, "v2ray_dns_mode", value)
 	end
 end
 
@@ -416,56 +223,13 @@ o:value("208.67.222.222", "208.67.222.222 (OpenDNS)")
 o:depends({dns_mode = "dns2socks"})
 o:depends({dns_mode = "tcp"})
 o:depends({dns_mode = "udp"})
-o:depends({singbox_dns_mode = "udp"})
-o:depends({singbox_dns_mode = "tcp"})
 
 ---- DoH
-o = s:taboption("DNS", Value, "remote_dns_doh", translate("Remote DNS DoH"))
-o.description = translate("Format: URL[,IP] (optional IP to map the domain in the URL)")
-o.default = o.keylist[1]
-o:value("https://1.1.1.1/dns-query", "1.1.1.1 (CloudFlare)")
-o:value("https://1.1.1.2/dns-query", "1.1.1.2 (CloudFlare-Security)")
-o:value("https://8.8.4.4/dns-query", "8.8.4.4 (Google)")
-o:value("https://8.8.8.8/dns-query", "8.8.8.8 (Google)")
-o:value("https://9.9.9.9/dns-query", "9.9.9.9 (Quad9)")
-o:value("https://149.112.112.112/dns-query", "149.112.112.112 (Quad9)")
-o:value("https://208.67.222.222/dns-query", "208.67.222.222 (OpenDNS)")
-o:value("https://dns.adguard.com/dns-query,94.140.14.14", "94.140.14.14 (AdGuard)")
-o:value("https://doh.libredns.gr/dns-query,116.202.176.26", "116.202.176.26 (LibreDNS)")
-o:value("https://doh.libredns.gr/ads,116.202.176.26", "116.202.176.26 (LibreDNS-NoAds)")
-o.validate = doh_validate
-o:depends({singbox_dns_mode = "doh"})
-o:depends({singbox_dns_mode = "http3"})
-
 o = s:taboption("DNS", Value, "remote_dns_client_ip", translate("EDNS Client Subnet"))
 o.description = translate("Notify the DNS server when the DNS query is notified, the location of the client (cannot be a private IP address).") .. "<br />" ..
 		translate("This feature requires the DNS server to support the Edns Client Subnet (RFC7871).")
 o.datatype = "ipaddr"
-o:depends({dns_mode = "sing-box"})
 o:depends("dns_shunt", "smartdns")
-o:depends("_node_sel_shunt", "1")
-
-o = s:taboption("DNS", Flag, "remote_fakedns", "FakeDNS", translate("Use FakeDNS work in the domain that proxy."))
-o.default = "0"
-o:depends({dns_mode = "sing-box", dns_shunt = "dnsmasq"})
-o:depends({dns_mode = "sing-box", dns_shunt = "chinadns-ng"})
-o:depends({smartdns_dns_mode = "sing-box", dns_shunt = "smartdns"})
---o:depends("_node_sel_shunt", "1")
-o.validate = function(self, value, t)
-	if value and value == "1" then
-		local _dns_mode = s.fields["dns_mode"]:formvalue(t)
-		if not _dns_mode and s.fields["smartdns_dns_mode"] then
-			_dns_mode = s.fields["smartdns_dns_mode"]:formvalue(t)
-		end
-		local _tcp_node = s.fields["tcp_node"]:formvalue(t)
-		if _dns_mode and _tcp_node then
-			if (m:get(_tcp_node, "type") or ""):lower() ~= _dns_mode and not _tcp_node:find("Socks_") then
-				return nil, translatef("TCP node must be '%s' type to use FakeDNS.", _dns_mode)
-			end
-		end
-	end
-	return value
-end
 
 o = s:taboption("DNS", ListValue, "chinadns_ng_default_tag", translate("Default DNS"))
 o.default = "none"
@@ -605,7 +369,7 @@ o = s:taboption("log", Flag, "log_udp", translate("Enable") .. " " .. translatef
 o.default = "0"
 o.rmempty = false
 
-o = s:taboption("log", ListValue, "loglevel", "Sing-Box " .. translate("Log Level"))
+o = s:taboption("log", ListValue, "loglevel", translate("Log Level"))
 o.default = "warning"
 o:value("debug")
 o:value("info")
@@ -678,29 +442,6 @@ function s2.remove(e, t)
 			m:set(s[".name"], "udp_node", "default")
 		end
 	end)
-	m.uci:foreach(appname, "nodes", function(s)
-		local list_name = s["urltest_node"] and "urltest_node" or (s["balancing_node"] and "balancing_node")
-		if list_name then
-			local nodes = m.uci:get_list(appname, s[".name"], list_name)
-			if nodes then
-				local changed = false
-				local new_nodes = {}
-				for _, node in ipairs(nodes) do
-					if node ~= socks then
-						table.insert(new_nodes, node)
-					else
-						changed = true
-					end
-				end
-				if changed then
-					m.uci:set_list(appname, s[".name"], list_name, new_nodes)
-				end
-			end
-		end
-		if s["fallback_node"] == socks then
-			m:del(s[".name"], "fallback_node")
-		end
-	end)
 	TypedSection.remove(e, t)
 end
 
@@ -744,11 +485,6 @@ o.default = n + 1080
 o.datatype = "port"
 o.rmempty = false
 
-if has_singbox then
-	o = s2:option(Value, "http_port", "HTTP " .. translate("Listen Port"))
-	o.default = 0
-	o.datatype = "port"
-end
 
 local tcp = s.fields["tcp_node"]
 local udp = s.fields["udp_node"]
@@ -760,40 +496,20 @@ for k, v in pairs(socks_list) do
 	udp.group[#udp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 end
 for k, v in pairs(nodes_table) do
-	if #normal_list == 0 and #iface_list == 0 then
+	if #normal_list == 0 then
 		break
 	end
-	if v.protocol == "_shunt" then
-		if has_singbox then
-			tcp:value(v.id, v["remark"])
-			tcp.group[#tcp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-			udp:value(v.id, v["remark"])
-			udp.group[#udp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-
-			s.fields["_node_sel_shunt"]:depends({ tcp_node = v.id })
-			s.fields["singbox_dns_mode"]:depends({ tcp_node = v.id })
-		end
-	else
-		tcp:value(v.id, v["remark"])
-		tcp.group[#tcp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-		udp:value(v.id, v["remark"])
-		udp.group[#udp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-	end
-	if v.type == "Socks" then
-		if has_singbox then
-			socks:value(v.id, v["remark"])
-			socks.group[#socks.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-		end
-	else
-		socks:value(v.id, v["remark"])
-		socks.group[#socks.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-	end
+	tcp:value(v.id, v["remark"])
+	tcp.group[#tcp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
+	udp:value(v.id, v["remark"])
+	udp.group[#udp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
+	socks:value(v.id, v["remark"])
+	socks.group[#socks.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 end
 
 local footer = Template(appname .. "/global/footer")
 footer.api = api
 footer.global_cfgid = global_cfgid
-footer.shunt_list = api.jsonc.stringify(shunt_list)
 m:append(footer)
 
 return m

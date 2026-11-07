@@ -12,7 +12,6 @@ end
 m:append(Template(appname .. "/cbi/nodes_dynamiclist_com"))
 m:append(Template(appname .. "/cbi/nodes_listvalue_com"))
 
-local has_singbox = api.finded_com("sing-box")
 
 local nodes_table = {}
 for k, e in ipairs(api.get_valid_nodes()) do
@@ -66,11 +65,6 @@ o.default = n + 1080
 o.datatype = "port"
 o.rmempty = false
 
-if has_singbox then
-	o = s:option(Value, "http_port", "HTTP " .. translate("Listen Port") .. " " .. translate("0 is not use"))
-	o.default = 0
-	o.datatype = "port"
-end
 
 o = s:option(Flag, "log", translate("Enable") .. " " .. translate("Log"))
 o.default = 1
@@ -109,11 +103,9 @@ o.write = function(self, section, value)
 	return DynamicList.write(self, section, t)
 end
 for i, v in pairs(nodes_table) do
-	if v.protocol ~= "_shunt" then
-		o:value(v.id, v.remark)
-		o.group[#o.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-		s.fields["enable_autoswitch"]:depends({ node = v.id })
-	end
+	o:value(v.id, v.remark)
+	o.group[#o.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
+	s.fields["enable_autoswitch"]:depends({ node = v.id })
 	socks_node:value(v.id, v["remark"])
 	socks_node.group[#socks_node.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 end

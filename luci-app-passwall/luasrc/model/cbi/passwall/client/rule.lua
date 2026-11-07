@@ -1,6 +1,5 @@
 local api = require "luci.passwall.api"
 local appname = "passwall"
-local has_singbox = api.finded_com("sing-box")
 
 m = Map(appname)
 api.set_apply_on_parse(m)
@@ -16,7 +15,6 @@ o.rmempty = false
 
 ---- gfwlist URL
 o = s:option(DynamicList, "gfwlist_url", translate("GFW domains(gfwlist) Update URL"))
-o:depends("geo2rule", false)
 o:value("https://cdn.jsdelivr.net/gh/YW5vbnltb3Vz/domain-list-community@release/gfwlist.txt", translate("v2fly/domain-list-community"))
 o:value("https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/gfw.txt", translate("Loyalsoldier/v2ray-rules-dat"))
 o:value("https://cdn.jsdelivr.net/gh/Loukky/gfwlist-by-loukky/gfwlist.txt", translate("Loukky/gfwlist-by-loukky"))
@@ -25,7 +23,6 @@ o.default = o.keylist[2]
 
 ----chnroute  URL
 o = s:option(DynamicList, "chnroute_url", translate("China IPs(chnroute) Update URL"))
-o:depends("geo2rule", false)
 o:value("https://cdn.jsdelivr.net/gh/gaoyifan/china-operator-ip@ip-lists/china.txt", translate("gaoyifan/china-operator-ip/china"))
 o:value("https://ispip.clang.cn/all_cn.txt", translate("Clang.CN"))
 o:value("https://cdn.jsdelivr.net/gh/soffchen/GeoIP2-CN@release/CN-ip-cidr.txt", translate("soffchen/GeoIP2-CN"))
@@ -34,14 +31,12 @@ o:value("https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Cl
 
 ----chnroute6 URL
 o = s:option(DynamicList, "chnroute6_url", translate("China IPv6s(chnroute6) Update URL"))
-o:depends("geo2rule", false)
 o:value("https://cdn.jsdelivr.net/gh/gaoyifan/china-operator-ip@ip-lists/china6.txt", translate("gaoyifan/china-operator-ip/china6"))
 o:value("https://ispip.clang.cn/all_cn_ipv6.txt", translate("Clang.CN.IPv6"))
 o:value("https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/ChinaMax/ChinaMax_IP.txt", translate("ios_rule_script/ChinaMax_IP"))
 
 ----chnlist URL
 o = s:option(DynamicList, "chnlist_url", translate("China List(Chnlist) Update URL"))
-o:depends("geo2rule", false)
 o:value("https://cdn.jsdelivr.net/gh/felixonmars/dnsmasq-china-list/accelerated-domains.china.conf", translate("felixonmars/domains.china"))
 o:value("https://cdn.jsdelivr.net/gh/felixonmars/dnsmasq-china-list/apple.china.conf", translate("felixonmars/apple.china"))
 o:value("https://cdn.jsdelivr.net/gh/felixonmars/dnsmasq-china-list/google.china.conf", translate("felixonmars/google.china"))
@@ -49,52 +44,6 @@ o:value("https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/china-
 o:value("https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/apple-cn.txt", translate("Loyalsoldier/apple-cn"))
 o:value("https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/google-cn.txt", translate("Loyalsoldier/google-cn"))
 o:value("https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/ChinaMax/ChinaMax_Domain.txt", translate("ios_rule_script/ChinaMax_Domain"))
-
-if has_singbox then
-	o = s:option(Value, "geoip_url", translate("GeoIP Update URL"))
-	o:value("https://github.com/Loyalsoldier/geoip/releases/latest/download/geoip.dat", translate("Loyalsoldier/geoip"))
-	o:value("https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/geoip.dat", translate("MetaCubeX/geoip"))
-	o:value("https://cdn.jsdelivr.net/gh/Loyalsoldier/geoip@release/geoip.dat", translate("Loyalsoldier/geoip (CDN)"))
-	o:value("https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat", translate("MetaCubeX/geoip (CDN)"))
-	o.default = o.keylist[1]
-
-	o = s:option(Value, "geosite_url", translate("Geosite Update URL"))
-	o:value("https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat", translate("Loyalsoldier/geosite"))
-	o:value("https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/geosite.dat", translate("MetaCubeX/geosite"))
-	o:value("https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat", translate("Loyalsoldier/geosite (CDN)"))
-	o:value("https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat", translate("MetaCubeX/geosite (CDN)"))
-	o.default = o.keylist[1]
-
-	o = s:option(Value, "v2ray_location_asset", translate("Location of Geo rule files"), translate("This variable specifies a directory where geoip.dat and geosite.dat files are."))
-	o.default = "/usr/share/v2ray/"
-	o.placeholder = "/usr/share/v2ray/"
-	o.rmempty = false
-
-	if api.is_finded("geoview") then
-		o = s:option(Flag, "geo2rule", translate("Generate Rule List from Geo"))
-		o.default = 0
-		o.rmempty = false
-		o.description = translate("Generate rule lists such as GFW, China domains, and China IP ranges based on Geo files.") .. "<br><font color='red'>" ..
-			translate("When manually updating with this option enabled, rules will be regenerated from existing Geo files even if no new version is available.") .. "</font>"
-
-		o = s:option(Flag, "enable_geoview", translate("Enable Geo Data Parsing"))
-		o.default = 0
-		o.rmempty = false
-		o.description = "<ul>"
-			.. "<li>" .. translate("Experimental feature.") .. "</li>"
-			.. "<li>" .. "1." .. translate("Analyzes and preloads GeoIP/Geosite data to enhance the shunt performance of Sing-box.") .. "</li>"
-			.. "<li>" .. "2." .. translate("Once enabled, the rule list can support GeoIP/Geosite rules.") .. "</li>"
-			.. "<li>" .. translate("Note: Increases resource usage; Geosite analysis is only supported in ChinaDNS-NG and SmartDNS modes.") .. "</li>"
-			.. "</ul>"
-		function o.write(self, section, value)
-			local old = m:get(section, self.option) or "0"
-			if old ~= value then
-				m:set("@global[0]", "flush_set", "1")
-			end
-			return Flag.write(self, section, value)
-		end
-	end
-end
 
 ---- Auto Update
 o = s:option(Flag, "auto_update", translate("Enable auto update rules"))
@@ -140,7 +89,7 @@ o.rmempty = true
 ---- 更新选项，始终被js隐藏
 local flags = {
 	"gfwlist_update", "chnroute_update", "chnroute6_update",
-	"chnlist_update", "geoip_update", "geosite_update"
+	"chnlist_update"
 }
 for _, f in ipairs(flags) do
 	o = s:option(Flag, f)
@@ -148,28 +97,5 @@ for _, f in ipairs(flags) do
 end
 
 s:append(Template(appname .. "/rule/rule_version"))
-
-if has_singbox then
-	s = m:section(TypedSection, "shunt_rules", "Sing-Box " .. translate("Shunt Rule"), "<a style='color: red'>" .. translate("Please note attention to the priority, the higher the order, the higher the priority.") .. "</a>")
-	s.template = "cbi/tblsection"
-	s.anonymous = false
-	s.addremove = true
-	s.sortable = true
-	s.extedit = api.url("shunt_rules", "%s")
-	function s.create(e, t)
-		TypedSection.create(e, t)
-		luci.http.redirect(e.extedit:format(t))
-	end
-	function s.remove(e, t)
-		m.uci:foreach(appname, "nodes", function(s)
-			if s["protocol"] and s["protocol"] == "_shunt" then
-				m:del(s[".name"], t)
-			end
-		end)
-		TypedSection.remove(e, t)
-	end
-
-	o = s:option(DummyValue, "remarks", translate("Remarks"))
-end
 
 return m

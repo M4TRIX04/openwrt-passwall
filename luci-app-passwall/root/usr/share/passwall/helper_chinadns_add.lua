@@ -404,7 +404,7 @@ if IS_SHUNT_NODE then
 			end
 
 			if _node_id ~= "_direct" then
-				log(string.format("  - Sing-Box分流规则(%s)：%s", s.remarks, DNS_TRUST or "默认"))
+				log(string.format("  - 分流规则(%s)：%s", s.remarks, DNS_TRUST or "默认"))
 			end
 		end
 	end)

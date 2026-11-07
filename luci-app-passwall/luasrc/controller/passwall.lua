@@ -44,7 +44,6 @@ function index()
 	entry({"admin", "services", appname, "rule_list"}, cbi(appname .. "/client/rule_list", {autoapply = true}), _("Rule List"), 97).leaf = true
 	entry({"admin", "services", appname, "node_subscribe_config"}, cbi(appname .. "/client/node_subscribe_config")).leaf = true
 	entry({"admin", "services", appname, "node_config"}, cbi(appname .. "/client/node_config")).leaf = true
-	entry({"admin", "services", appname, "shunt_rules"}, cbi(appname .. "/client/shunt_rules")).leaf = true
 	entry({"admin", "services", appname, "socks_config"}, cbi(appname .. "/client/socks_config")).leaf = true
 	entry({"admin", "services", appname, "acl"}, cbi(appname .. "/client/acl"), _("Access control"), 98).leaf = true
 	entry({"admin", "services", appname, "acl_config"}, cbi(appname .. "/client/acl_config")).leaf = true
@@ -74,7 +73,6 @@ function index()
 	entry({"admin", "services", appname, "socks_status"}, call("socks_status")).leaf = true
 	entry({"admin", "services", appname, "connect_status"}, call("connect_status")).leaf = true
 	entry({"admin", "services", appname, "ping_node"}, call("ping_node")).leaf = true
-	entry({"admin", "services", appname, "urltest_node"}, call("urltest_node")).leaf = true
 	entry({"admin", "services", appname, "add_node"}, call("add_node")).leaf = true
 	entry({"admin", "services", appname, "update_node"}, call("update_node")).leaf = true
 	entry({"admin", "services", appname, "set_node"}, call("set_node")).leaf = true
@@ -86,7 +84,6 @@ function index()
 	entry({"admin", "services", appname, "save_node_order"}, call("save_node_order")).leaf = true
 	entry({"admin", "services", appname, "save_node_list_opt"}, call("save_node_list_opt")).leaf = true
 	entry({"admin", "services", appname, "update_rules"}, call("update_rules")).leaf = true
-	entry({"admin", "services", appname, "rollback_rules"}, call("rollback_rules")).leaf = true
 	entry({"admin", "services", appname, "subscribe_del_node"}, call("subscribe_del_node")).leaf = true
 	entry({"admin", "services", appname, "subscribe_del_all"}, call("subscribe_del_all")).leaf = true
 	entry({"admin", "services", appname, "subscribe_manual"}, call("subscribe_manual")).leaf = true
@@ -110,8 +107,6 @@ function index()
 	entry({"admin", "services", appname, "restore_backup"}, call("restore_backup")).leaf = true
 	entry({"admin", "services", appname, "reset_config"}, call("reset_config")).leaf = true
 
-	--[[geoview]]
-	entry({"admin", "services", appname, "geo_view"}, call("geo_view")).leaf = true
 
 end
 
@@ -391,27 +386,6 @@ function ping_node()
 	http_write_json(e)
 end
 
-function urltest_node()
-	local index = http.formvalue("index")
-	local id = http.formvalue("id")
-	local e = {}
-	e.index = index
-	local result = luci.sys.exec(string.format("/usr/share/passwall/test.sh url_test_node %s %s", id, "urltest_node"))
-	local code = tonumber(luci.sys.exec("echo -n '" .. result .. "' | awk -F ':' '{print $1}'") or "0")
-	if code ~= 0 then
-		local use_time_str = luci.sys.exec("echo -n '" .. result .. "' | awk -F ':' '{print $2}'")
-		local use_time = tonumber(use_time_str)
-		if use_time then
-			if use_time_str:find("%.") then
-				e.use_time = string.format("%.2f", use_time * 1000)
-			else
-				e.use_time = string.format("%.2f", use_time / 1000)
-			end
-		end
-	end
-	http_write_json(e)
-end
-
 function add_node()
 	local redirect = http.formvalue("redirect")
 
@@ -455,20 +429,6 @@ function set_node()
 	local protocol = http.formvalue("protocol")
 	local section = http.formvalue("section")
 	uci:set(appname, "@global[0]", protocol .. "_node", section)
-	if protocol == "tcp" then
-		local node_protocol = uci:get(appname, section, "protocol")
-		if node_protocol == "_shunt" then
-			local type = uci:get(appname, section, "type")
-			local dns_shunt = uci:get(appname, "@global[0]", "dns_shunt")
-			local dns_key = (dns_shunt == "smartdns") and "smartdns_dns_mode" or "dns_mode"
-			local dns_mode = uci:get(appname, "@global[0]", dns_key)
-			local new_dns_mode = "sing-box"
-			if dns_mode ~= new_dns_mode then
-				uci:set(appname, "@global[0]", dns_key, new_dns_mode)
-				uci:set(appname, "@global[0]", "v2ray_dns_mode", "tcp")
-			end
-		end
-	end
 	api.uci_save(uci, appname, true, true)
 	http.redirect(api.url("log"))
 end
@@ -506,9 +466,6 @@ function clear_all_nodes()
 	end)
 	uci:foreach(appname, "subscribe_list", function(t)
 		uci:delete(appname, t[".name"], "md5")
-		uci:delete(appname, t[".name"], "chain_proxy")
-		uci:delete(appname, t[".name"], "preproxy_node")
-		uci:delete(appname, t[".name"], "to_node")
 	end)
 
 	api.uci_save(uci, appname, true, true)
@@ -550,47 +507,6 @@ function delete_select_nodes()
 			end
 			if t["udp_node"] == w or t["udp_node"] == socks then
 				uci:delete(appname, t[".name"], "udp_node")
-			end
-		end)
-		uci:foreach(appname, "nodes", function(t)
-			if t["preproxy_node"] == w then
-				uci:delete(appname, t[".name"], "preproxy_node")
-				uci:delete(appname, t[".name"], "chain_proxy")
-			end
-			if t["to_node"] == w then
-				uci:delete(appname, t[".name"], "to_node")
-				uci:delete(appname, t[".name"], "chain_proxy")
-			end
-			local list_name = t["urltest_node"] and "urltest_node" or (t["balancing_node"] and "balancing_node")
-			if list_name then
-				local nodes = uci:get_list(appname, t[".name"], list_name)
-				if nodes then
-					local changed = false
-					local new_nodes = {}
-					for _, node in ipairs(nodes) do
-						if node ~= w and node ~= socks then
-							table.insert(new_nodes, node)
-						else
-							changed = true
-						end
-					end
-					if changed then
-						uci:set_list(appname, t[".name"], list_name, new_nodes)
-					end
-				end
-			end
-			if t["fallback_node"] == w or t["fallback_node"] == socks then
-				uci:delete(appname, t[".name"], "fallback_node")
-			end
-		end)
-		uci:foreach(appname, "subscribe_list", function(t)
-			if t["preproxy_node"] == w then
-				uci:delete(appname, t[".name"], "preproxy_node")
-				uci:delete(appname, t[".name"], "chain_proxy")
-			end
-			if t["to_node"] == w then
-				uci:delete(appname, t[".name"], "to_node")
-				uci:delete(appname, t[".name"], "chain_proxy")
 			end
 		end)
 		if (uci:get(appname, w, "add_mode") or "0") == "2" then
@@ -692,24 +608,6 @@ function update_rules()
 	end
 	luci.sys.call("lua /usr/share/passwall/rule_update.lua log '" .. update .. "' > /dev/null 2>&1 &")
 	http_write_json()
-end
-
-function rollback_rules()
-	local arg_type = http.formvalue("type")
-	local rules = http.formvalue("rules") or ""
-	if arg_type ~= "geoip" and arg_type ~= "geosite" then
-		http_write_json_error()
-		return
-	end
-	local bak_dir = "/tmp/bak_v2ray/"
-	local geo_dir = (uci:get(appname, "@global_rules[0]", "v2ray_location_asset") or "/usr/share/v2ray/")
-	local geo2rule = uci:get(appname, "@global_rules[0]", "geo2rule") or "0"
-	fs.move(bak_dir .. arg_type .. ".dat", geo_dir .. arg_type .. ".dat")
-	fs.rmdir(bak_dir)
-	if geo2rule == "1" and rules ~= "" then
-		luci.sys.call("lua /usr/share/passwall/rule_update.lua log '" .. rules .. "' rollback > /dev/null")
-	end
-	http_write_json_ok()
 end
 
 function server_user_update()
@@ -882,85 +780,6 @@ function restore_backup()
 		result = { status = "error", message = tostring(err) }
 	end
 	http_write_json(result)
-end
-
-function geo_view()
-	local action = http.formvalue("action")
-	local value = http.formvalue("value")
-	if not value or value == "" then
-		http.prepare_content("text/plain")
-		http.write(i18n.translate("Please enter query content!"))
-		return
-	end
-	local function get_rules(str, type)
-		local rules_id = {}
-		uci:foreach(appname, "shunt_rules", function(s)
-			local list
-			if type == "geoip" then list = s.ip_list else list = s.domain_list end
-			for line in string.gmatch((list or ""), "[^\r\n]+") do
-				if line ~= "" and not line:find("#") then
-					local prefix, main = line:match("^(.-):(.*)")
-					if not main then main = line end
-					if type == "geoip" and (api.datatypes.ipaddr(str) or api.datatypes.ip6addr(str)) then
-						if main:find(str, 1, true) then rules_id[#rules_id + 1] = s[".name"] end
-					else
-						if main == str then rules_id[#rules_id + 1] = s[".name"] end
-					end
-				end
-			end
-		end)
-		return rules_id
-	end
-	local geo_dir = (uci:get(appname, "@global_rules[0]", "v2ray_location_asset") or "/usr/share/v2ray/"):match("^(.*)/")
-	local geosite_path = geo_dir .. "/geosite.dat"
-	local geoip_path = geo_dir .. "/geoip.dat"
-	local geo_type, file_path, cmd
-	local geo_string = ""
-	local bin = api.finded_com("geoview")
-	if action == "lookup" then
-		if api.datatypes.ipaddr(value) or api.datatypes.ip6addr(value) then
-			geo_type, file_path = "geoip", geoip_path
-		else
-			geo_type, file_path = "geosite", geosite_path
-		end
-		cmd = string.format("%q -type %q -action lookup -input %q -value %q -lowmem=true", bin, geo_type, file_path, value)
-		geo_string = luci.sys.exec(cmd):lower()
-		if geo_string ~= "" then
-			local lines, rules, seen = {}, {}, {}
-			for line in geo_string:gmatch("([^\n]+)") do
-				lines[#lines + 1] = geo_type .. ":" .. line
-				for _, r in ipairs(get_rules(line, geo_type) or {}) do
-					if not seen[r] then seen[r] = true; rules[#rules + 1] = r end
-				end
-			end
-			for _, r in ipairs(get_rules(value, geo_type) or {}) do
-				if not seen[r] then seen[r] = true; rules[#rules + 1] = r end
-			end
-			geo_string = table.concat(lines, "\n")
-			if #rules > 0 then
-				geo_string = geo_string .. "\n--------------------\n"
-				geo_string = geo_string .. i18n.translate("Rules containing this value:") .. "\n"
-				geo_string = geo_string .. table.concat(rules, "\n")
-			end
-		end
-	elseif action == "extract" then
-		local prefix, list = value:match("^(geoip:)(.*)$")
-		if not prefix then
-			prefix, list = value:match("^(geosite:)(.*)$")
-		end
-		if prefix and list and list ~= "" then
-			geo_type = prefix:sub(1, -2)
-			file_path = (geo_type == "geoip") and geoip_path or geosite_path
-			cmd = string.format("%q -type %q -action extract -input %q -list %q -lowmem=true", bin, geo_type, file_path, list)
-			geo_string = luci.sys.exec(cmd)
-		end
-	end
-	http.prepare_content("text/plain")
-	if geo_string and geo_string ~="" then
-		http.write(geo_string)
-	else
-		http.write(i18n.translate("No results were found!"))
-	end
 end
 
 function subscribe_del_node()

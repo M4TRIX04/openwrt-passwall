@@ -1489,7 +1489,6 @@ stop() {
 		uci -q delete ${CONFIG}.@global[0].flush_set
 		uci -q commit ${CONFIG}
 		flush_ipset
-		rm -rf $TMP_PATH2/singbox*
 		rm -rf $TMP_PATH2/dnsmasq*
 		rm -rf $TMP_PATH2/geo_output
 	}

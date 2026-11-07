@@ -13,7 +13,6 @@ m:append(Template(appname .. "/cbi/nodes_listvalue_com"))
 
 local fs = api.fs
 local sys = api.sys
-local has_singbox = api.finded_com("sing-box")
 local has_gfwlist = fs.access("/usr/share/passwall/rules/gfwlist")
 local has_chnlist = fs.access("/usr/share/passwall/rules/chnlist")
 local has_chnroute = fs.access("/usr/share/passwall/rules/chnroute")
@@ -311,36 +310,13 @@ o = s:option(ListValue, "udp_node", "<a style='color: red'>" .. translate("UDP N
 o.default = ""
 o:value("", translate("Close"))
 o:value("tcp", translate("Same as the tcp node"))
-o:depends({ acl_mode = "custom", _tcp_node_bool = "1", _node_sel_other = "1" })
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 o.template = appname .. "/cbi/nodes_listvalue"
 o.group = {"",""}
-o.remove = function(self, section)
-	local v = s.fields["shunt_udp_node"]:formvalue(section)
-	if not v then
-		return m:del(section, self.option)
-	end
-end
-
-o = s:option(ListValue, "shunt_udp_node", "<a style='color: red'>" .. translate("UDP Node") .. "</a>")
-o:value("close", translate("Close"))
-o:value("tcp", translate("Same as the tcp node"))
-o:depends({ acl_mode = "custom", _tcp_node_bool = "1", _node_sel_shunt = "1" })
-o.cfgvalue = function(self, section)
-	local v = m:get(section, "udp_node") or ""
-	if v == "" then v = "close" end
-	if v ~= "close" and v ~= "tcp" then v = "tcp" end
-	return v
-end
-o.write = function(self, section, value)
-	if value == "close" then value = "" end
-	return m:set(section, "udp_node", value)
-end
-
 o = s:option(DummyValue, "_udp_node_bool", "")
 o.template = "passwall/cbi/hidevalue"
 o.value = "1"
 o:depends({ acl_mode = "custom", udp_node = "",  ['!reverse'] = true })
-o:depends({ acl_mode = "custom", shunt_udp_node = "tcp" })
 
 ---- TCP Proxy Drop Ports
 local TCP_PROXY_DROP_PORTS = m:get("@global_forwarding[0]", "tcp_proxy_drop_ports")
@@ -434,16 +410,6 @@ o.template = appname .. "/global/proxy"
 o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 
 -- Node → DNS Depends Settings
-o = s:option(DummyValue, "_node_sel_shunt", "")
-o.template = appname .. "/cbi/hidevalue"
-o.value = "1"
-o:depends({ acl_mode = "custom", tcp_node = "__always__" })
-
-o = s:option(DummyValue, "_node_sel_other", "")
-o.template = appname .. "/cbi/hidevalue"
-o.value = "1"
-o:depends({ acl_mode = "custom", _node_sel_shunt = "1",  ['!reverse'] = true })
-
 ---- DNS
 o = s:option(ListValue, "dns_shunt", "DNS " .. translate("Shunt"))
 o.default = "chinadns-ng"
@@ -464,51 +430,12 @@ o = s:option(ListValue, "dns_mode", translate("Filter Mode"))
 if api.is_finded("dns2socks") then
 	o:value("dns2socks", "dns2socks")
 end
-if has_singbox then
-	o:value("sing-box", "Sing-Box")
-end
-o:depends({ acl_mode = "custom", _tcp_node_bool = "1", _node_sel_other = "1" })
-o.write = function(self, section, value)
-	if value == "dns2socks" then
-		m:del(section, "v2ray_dns_mode")
-	end
-	return ListValue.write(self, section, value)
-end
+o:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 o.remove = function(self, section)
 	local f = s.fields["tcp_node"]
 	local id_val = f and f:formvalue(section) or ""
 	if id_val == "" then
 		return m:del(section, self.option)
-	end
-	for _, v in pairs(nodes_table) do
-		if v.id == id_val then
-			local new_val = "sing-box"
-			m:set(section, self.option, new_val)
-
-			local dns_field = s.fields["singbox_dns_mode"]
-			local v2ray_dns_mode = dns_field and dns_field:formvalue(section)
-			if v2ray_dns_mode then
-				m:set(section, "v2ray_dns_mode", v2ray_dns_mode)
-			end
-
-			break
-		end
-	end
-end
-
-o = s:option(ListValue, "singbox_dns_mode", translate("Request protocol"))
-o.default = "tcp"
-o:value("tcp", "TCP")
-o:value("udp", "UDP")
-o:value("doh", "DoH")
-o:value("http3", "HTTP3(DoH3)")
-o:depends({ acl_mode = "custom", dns_mode = "sing-box" })
-o.cfgvalue = function(self, section)
-	return m:get(section, "v2ray_dns_mode")
-end
-o.write = function(self, section, value)
-	if s.fields["dns_mode"]:formvalue(section) == "sing-box" then
-		return m:set(section, "v2ray_dns_mode", value)
 	end
 end
 
@@ -524,70 +451,6 @@ o:value("149.112.112.112", "149.112.112.112 (Quad9-Recommended)")
 o:value("208.67.220.220", "208.67.220.220 (OpenDNS)")
 o:value("208.67.222.222", "208.67.222.222 (OpenDNS)")
 o:depends({ acl_mode = "custom", dns_mode = "dns2socks"})
-o:depends({ acl_mode = "custom", singbox_dns_mode = "udp"})
-o:depends({ acl_mode = "custom", singbox_dns_mode = "tcp"})
-
-o = s:option(Value, "remote_dns_doh", translate("Remote DNS DoH"))
-o.description = translate("Format: URL[,IP] (optional IP to map the domain in the URL)")
-o:value("https://1.1.1.1/dns-query", "1.1.1.1 (CloudFlare)")
-o:value("https://1.1.1.2/dns-query", "1.1.1.2 (CloudFlare-Security)")
-o:value("https://8.8.4.4/dns-query", "8.8.4.4 (Google)")
-o:value("https://8.8.8.8/dns-query", "8.8.8.8 (Google)")
-o:value("https://9.9.9.9/dns-query", "9.9.9.9 (Quad9)")
-o:value("https://149.112.112.112/dns-query", "149.112.112.112 (Quad9)")
-o:value("https://208.67.222.222/dns-query", "208.67.222.222 (OpenDNS)")
-o:value("https://dns.adguard.com/dns-query,94.140.14.14", "94.140.14.14 (AdGuard)")
-o:value("https://doh.libredns.gr/dns-query,116.202.176.26", "116.202.176.26 (LibreDNS)")
-o:value("https://doh.libredns.gr/ads,116.202.176.26", "116.202.176.26 (LibreDNS-NoAds)")
-o.default = o.keylist[1]
-o.validate = function(self, value, t)
-	if value ~= "" then
-		value = api.trim(value)
-		local flag = 0
-		local util = require "luci.util"
-		local val = util.split(value, ",")
-		local url = val[1]
-		val[1] = nil
-		for i = 1, #val do
-			local v = val[i]
-			if v then
-				if not api.datatypes.ipmask4(v) then
-					flag = 1
-				end
-			end
-		end
-		if flag == 0 then
-			return value
-		end
-	end
-	return nil, translate("DoH request address") .. " " .. translate("Format must be:") .. " URL,IP"
-end
-o:depends({ acl_mode = "custom", singbox_dns_mode = "doh"})
-o:depends({ acl_mode = "custom", singbox_dns_mode = "http3"})
-
-o = s:option(Value, "remote_dns_client_ip", translate("EDNS Client Subnet"))
-o.description = translate("Notify the DNS server when the DNS query is notified, the location of the client (cannot be a private IP address).") .. "<br />" ..
-		translate("This feature requires the DNS server to support the Edns Client Subnet (RFC7871).")
-o.datatype = "ipaddr"
-o:depends({ acl_mode = "custom", dns_mode = "sing-box"})
-o:depends({ acl_mode = "custom", _node_sel_shunt = "1"})
-
-o = s:option(Flag, "remote_fakedns", "FakeDNS", translate("Use FakeDNS work in the domain that proxy."))
-o.default = "0"
-o.rmempty = false
-o:depends({ acl_mode = "custom", dns_mode = "sing-box"})
-o.validate = function(self, value, t)
-	if value and value == "1" then
-		local _dns_mode = s.fields["dns_mode"]:formvalue(t)
-		local _tcp_node = s.fields["tcp_node"]:formvalue(t)
-		if _dns_mode and _tcp_node then
-			if (m:get(_tcp_node, "type") or ""):lower() ~= _dns_mode and not _tcp_node:find("Socks_") then
-				return nil, translatef("TCP node must be '%s' type to use FakeDNS.", _dns_mode)
-			end
-		end
-	end
-	return value
-end
 
 o = s:option(ListValue, "chinadns_ng_default_tag", translate("Default DNS"))
 o.default = "none"
@@ -632,22 +495,10 @@ for k, v in pairs(nodes_table) do
 		s.fields["dns_mode"]:depends({ acl_mode = "custom", _tcp_node_bool = "1" })
 		break
 	end
-	if v.protocol == "_shunt" then
-		if v.type == "sing-box" and has_singbox then
-			tcp:value(v.id, v["remark"])
-			tcp.group[#tcp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-			udp:value(v.id, v["remark"])
-			udp.group[#udp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-
-			s.fields["singbox_dns_mode"]:depends({ acl_mode = "custom", _tcp_node_bool = "1", tcp_node = v.id })
-			s.fields["_node_sel_shunt"]:depends({ acl_mode = "custom", tcp_node = v.id })
-		end
-	else
-		tcp:value(v.id, v["remark"])
-		tcp.group[#tcp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-		udp:value(v.id, v["remark"])
-		udp.group[#udp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-	end
+	tcp:value(v.id, v["remark"])
+	tcp.group[#tcp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
+	udp:value(v.id, v["remark"])
+	udp.group[#udp.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 end
 
 return m

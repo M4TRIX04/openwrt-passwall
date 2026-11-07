@@ -14,14 +14,11 @@ PKG_PO_VERSION:=$(PKG_VERSION)
 PKG_CONFIG_DEPENDS:= \
 	CONFIG_PACKAGE_$(PKG_NAME)_Iptables_Transparent_Proxy \
 	CONFIG_PACKAGE_$(PKG_NAME)_Nftables_Transparent_Proxy \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Geoview \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Hysteria \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks_Libev_Client \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadowsocks_Libev_Server \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Shadow_TLS \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_Simple_Obfs \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_SingBox \
-	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_Geodata \
 	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_Plugin
 
 LUCI_TITLE:=LuCI support for PassWall
@@ -57,11 +54,6 @@ config PACKAGE_$(PKG_NAME)_Nftables_Transparent_Proxy
 	select PACKAGE_kmod-nft-nat
 	default y if PACKAGE_firewall4
 
-config PACKAGE_$(PKG_NAME)_INCLUDE_Geoview
-	bool "Include Geoview"
-	select PACKAGE_geoview
-	default y if aarch64||arm||i386||x86_64
-
 config PACKAGE_$(PKG_NAME)_INCLUDE_Hysteria
 	bool "Include Hysteria"
 	select PACKAGE_hysteria
@@ -87,17 +79,6 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_Shadow_TLS
 config PACKAGE_$(PKG_NAME)_INCLUDE_Simple_Obfs
 	bool "Include Simple-Obfs (Shadowsocks Plugin)"
 	select PACKAGE_simple-obfs-client
-	default n
-
-config PACKAGE_$(PKG_NAME)_INCLUDE_SingBox
-	bool "Include Sing-Box"
-	select PACKAGE_sing-box
-	default n
-
-config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_Geodata
-	bool "Include V2ray_Geodata"
-	select PACKAGE_v2ray-geoip
-	select PACKAGE_v2ray-geosite
 	default n
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_V2ray_Plugin

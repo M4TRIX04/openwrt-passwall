@@ -10,7 +10,6 @@ local appname = 'passwall'
 local api = require ("luci.passwall.api")
 local datatypes = require "luci.cbi.datatypes"
 
-loadfile("/usr/share/" .. appname .. "/clash_subconverter.lua")()
 
 -- these global functions are accessed all the time by the event handler
 -- so caching them is worth the effort
@@ -34,81 +33,6 @@ local SS_AEAD_METHODS = {
 	["chacha20-ietf-poly1305"] = true,
 	["xchacha20-ietf-poly1305"] = true,
 }
-local DEFAULT_FILTER_KEYWORD_MODE = uci:get(appname, "@global_subscribe[0]", "filter_keyword_mode") or "0"
-local DEFAULT_FILTER_KEYWORD_DISCARD_LIST = uci:get(appname, "@global_subscribe[0]", "filter_discard_list") or {}
-local DEFAULT_FILTER_KEYWORD_KEEP_LIST = uci:get(appname, "@global_subscribe[0]", "filter_keep_list") or {}
--- 判断是否过滤节点关键字
-local function is_filter_keyword(sub_cfg, value)
-	local mode = DEFAULT_FILTER_KEYWORD_MODE
-	local discard_list = DEFAULT_FILTER_KEYWORD_DISCARD_LIST
-	local keep_list = DEFAULT_FILTER_KEYWORD_KEEP_LIST
-	if sub_cfg then
-		local filter_keyword_mode = sub_cfg.filter_keyword_mode or "5" -- 5 is global
-		if filter_keyword_mode == "0" then
-			mode = "0"
-		elseif filter_keyword_mode == "1" then
-			mode = "1"
-			discard_list = sub_cfg.filter_discard_list or {}
-		elseif filter_keyword_mode == "2" then
-			mode = "2"
-			keep_list = sub_cfg.filter_keep_list or {}
-		elseif filter_keyword_mode == "3" then
-			mode = "3"
-			keep_list = sub_cfg.filter_keep_list or {}
-			discard_list = sub_cfg.filter_discard_list or {}
-		elseif filter_keyword_mode == "4" then
-			mode = "4"
-			keep_list = sub_cfg.filter_keep_list or {}
-			discard_list = sub_cfg.filter_discard_list or {}
-		end
-	end
-	if mode == "1" then
-		for k,v in ipairs(discard_list) do
-			if value:find(v, 1, true) then
-				return true
-			end
-		end
-	elseif mode == "2" then
-		local result = true
-		for k,v in ipairs(keep_list) do
-			if value:find(v, 1, true) then
-				result = false
-			end
-		end
-		return result
-	elseif mode == "3" then
-		local result = false
-		for k,v in ipairs(discard_list) do
-			if value:find(v, 1, true) then
-				result = true
-			end
-		end
-		for k,v in ipairs(keep_list) do
-			if value:find(v, 1, true) then
-				result = false
-			end
-		end
-		return result
-	elseif mode == "4" then
-		local result = true
-		for k,v in ipairs(keep_list) do
-			if value:find(v, 1, true) then
-				result = false
-			end
-		end
-		for k,v in ipairs(discard_list) do
-			if value:find(v, 1, true) then
-				result = true
-			end
-		end
-		return result
-	end
-	return false
-end
-
-local nodeResult = {} -- update result
-local isDebug = false
-
 local log = function(...)
 	if isDebug == true then
 		local result = os.date("%Y-%m-%d %H:%M:%S: ") .. table.concat({...}, " ")
@@ -246,39 +170,6 @@ do
 	end
 end
 
--- 取机场信息（剩余流量、到期时间）
-local subscribe_info = {}
-local function get_subscribe_info(cfgid, value)
-	if type(cfgid) ~= "string" or cfgid == "" or type(value) ~= "string" then
-		return
-	end
-	local info = subscribe_info[cfgid]
-	if info and info.expired_date and info.expired_date ~= "" and info.rem_traffic and info.rem_traffic ~= "" then
-		return
-	end
-	value = value:gsub("%s+", "")
-	local date_patterns = {"套餐到期：(.+)", "过期时间：(.+)", "有效期至：(.+)", "到期时间：(.+)", "截止日期：(.+)"}
-	local expired_date
-	for _, p in ipairs(date_patterns) do expired_date = value:match(p) or expired_date end
-	local rem_patterns = {"剩余流量：(.+)", "流量剩余：(.+)", "可用流量：(.+)", "套餐剩余：(.+)"}
-	local rem_traffic
-	for _, p in ipairs(rem_patterns) do rem_traffic = value:match(p) or rem_traffic end
-	subscribe_info[cfgid] = subscribe_info[cfgid] or {expired_date = "", rem_traffic = ""}
-	if expired_date then
-		local function formatDate(str)
-			local y, m, d = str:match("(%d%d%d%d)[-/]?(%d%d?)[-/]?(%d%d?)")
-			if y and m and d then
-				return y .. "." .. m .. "." .. d
-			end
-			return str
-		end
-		subscribe_info[cfgid]["expired_date"] = formatDate(expired_date)
-	end
-	if rem_traffic then
-		subscribe_info[cfgid]["rem_traffic"] = rem_traffic
-	end
-end
-
 -- 设置 ss 协议实现类型
 local function set_ss_implementation(result)
 	if has_ss then
@@ -291,17 +182,10 @@ local function set_ss_implementation(result)
 end
 
 -- 处理数据
-local function processData(szType, content, add_mode, group, sub_cfg)
+local function processData(szType, content, add_mode, group)
 	--log(2, content, add_mode, group)
 	local sub_allowinsecure = DEFAULT_ALLOWINSECURE
 	local sub_hy_up_mbps, sub_hy_down_mbps = 1000, 1000
-	if sub_cfg then
-		if sub_cfg.allowInsecure and sub_cfg.allowInsecure ~= "1" then
-			sub_allowinsecure = nil
-		end
-		sub_hy_up_mbps = sub_cfg.hysteria_up_mbps
-		sub_hy_down_mbps = sub_cfg.hysteria_down_mbps
-	end
 	local result = {
 		timeout = 60,
 		add_mode = add_mode, --0为手动配置,1为导入,2为订阅
@@ -581,147 +465,6 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 	return result
 end
 
-local function curl(url, file, ua, mode)
-	if not url or url == "" then return 22, 404 end
-	local curl_args = {
-		"-fskL",
-		"--retry 3",
-		"--connect-timeout 3",
-		"-H 'Accept-Encoding: identity'",
-		"--dump-header -",
-		"-w '\\n%{http_code}'"
-	}
-
-	ua = (ua and ua ~= "") and ua or "passwall"
-	ua = (ua == "passwall") and ("passwall/" .. api.get_version()) or ua
-	curl_args[#curl_args + 1] = '--user-agent "' .. ua .. '"'
-	if not ua:lower():find("clash", 1, true) then
-		curl_args[#curl_args + 1] = get_headers()
-	end
-
-	local return_code, result
-	if mode == "direct" then
-		return_code, result = api.curl_base(url, file, curl_args)
-	elseif mode == "proxy" then
-		return_code, result = api.curl_proxy(url, file, curl_args)
-	else
-		return_code, result = api.curl_logic(url, file, curl_args)
-	end
-
-	if result and result ~= "" then
-		local body, code = result:match("^(.-)%s*([0-9]+)$")
-		if code then
-			http_code = tonumber(code) or 0
-			header_str = body
-		else
-			http_code = tonumber(result:match("(%d+)%s*$")) or 0
-		end
-	end
-	if header_str ~= "" then
-		header_str = header_str:gsub("\r", "")
-	end
-
-	return return_code, http_code, header_str
-end
-
-function get_headers()
-	local cache_file = "/tmp/etc/" .. appname .. "_tmp/sub_curl_headers"
-	if fs.access(cache_file) then
-		return luci.sys.exec("cat " .. cache_file)
-	end
-	local headers = {}
-
-	local function readfile(path)
-		local f = io.open(path, "r")
-		if not f then return nil end
-		local c = f:read("*a")
-		f:close()
-		return api.trim(c)
-	end
-
-	headers[#headers + 1] = "x-device-os: OpenWrt"
-
-	local rel = readfile("/etc/openwrt_release")
-	local os_ver = rel and rel:match("DISTRIB_RELEASE='([^']+)'")
-	if os_ver then
-		headers[#headers + 1] = "x-ver-os: " .. os_ver
-	end
-
-	local model = readfile("/tmp/sysinfo/model")
-	if model then
-		headers[#headers + 1] = "x-device-model: " .. model
-	end
-
-	local mac = readfile("/sys/class/net/eth0/address")
-	if mac and model then
-		local raw = mac .. "-" .. model
-		local p = io.popen("printf '%s' '" .. raw:gsub("'", "'\\''") .. "' | sha256sum")
-		if p then
-			local hash = p:read("*l")
-			p:close()
-			hash = hash and hash:match("^%w+")
-			if hash then
-				headers[#headers + 1] = "x-hwid: " .. hash
-			end
-		end
-	end
-
-	local out = {}
-	for i = 1, #headers do
-		out[i] = "-H '" .. headers[i]:gsub("'", "'\\''") .. "'"
-	end
-	local headers_str = table.concat(out, " ")
-	local f = io.open(cache_file, "w"); if f then f:write(headers_str); f:close() end
-	return headers_str
-end
-
-local function truncate_nodes(group)
-	for _, config in pairs(CONFIG) do
-		if config.currentNodes and #config.currentNodes > 0 then
-			local newNodes = {}
-			local removeNodesSet = {}
-			for k, v in pairs(config.currentNodes) do
-				if v.currentNode and v.currentNode.add_mode == "2" then
-					if (not group) or (group:lower() == (v.currentNode.group or ""):lower()) then
-						removeNodesSet[v.currentNode[".name"]] = true
-					end
-				end
-			end
-			for _, value in ipairs(config.currentNodes) do
-				if not removeNodesSet[value.currentNode[".name"]] then
-					newNodes[#newNodes + 1] = value.currentNode[".name"]
-				end
-			end
-			if config.set then
-				config.set(config, newNodes)
-			end
-		else
-			if config.currentNode and config.currentNode.add_mode == "2" then
-				if (not group) or (group:lower() == (config.currentNode.group or ""):lower()) then
-					if config.delete then
-						config.delete(config)
-					elseif config.set then
-						config.set(config, "")
-					end
-				end
-			end
-		end
-	end
-	uci:foreach(appname, "nodes", function(node)
-		if node.add_mode == "2" then
-			if (not group) or (group:lower() == (node.group or ""):lower()) then
-				uci:delete(appname, node['.name'])
-			end
-		end
-	end)
-	uci:foreach(appname, "subscribe_list", function(o)
-		if (not group) or (group:lower() == (o.remark or ""):lower()) then
-			uci:delete(appname, o['.name'], "md5")
-		end
-	end)
-	api.uci_save(uci, appname, true)
-end
-
 local function select_node(nodes, config, parentConfig)
 	if config.currentNode then
 		local server
@@ -868,7 +611,6 @@ local function update_node(manual)
 	for _, v in ipairs(nodeResult) do
 		local remark = v["remark"]
 		local list = v["list"]
-		local sub_cfg = v["sub_cfg"]
 		for _, vv in ipairs(list) do
 			local cfgid = uci:section(appname, "nodes", api.gen_short_uuid())
 			for kkk, vvv in pairs(vv) do
@@ -882,17 +624,6 @@ local function update_node(manual)
 			end
 		end
 	end
-	-- 更新机场信息
-	for cfgid, info in pairs(subscribe_info) do
-		for key, value in pairs(info) do
-			if value ~= "" then
-				uci:set(appname, cfgid, key, value)
-			else
-				uci:delete(appname, cfgid, key)
-			end
-		end
-	end
-
 	if next(CONFIG) then
 		local nodes = {}
 		uci:foreach(appname, "nodes", function(node)
@@ -927,12 +658,8 @@ local function update_node(manual)
 	end
 end
 
-local function parse_link(raw, add_mode, group, sub_cfg)
+local function parse_link(raw, add_mode, group)
 	if raw and #raw > 0 then
-		local cfgid
-		if sub_cfg then
-			cfgid = sub_cfg[".name"]
-		end
 		local nodes, szType
 		local node_list = {}
 		-- SSD 似乎是这种格式 ssd:// 开头的
@@ -967,17 +694,17 @@ local function parse_link(raw, add_mode, group, sub_cfg)
 				xpcall(function ()
 					local result
 					if szType == 'ssd' then
-						result = processData(szType, v, add_mode, group, sub_cfg)
+						result = processData(szType, v, add_mode, group)
 					elseif not szType then
 						local node = api.trim(v)
 						local dat = split(node, "://")
 						if dat and dat[1] and dat[2] then
 							if dat[1] == 'vmess' then
 								local link = api.trim(dat[2]:gsub("#.*$", ""))
-								result = processData(dat[1], base64Decode(link), add_mode, group, sub_cfg)
+								result = processData(dat[1], base64Decode(link), add_mode, group)
 							else
 								local link = dat[2]:gsub("&amp;", "&"):gsub("%s*#%s*", "#")  -- 一些奇葩的链接用"&amp;"当做"&"，"#"前后带空格
-								result = processData(dat[1], link, add_mode, group, sub_cfg)
+								result = processData(dat[1], link, add_mode, group)
 							end
 						end
 					else
@@ -989,14 +716,11 @@ local function parse_link(raw, add_mode, group, sub_cfg)
 							log('丢弃节点：' .. result.remarks .. " ，原因：" .. result.error_msg)
 						elseif not result.type then
 							log('丢弃节点：' .. result.remarks .. " ，找不到可使用二进制。")
-						elseif (add_mode == "2" and is_filter_keyword(sub_cfg, result.remarks)) or not result.address or result.remarks == "NULL" or result.address == "127.0.0.1" or
+						elseif not result.address or result.remarks == "NULL" or result.address == "127.0.0.1" or
 								(not datatypes.hostname(result.address) and not (api.is_ip(result.address))) then
 							log('丢弃过滤节点：' .. result.type .. ' 节点，' .. result.remarks)
 						else
 							tinsert(node_list, result)
-						end
-						if add_mode == "2" then
-							get_subscribe_info(cfgid, result.remarks)
 						end
 					end
 				end, function (err)
@@ -1010,7 +734,6 @@ local function parse_link(raw, add_mode, group, sub_cfg)
 			nodeResult[#nodeResult + 1] = {
 				remark = group,
 				list = node_list,
-				sub_cfg = sub_cfg
 			}
 		end
 		log('成功解析【' .. group .. '】节点数量：' .. #node_list)
@@ -1018,83 +741,6 @@ local function parse_link(raw, add_mode, group, sub_cfg)
 		if add_mode == "2" then
 			log('获取到的【' .. group .. '】订阅内容为空，可能是订阅地址无效，或是网络问题，请诊断！')
 		end
-	end
-end
-
-local execute = function()
-	do
-		local subscribe_list = {}
-		local fail_list = {}
-		if arg[2] ~= "all" then
-			string.gsub(arg[2], '[^' .. "," .. ']+', function(w)
-				subscribe_list[#subscribe_list + 1] = uci:get_all(appname, w) or {}
-			end)
-		else
-			uci:foreach(appname, "subscribe_list", function(o)
-				subscribe_list[#subscribe_list + 1] = o
-			end)
-		end
-
-		local manual_sub = arg[3] == "manual"
-
-		for index, value in ipairs(subscribe_list) do
-			local cfgid = value[".name"]
-			local remark = value.remark or ""
-			local url = value.url or ""
-			local tmp_file, ua, headers
-
-			local url_is_local
-			if fs.access(url) then
-				-- debug, reads local files.
-				log('正在订阅:【' .. remark .. '】' .. url)
-				url_is_local = true
-				tmp_file = url
-			else
-				ua = value.user_agent
-				local access_mode = value.access_mode
-				local result = (not access_mode) and "自动" or (access_mode == "direct" and "直连" or (access_mode == "proxy" and "代理" or "自动"))
-				log('正在订阅:【' .. remark .. '】' .. url .. ' [' .. result .. ']')
-				tmp_file = "/tmp/" .. cfgid
-				local return_code
-				return_code, value.http_code, headers = curl(url, tmp_file, ua, access_mode)
-				if return_code ~= 0 then
-					fail_list[#fail_list + 1] = value
-					luci.sys.call("rm -f " .. tmp_file)
-				end
-			end
-			if fs.access(tmp_file) then
-				if luci.sys.call("[ -f " .. tmp_file .. " ] && sed -i -e '/^[ \t]*$/d' -e '/^[ \t]*\r$/d' " .. tmp_file) == 0 then
-					local f = io.open(tmp_file, "r")
-					local stdout = f:read("*all")
-					f:close()
-					local raw_data = api.trim(stdout)
-					local old_md5 = value.md5 or ""
-					local new_md5 = luci.sys.exec("md5sum " .. tmp_file .. " 2>/dev/null | awk '{print $1}'"):gsub("\n", "")
-					if not manual_sub and old_md5 == new_md5 then
-						log('订阅:【' .. remark .. '】没有变化，无需更新。')
-					else
-						raw_data = parseClashNode(raw_data)
-						subscribe_info[cfgid] = parse_clash_sub_info(headers)
-						parse_link(raw_data, "2", remark, value)
-						uci:set(appname, cfgid, "md5", new_md5)
-					end
-				else
-					fail_list[#fail_list + 1] = value
-				end
-				if url_is_local then
-					value.http_code = 0
-				else
-					luci.sys.call("rm -f " .. tmp_file)
-				end
-			end
-		end
-
-		if #fail_list > 0 then
-			for index, value in ipairs(fail_list) do
-				log(string.format('【%s】订阅失败，可能是订阅地址无效，或是网络问题，请诊断！[%s]', value.remark, tostring(value.http_code)))
-			end
-		end
-		update_node(0)
 	end
 end
 
@@ -1118,36 +764,20 @@ local function check_instance(action)
 	end
 
 	if fs.access(rule_lock) then
-		log("[规则更新]实例正在运行，[订阅]进入队列等待...\n")
+		log("[规则更新]实例正在运行，导入节点进入队列等待...\n")
 	end
 	while fs.access(rule_lock) do
 		api.nixio.nanosleep(2, 0)
 	end
 end
 
-if arg[1] then
+if arg[1] == "add" then
 	check_instance("start")
-
-	if arg[1] == "start" then
-		log('开始订阅...')
-		xpcall(execute, function(e)
-			log(e)
-			if type(debug) == "table" and type(debug.traceback) == "function" then
-				log(debug.traceback())
-			end
-			log('发生错误, 正在恢复服务')
-		end)
-		log('订阅完毕...\n')
-	elseif arg[1] == "add" then
-		local f = assert(io.open("/tmp/links.conf", 'r'))
-		local raw = f:read('*all')
-		f:close()
-		parse_link(raw, "1", arg[2])
-		update_node(1)
-		luci.sys.call("rm -f /tmp/links.conf")
-	elseif arg[1] == "truncate" then
-		truncate_nodes(arg[2])
-	end
-
+	local f = assert(io.open("/tmp/links.conf", 'r'))
+	local raw = f:read('*all')
+	f:close()
+	parse_link(raw, "1", arg[2])
+	update_node(1)
+	luci.sys.call("rm -f /tmp/links.conf")
 	check_instance("end")
 end

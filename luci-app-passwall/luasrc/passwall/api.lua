@@ -59,11 +59,6 @@ function uci_save(cursor, config, commit, apply)
 	end
 end
 
-function sh_uci_get(config, section, option)
-	local _, val = exec_call(string.format("uci -q get %s.%s.%s", config, section, option))
-	return val
-end
-
 function sh_uci_set(config, section, option, val, commit)
 	exec_call(string.format("uci -q set %s.%s.%s=\"%s\"", config, section, option, val))
 	if commit then sh_uci_commit(config) end

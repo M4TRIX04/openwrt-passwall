@@ -37,12 +37,10 @@ function index()
 	--[[ Client ]]
 	entry({"admin", "services", appname, "settings"}, cbi(appname .. "/client/global"), _("Basic Settings"), 1).dependent = true
 	entry({"admin", "services", appname, "node_list"}, cbi(appname .. "/client/node_list"), _("Node List"), 2).dependent = true
-	entry({"admin", "services", appname, "node_subscribe"}, cbi(appname .. "/client/node_subscribe"), _("Node Subscribe"), 3).dependent = true
 	entry({"admin", "services", appname, "other"}, cbi(appname .. "/client/other", {autoapply = true}), _("Other Settings"), 92).leaf = true
 	entry({"admin", "services", appname, "app_update"}, cbi(appname .. "/client/app_update"), _("App Update"), 95).leaf = true
 	entry({"admin", "services", appname, "rule"}, cbi(appname .. "/client/rule"), _("Rule Manage"), 96).leaf = true
 	entry({"admin", "services", appname, "rule_list"}, cbi(appname .. "/client/rule_list", {autoapply = true}), _("Rule List"), 97).leaf = true
-	entry({"admin", "services", appname, "node_subscribe_config"}, cbi(appname .. "/client/node_subscribe_config")).leaf = true
 	entry({"admin", "services", appname, "node_config"}, cbi(appname .. "/client/node_config")).leaf = true
 	entry({"admin", "services", appname, "socks_config"}, cbi(appname .. "/client/socks_config")).leaf = true
 	entry({"admin", "services", appname, "acl"}, cbi(appname .. "/client/acl"), _("Access control"), 98).leaf = true
@@ -85,10 +83,6 @@ function index()
 	entry({"admin", "services", appname, "save_node_order"}, call("save_node_order")).leaf = true
 	entry({"admin", "services", appname, "save_node_list_opt"}, call("save_node_list_opt")).leaf = true
 	entry({"admin", "services", appname, "update_rules"}, call("update_rules")).leaf = true
-	entry({"admin", "services", appname, "subscribe_del_node"}, call("subscribe_del_node")).leaf = true
-	entry({"admin", "services", appname, "subscribe_del_all"}, call("subscribe_del_all")).leaf = true
-	entry({"admin", "services", appname, "subscribe_manual"}, call("subscribe_manual")).leaf = true
-	entry({"admin", "services", appname, "subscribe_manual_all"}, call("subscribe_manual_all")).leaf = true
 	entry({"admin", "services", appname, "flush_set"}, call("flush_set")).leaf = true
 
 	--[[rule_list]]
@@ -487,9 +481,6 @@ function clear_all_nodes()
 	uci:foreach(appname, "nodes", function(node)
 		uci:delete(appname, node['.name'])
 	end)
-	uci:foreach(appname, "subscribe_list", function(t)
-		uci:delete(appname, t[".name"], "md5")
-	end)
 
 	api.uci_save(uci, appname, true, true)
 end
@@ -532,16 +523,6 @@ function delete_select_nodes()
 				uci:delete(appname, t[".name"], "udp_node")
 			end
 		end)
-		if (uci:get(appname, w, "add_mode") or "0") == "2" then
-			local group = uci:get(appname, w, "group") or ""
-			if group ~= "" then
-				uci:foreach(appname, "subscribe_list", function(t)
-					if t["remark"] == group then
-						uci:delete(appname, t[".name"], "md5")
-					end
-				end)
-			end
-		end
 		uci:delete(appname, w)
 	end)
 	if redirect == "1" then
@@ -803,67 +784,6 @@ function restore_backup()
 		result = { status = "error", message = tostring(err) }
 	end
 	http_write_json(result)
-end
-
-function subscribe_del_node()
-	local remark = http.formvalue("remark")
-	if remark and remark ~= "" then
-		luci.sys.call("lua /usr/share/" .. appname .. "/subscribe.lua truncate " .. luci.util.shellquote(remark) .. " > /dev/null 2>&1")
-	end
-	http.status(200, "OK")
-end
-
-function subscribe_del_all()
-	luci.sys.call("lua /usr/share/" .. appname .. "/subscribe.lua truncate > /dev/null 2>&1")
-	http.status(200, "OK")
-end
-
-function subscribe_manual()
-	local section = http.formvalue("section") or ""
-	local current_url = http.formvalue("url") or ""
-	if section == "" or current_url == "" then
-		http_write_json({ success = false, msg = "Missing section or URL, skip." })
-		return
-	end
-	local uci_url = api.sh_uci_get(appname, section, "url")
-	if not uci_url or uci_url == "" then
-		http_write_json({ success = false, msg = i18n.translate("Please save and apply before manually subscribing.") })
-		return
-	end
-	if uci_url ~= current_url then
-		api.sh_uci_set(appname, section, "url", current_url, true)
-	end
-	luci.sys.call("lua /usr/share/" .. appname .. "/subscribe.lua start " .. section .. " manual >/dev/null 2>&1 &")
-	http_write_json({ success = true, msg = "Subscribe triggered." })
-end
-
-function subscribe_manual_all()
-	local sections = http.formvalue("sections") or ""
-	local urls = http.formvalue("urls") or ""
-	if sections == "" or urls == "" then
-		http_write_json({ success = false, msg = "Missing section or URL, skip." })
-		return
-	end
-	local section_list = util.split(sections, ",")
-	local url_list = util.split(urls, ",")
-	-- 检查是否存在未保存配置
-	for i, section in ipairs(section_list) do
-		local uci_url = api.sh_uci_get(appname, section, "url")
-		if not uci_url or uci_url == "" then
-			http_write_json({ success = false, msg = i18n.translate("Please save and apply before manually subscribing.") })
-			return
-		end
-	end
-	-- 保存有变动的url
-	for i, section in ipairs(section_list) do
-		local current_url = url_list[i] or ""
-		local uci_url = api.sh_uci_get(appname, section, "url")
-		if current_url ~= "" and uci_url ~= current_url then
-			api.sh_uci_set(appname, section, "url", current_url, true)
-		end
-	end
-	luci.sys.call("lua /usr/share/" .. appname .. "/subscribe.lua start all manual >/dev/null 2>&1 &")
-	http_write_json({ success = true, msg = "Subscribe triggered." })
 end
 
 function flush_set()

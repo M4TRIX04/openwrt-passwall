@@ -1122,54 +1122,24 @@ msgstr "%s 客户端程序路径"
 msgid "alternate API URL for version checking"
 msgstr "用于版本检查的 API URL"
 
-msgid "Node Subscribe"
-msgstr "节点订阅"
 
-msgid "Subscribe Remark"
-msgstr "订阅备注（机场）"
 
-msgid "Subscribe Info"
-msgstr "订阅信息"
 
-msgid "Subscribe URL"
-msgstr "订阅网址"
 
-msgid "Subscribe URL Access Method"
-msgstr "订阅网址访问方式"
 
-msgid "When adding a new subscription, please save and apply before manually subscribing. If you only change the subscription URL, you can subscribe manually, and the system will save it automatically."
-msgstr "新增订阅请先保存并应用后再手动订阅；如仅修改订阅地址，可直接手动订阅，系统将自动保存。"
 
-msgid "Please save and apply before manually subscribing."
-msgstr "请先保存并应用后再手动订阅。"
 
-msgid "Subscribe URL cannot be empty."
-msgstr "订阅网址不能为空。"
 
 
 msgid "Update Once on Boot"
 msgstr "开机更新一次"
 
-msgid "Updates the subscription the first time PassWall runs automatically after each system boot."
-msgstr "路由每次启动后，首次自动运行 PassWall 时更新订阅。"
 
-msgid "Enable auto update subscribe"
-msgstr "开启自动更新订阅"
 
-msgid "Manual subscription"
-msgstr "手动订阅"
 
-msgid "Delete All Subscribe Node"
-msgstr "删除所有订阅节点"
 
-msgid "Delete the subscribed node"
-msgstr "删除已订阅的节点"
 
-msgid "Are you sure you want to delete all subscribed nodes?"
-msgstr "您确定要删除所有已订阅的节点吗？"
 
-msgid "Manual subscription All"
-msgstr "手动订阅全部链接"
 
 msgid "This remark already exists, please change a new remark."
 msgstr "此备注已存在，请改一个新的备注。"
@@ -1180,20 +1150,10 @@ msgstr "备注不能为空。"
 msgid "URL cannot be empty."
 msgstr "网址不能为空。"
 
-msgid "Filter keyword Mode"
-msgstr "过滤关键字模式"
 
-msgid "Discard List"
-msgstr "丢弃列表"
 
-msgid "Keep List"
-msgstr "保留列表"
 
-msgid "Discard List,But Keep List First"
-msgstr "丢弃列表，但保留列表优先"
 
-msgid "Keep List,But Discard List First"
-msgstr "保留列表，但丢弃列表优先"
 
 msgid "Use global config"
 msgstr "使用全局配置"

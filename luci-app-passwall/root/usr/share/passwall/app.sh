@@ -519,7 +519,6 @@ clean_crontab() {
 	#sed -i "/${CONFIG}/d" /etc/crontabs/root >/dev/null 2>&1
 	sed -i "/$(echo "/etc/init.d/${CONFIG}" | sed 's#\/#\\\/#g')/d" /etc/crontabs/root >/dev/null 2>&1
 	sed -i "/$(echo "lua ${APP_PATH}/rule_update.lua log" | sed 's#\/#\\\/#g')/d" /etc/crontabs/root >/dev/null 2>&1
-	sed -i "/$(echo "lua ${APP_PATH}/subscribe.lua start" | sed 's#\/#\\\/#g')/d" /etc/crontabs/root >/dev/null 2>&1
 
 	busybox pgrep -af "${CONFIG}/" | awk '/tasks\.sh/{print $1}' | xargs kill -9 >/dev/null 2>&1
 	rm -f ${LOCK_PATH}/${CONFIG}_tasks.lock
@@ -588,36 +587,6 @@ start_crontab() {
 			echo "$rule_t lua $APP_PATH/rule_update.lua log all cron > /dev/null 2>&1 &" >>/etc/crontabs/root
 		fi
 		echolog "配置定时任务：自动更新规则。"
-	fi
-
-	# ===== subscribe =====
-	local TMP_SUB_PATH=$TMP_PATH/sub_crontabs
-	mkdir -p "$TMP_SUB_PATH"
-	local item cfgid remark week_update time_update
-	for item in $(uci show ${CONFIG} | grep "=subscribe_list" | cut -d '.' -sf 2 | cut -d '=' -sf 1); do
-		if [ "$(config_n_get "$item" auto_update 0)" = "1" ]; then
-			cfgid=$(uci show ${CONFIG}.$item | head -n 1 | cut -d '.' -sf 2 | cut -d '=' -sf 1)
-			remark=$(config_n_get "$item" remark)
-			week_update=$(config_n_get "$item" week_update)
-			time_update=$(config_n_get "$item" time_update)
-			echo "$cfgid" >> "$TMP_SUB_PATH/${week_update}_${time_update}"
-			echolog "配置定时任务：自动更新【$remark】订阅。"
-		fi
-	done
-	if [ -d "$TMP_SUB_PATH" ]; then
-		local name cfgids
-		for name in $(ls "$TMP_SUB_PATH"); do
-			week_update=${name%_*}
-			time_update=${name#*_}
-			cfgids=$(tr '\n' ',' < "$TMP_SUB_PATH/$name" | sed 's/,$//')
-			local sub_t=$(build_time "$week_update" "$time_update")
-			if [ "$week_update" = "8" ]; then
-				update_loop=1
-			else
-				echo "$sub_t lua $APP_PATH/subscribe.lua start $cfgids cron > /dev/null 2>&1 &" >>/etc/crontabs/root
-			fi
-		done
-		rm -rf "$TMP_SUB_PATH"
 	fi
 
 	# ===== loop =====
@@ -1164,20 +1133,6 @@ start() {
 	
 	start_crontab
 	echolog "运行完成！\n"
-
-	[ "$ENABLED" = 1 ] && [ "$1" = "boot" ] && {
-		local cfgids item
-		for item in $(uci show ${CONFIG} | grep "=subscribe_list" | cut -d '.' -sf 2 | cut -d '=' -sf 1); do
-			if [ "$(config_n_get "$item" boot_update 0)" = "1" ]; then
-				local cfgid=$(uci show ${CONFIG}.$item | head -n 1 | cut -d '.' -sf 2 | cut -d '=' -sf 1)
-				cfgids="${cfgids:+$cfgids,}$cfgid"
-			fi
-		done
-		[ -n "$cfgids" ] && {
-			sleep 5
-			lua $APP_PATH/subscribe.lua start $cfgids cron > /dev/null 2>&1 &
-		}
-	}
 }
 
 stop() {

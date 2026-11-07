@@ -383,12 +383,6 @@ function add_rule(var)
 					process_address(t.address)
 					process_address(t.download_address)
 				end)
-				uci:foreach(appname, "subscribe_list", function(t)  --订阅链接
-					local url, _ = api.get_domain_port_from_url(t.url or "")
-					if url and url ~= "" then
-						process_address(url)
-					end
-				end)
 				log(string.format("  - 节点列表中的域名(vpslist)：%s", fwd_dns or "默认"))
 			end
 		end

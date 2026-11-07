@@ -155,12 +155,6 @@ if not is_file_nonzero(file_vpslist) then
 		process_address(t.address)
 		process_address(t.download_address)
 	end)
-	uci:foreach(appname, "subscribe_list", function(t)  --订阅链接
-		local url, _ = api.get_domain_port_from_url(t.url or "")
-		if url and url ~= "" then
-			process_address(url)
-		end
-	end)
 	f_out:close()
 end
 if is_file_nonzero(file_vpslist) then

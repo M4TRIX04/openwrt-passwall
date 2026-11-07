@@ -149,23 +149,6 @@ parse_doh() {
 	eval "${__url_var}='${__url}' ${__host_var}='${__host}' ${__port_var}='${__port}' ${__bootstrap_var}='${__bootstrap}'"
 }
 
-host_from_url(){
-	local f="${1}"
-
-	## Remove protocol part of url  ##
-	f="${f##http://}"
-	f="${f##https://}"
-	f="${f##ftp://}"
-	f="${f##sftp://}"
-
-	## Remove username and/or username:password part of URL  ##
-	f="${f##*:*@}"
-	f="${f##*@}"
-
-	## Remove rest of urls ##
-	f="${f%%/*}"
-	echo "${f%%:*}"
-}
 
 hosts_foreach() {
 	local __hosts
@@ -493,16 +476,6 @@ kill_all() {
 	kill -9 $(pidof "$@") >/dev/null 2>&1
 }
 
-get_subscribe_host(){
-	local line
-	uci show "${CONFIG}" | grep "=subscribe_list" | while read -r line; do
-		local section="$(echo "$line" | cut -d '.' -sf 2 | cut -d '=' -sf 1)"
-		local url="$(config_n_get $section url)"
-		[ -n "$url" ] || continue
-		url="$(host_from_url "$url")"
-		echo "$url"
-	done
-}
 
 gen_lanlist() {
 	cat $RULES_PATH/lanlist_ipv4 | tr -s '\n' | grep -v "^#"

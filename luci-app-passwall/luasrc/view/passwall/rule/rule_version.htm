@@ -1,8 +1,6 @@
 <%
 local api = require "luci.passwall.api"
 local fs = api.fs
-local has_old_geoip = fs.access("/tmp/bak_v2ray/geoip.dat")
-local has_old_geosite = fs.access("/tmp/bak_v2ray/geosite.dat")
 -%>
 <script src="<%=resource%>/view/<%=api.appname%>/Sortable.min.js?v=1.15.7"></script>
 
@@ -17,9 +15,7 @@ local has_old_geosite = fs.access("/tmp/bak_v2ray/geosite.dat")
 	div.cbi-value[id$="-gfwlist_update"],
 	div.cbi-value[id$="-chnroute_update"],
 	div.cbi-value[id$="-chnroute6_update"],
-	div.cbi-value[id$="-chnlist_update"],
-	div.cbi-value[id$="-geoip_update"],
-	div.cbi-value[id$="-geosite_update"] {
+	div.cbi-value[id$="-chnlist_update"] {
 		display: none !important;
 	}
 
@@ -70,22 +66,8 @@ local has_old_geosite = fs.access("/tmp/bak_v2ray/geosite.dat")
 				<input class="cbi-input-checkbox" type="checkbox" name="chnlist" value="1" />
 				chnlist
 			</label>
-			<label>
-				<input class="cbi-input-checkbox" type="checkbox" name="geoip" value="1" />
-				geoip
-			</label>
-			<label>
-				<input class="cbi-input-checkbox" type="checkbox" name="geosite" value="1" />
-				geosite
-			</label>
 			<br><br>
 			<input class="btn cbi-button cbi-button-apply" type="button" id="update_rules_btn" onclick="update_rules(this)" value="<%:Manually update%>" />
-			<% if has_old_geoip then %>
-			<input class="btn cbi-button cbi-button-reset" type="button" onclick="rollback_rules(this, 'geoip')" value="<%:Rollback%> GeoIP" />
-			<% end %>
-			<% if has_old_geosite then %>
-			<input class="btn cbi-button cbi-button-reset" type="button" onclick="rollback_rules(this, 'geosite')" value="<%:Rollback%> Geosite" />
-			<% end %>
 		</div>
 	</div>
 </div>
@@ -95,7 +77,7 @@ local has_old_geosite = fs.access("/tmp/bak_v2ray/geosite.dat")
 	document.addEventListener('DOMContentLoaded', function () {
 		const flags = [
 			"gfwlist_update","chnroute_update","chnroute6_update",
-			"chnlist_update","geoip_update","geosite_update"
+			"chnlist_update"
 		];
 		const bindFlags = () => {
 			let allBound = true;
@@ -125,28 +107,9 @@ local has_old_geosite = fs.access("/tmp/bak_v2ray/geosite.dat")
 			return allBound;
 		};
 
-		const geo2ruleFlag = () => {
-			const geoEl = document.querySelector('input[type="checkbox"][name*="passwall"][name*="geo2rule"]');
-			if (!geoEl) return;
-			const updateCheckboxes = (disabled) => {
-				flags.filter(flag => !flag.includes('geo')).forEach(flag => {
-					const custom = document.querySelector(`.cbi-input-checkbox[name="${flag.replace('_update','')}"]`);
-					if (custom) {
-						//if (disabled) custom.checked = true;
-						custom.parentElement.style.display = disabled ? 'none' : '';
-					}
-				});
-			};
-			updateCheckboxes(geoEl.checked);
-			geoEl.addEventListener("change", () => {
-				geoEl.blur();
-				updateCheckboxes(geoEl.checked);
-			});
-		};
 
 		const bindAll = () => {
 			bindFlags();
-			geo2ruleFlag();
 		};
 
 		const target = document.querySelector('form') || document.body;
@@ -184,41 +147,6 @@ local has_old_geosite = fs.access("/tmp/bak_v2ray/geosite.dat")
 		);
 	}
 
-	function rollback_rules(btn, type) {
-		let ori_val = btn.value;
-		btn.disabled = true;
-		btn.value = '<%:Rollbacking...%>';
-		var div = document.getElementById('_rule_div');
-		var domList = div.getElementsByTagName('input');
-		var checkBoxList = [];
-		var len = domList.length;
-		while(len--) {
-			var dom = domList[len];　　
-			if(dom.type == 'checkbox' && dom.checked) {
-				if(type == 'geoip' && (dom.name === 'chnroute' || dom.name === 'chnroute6')) {
-					checkBoxList.push(dom.name);
-				}
-				if(type == 'geosite' && (dom.name === 'gfwlist' || dom.name === 'chnlist')) {
-					checkBoxList.push(dom.name);
-				}
-			}
-		}
-		XHR.get('<%=api.url("rollback_rules")%>', {
-			type: type,
-			rules: checkBoxList.join(",")
-			},
-			function(x, data) {
-				if(x && x.status == 200 && data.code == 1) {
-					alert("<%:Success%>");
-					btn.style.display = "none";
-				} else {
-					alert("<%:Error%>");
-					btn.disabled = false;
-					btn.value = ori_val;
-				}
-			}
-		);
-	}
 
 	//分流规则添加拖拽排序
 	document.addEventListener("DOMContentLoaded", function () {

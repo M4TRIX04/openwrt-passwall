@@ -1,22 +1,6 @@
 local api = require "luci.passwall.api"
 local uci = api.uci
 local appname = "passwall"
-local has_ss = api.is_finded("ss-redir")
-local has_hysteria2 = api.finded_com("hysteria")
-local ss_type = {}
-local trojan_type = {}
-local vmess_type = {}
-local vless_type = {}
-local hysteria2_type = {}
-if has_ss then
-	local s = "shadowsocks-libev"
-	table.insert(ss_type, s)
-end
-if has_hysteria2 then
-	local s = "hysteria2"
-	table.insert(hysteria2_type, s)
-end
-
 m = Map(appname)
 api.set_apply_on_parse(m)
 
@@ -43,51 +27,6 @@ o:value("4", translate("Keep List,But Discard List First"))
 o = s:option(DynamicList, "filter_discard_list", translate("Discard List"))
 
 o = s:option(DynamicList, "filter_keep_list", translate("Keep List"))
-
-if #ss_type > 0 then
-	o = s:option(ListValue, "ss_type", translatef("%s Node Use Type", "Shadowsocks"))
-	o:value("", translate("Auto"))
-	for key, value in pairs(ss_type) do
-		o:value(value)
-	end
-end
-
-if #trojan_type > 0 then
-	o = s:option(ListValue, "trojan_type", translatef("%s Node Use Type", "Trojan"))
-	o:value("", translate("Auto"))
-	for key, value in pairs(trojan_type) do
-		o:value(value)
-	end
-end
-
-if #vmess_type > 0 then
-	o = s:option(ListValue, "vmess_type", translatef("%s Node Use Type", "VMess"))
-	o:value("", translate("Auto"))
-	for key, value in pairs(vmess_type) do
-		o:value(value)
-	end
-end
-
-if #vless_type > 0 then
-	o = s:option(ListValue, "vless_type", translatef("%s Node Use Type", "VLESS"))
-	o:value("", translate("Auto"))
-	for key, value in pairs(vless_type) do
-		o:value(value)
-	end
-end
-
-if #hysteria2_type > 0 then
-	o = s:option(ListValue, "hysteria2_type", translatef("%s Node Use Type", "Hysteria2"))
-	o:value("", translate("Auto"))
-	for key, value in pairs(hysteria2_type) do
-		o:value(value)
-	end
-end
-
-if #ss_type > 0 or #trojan_type > 0 or #vmess_type > 0 or #vless_type > 0 or #hysteria2_type > 0 then
-	o.description = string.format("<font color='red'>%s</font>",
-			translate("The configured type also applies to the core specified when manually importing nodes."))
-end
 
 ---- Subscribe Delete All
 o = s:option(DummyValue, "_stop", translate("Delete All Subscribe Node"))

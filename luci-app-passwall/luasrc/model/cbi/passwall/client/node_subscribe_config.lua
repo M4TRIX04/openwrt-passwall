@@ -18,19 +18,6 @@ m:append(Template(appname .. "/cbi/nodes_listvalue_com"))
 
 local has_ss = api.is_finded("ss-redir")
 local has_hysteria2 = api.finded_com("hysteria")
-local ss_type = {}
-local trojan_type = {}
-local vmess_type = {}
-local vless_type = {}
-local hysteria2_type = {}
-if has_ss then
-	local s = "shadowsocks-libev"
-	table.insert(ss_type, s)
-end
-if has_hysteria2 then
-	local s = "hysteria2"
-	table.insert(hysteria2_type, s)
-end
 local nodes_table = {}
 for k, e in ipairs(api.get_valid_nodes()) do
 	if e.node_type == "normal" then
@@ -114,49 +101,7 @@ o:depends("filter_keyword_mode", "2")
 o:depends("filter_keyword_mode", "3")
 o:depends("filter_keyword_mode", "4")
 
-if #ss_type > 0 then
-	o = s:option(ListValue, "ss_type", translatef("%s Node Use Type", "Shadowsocks"))
-	o.default = "global"
-	o:value("global", translate("Use global config"))
-	for key, value in pairs(ss_type) do
-		o:value(value)
-	end
-end
-
-if #trojan_type > 0 then
-	o = s:option(ListValue, "trojan_type", translatef("%s Node Use Type", "Trojan"))
-	o.default = "global"
-	o:value("global", translate("Use global config"))
-	for key, value in pairs(trojan_type) do
-		o:value(value)
-	end
-end
-
-if #vmess_type > 0 then
-	o = s:option(ListValue, "vmess_type", translatef("%s Node Use Type", "VMess"))
-	o.default = "global"
-	o:value("global", translate("Use global config"))
-	for key, value in pairs(vmess_type) do
-		o:value(value)
-	end
-end
-
-if #vless_type > 0 then
-	o = s:option(ListValue, "vless_type", translatef("%s Node Use Type", "VLESS"))
-	o.default = "global"
-	o:value("global", translate("Use global config"))
-	for key, value in pairs(vless_type) do
-		o:value(value)
-	end
-end
-
-if #hysteria2_type > 0 then
-	o = s:option(ListValue, "hysteria2_type", translatef("%s Node Use Type", "Hysteria2"))
-	o.default = "global"
-	o:value("global", translate("Use global config"))
-	for key, value in pairs(hysteria2_type) do
-		o:value(value)
-	end
+if has_hysteria2 then
 
 	o = s:option(Value, "hysteria_up_mbps", "Hy/Hy2 " .. translate("Max upload Mbps"))
 	o.datatype = "uinteger"

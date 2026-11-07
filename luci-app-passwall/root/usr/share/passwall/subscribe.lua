@@ -25,7 +25,6 @@ local uci = api.uci
 local fs = api.fs
 
 local has_ss = api.is_finded("ss-redir")
-local has_hysteria2 = api.finded_com("hysteria")
 local DEFAULT_ALLOWINSECURE = true
 -- SS 只接受 AEAD 加密，与服务端/客户端 UI 的白名单保持一致
 local SS_AEAD_METHODS = {
@@ -38,13 +37,6 @@ local SS_AEAD_METHODS = {
 local DEFAULT_FILTER_KEYWORD_MODE = uci:get(appname, "@global_subscribe[0]", "filter_keyword_mode") or "0"
 local DEFAULT_FILTER_KEYWORD_DISCARD_LIST = uci:get(appname, "@global_subscribe[0]", "filter_discard_list") or {}
 local DEFAULT_FILTER_KEYWORD_KEEP_LIST = uci:get(appname, "@global_subscribe[0]", "filter_keep_list") or {}
--- 取节点使用core类型（节点订阅页面未设置时，自动取默认）
-local DEFAULT_SS_TYPE = api.get_core("ss_type", {{has_ss,"shadowsocks-libev"}})
-local DEFAULT_HYSTERIA2_TYPE = api.get_core("hysteria2_type", {{has_hysteria2,"hysteria2"}})
-local core_has = {
-	["shadowsocks-libev"] = has_ss,
-	["hysteria2"] = has_hysteria2
-}
 -- 判断是否过滤节点关键字
 local function is_filter_keyword(sub_cfg, value)
 	local mode = DEFAULT_FILTER_KEYWORD_MODE
@@ -288,11 +280,11 @@ local function get_subscribe_info(cfgid, value)
 end
 
 -- 设置 ss 协议实现类型
-local function set_ss_implementation(ss_type, result)
-	if ss_type == "shadowsocks-libev" and has_ss then
+local function set_ss_implementation(result)
+	if has_ss then
 		result.type = 'SS'
 	else
-		log("跳过 SS 节点，因未适配到 SS 核心程序，或未正确设置节点使用类型。")
+		log("跳过 SS 节点，因未安装 shadowsocks-libev 核心。")
 		return nil
 	end
 	return result
@@ -302,20 +294,10 @@ end
 local function processData(szType, content, add_mode, group, sub_cfg)
 	--log(2, content, add_mode, group)
 	local sub_allowinsecure = DEFAULT_ALLOWINSECURE
-	local sub_ss_type = DEFAULT_SS_TYPE
-	local sub_hysteria2_type = DEFAULT_HYSTERIA2_TYPE
 	local sub_hy_up_mbps, sub_hy_down_mbps = 1000, 1000
 	if sub_cfg then
 		if sub_cfg.allowInsecure and sub_cfg.allowInsecure ~= "1" then
 			sub_allowinsecure = nil
-		end
-		local ss_type = sub_cfg.ss_type or "global"
-		if ss_type ~= "global" and core_has[ss_type] then
-			sub_ss_type = ss_type
-		end
-		local hysteria2_type = sub_cfg.hysteria2_type or "global"
-		if hysteria2_type ~= "global" and core_has[hysteria2_type] then
-			sub_hysteria2_type = hysteria2_type
 		end
 		sub_hy_up_mbps = sub_cfg.hysteria_up_mbps
 		sub_hy_down_mbps = sub_cfg.hysteria_down_mbps
@@ -326,7 +308,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		group = group
 	}
 	if szType == "ss" then
-		result = set_ss_implementation(sub_ss_type, result)
+		result = set_ss_implementation(result)
 		if not result then return nil end
 
 		--SS-URI = "ss://" userinfo "@" hostname ":" port [ "/" ] [ "?" plugin ] [ "#" tag ]
@@ -515,11 +497,11 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			end
 
 			if params["shadow-tls"] then
-				result.error_msg = sub_ss_type .. " 不支持 shadow-tls 插件。"
+				result.error_msg = "Shadowsocks 不支持 shadow-tls 插件。"
 			end
 		end
 	elseif szType == "ssd" then
-		result = set_ss_implementation(sub_ss_type, result)
+		result = set_ss_implementation(result)
 		if not result then return nil end
 		result.address = content.server
 		result.port = content.port

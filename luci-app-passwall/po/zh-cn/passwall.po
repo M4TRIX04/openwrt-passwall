@@ -556,8 +556,6 @@ msgstr "直连"
 msgid "Blackhole (Block)"
 msgstr "黑洞（屏蔽）"
 
-msgid "There are no available nodes, please add or subscribe nodes first."
-msgstr "没有可用节点，请先添加或订阅节点。"
 
 
 msgid "When using, localhost will connect this node first and then use this node to connect the default node."
@@ -638,11 +636,7 @@ msgstr "地址"
 msgid "Address (Support Domain Name)"
 msgstr "地址（支持域名）"
 
-msgid "Trojan Verify Cert"
-msgstr "验证证书"
 
-msgid "Trojan Cert Path"
-msgstr "证书路径"
 
 msgid "Finger Print"
 msgstr "指纹伪造"
@@ -1152,8 +1146,6 @@ msgstr "请先保存并应用后再手动订阅。"
 msgid "Subscribe URL cannot be empty."
 msgstr "订阅网址不能为空。"
 
-msgid "Subscribe via proxy"
-msgstr "通过代理订阅"
 
 msgid "Update Once on Boot"
 msgstr "开机更新一次"
@@ -1348,8 +1340,6 @@ msgstr "CIDR: 形如'10.0.0.0/8'."
 msgid "Clear logs"
 msgstr "清空日志"
 
-msgid "Only recommend to use with VLESS-TCP-XTLS-Vision."
-msgstr "只推荐与 VLESS-TCP-XTLS-Vision 搭配使用。"
 
 msgid "Password"
 msgstr "密码"
@@ -1453,8 +1443,6 @@ msgstr "允许不安全连接"
 msgid "Whether unsafe connections are allowed. When checked, Certificate validation will be skipped."
 msgstr "是否允许不安全连接。当勾选时，将跳过证书验证。"
 
-msgid "%s Node Use Type"
-msgstr "%s 节点使用类型"
 
 msgid "UDP relay mode"
 msgstr "UDP 中继模式"
@@ -1815,8 +1803,6 @@ msgstr "启用 Multipath TCP，需在服务端和客户端配置中同时启用�
 msgid "An FinalMaskObject in JSON format, used for sharing."
 msgstr "JSON 格式的 FinalMaskObject，用来实现分享。"
 
-msgid "Custom finalmask overrides mkcp, hysteria2, fragment, noise, and related settings."
-msgstr "自定义 finalmask 将覆盖 mkcp、hysteria2、fragment、noise 等相关配置。"
 
 msgid "Fragment"
 msgstr "分片"

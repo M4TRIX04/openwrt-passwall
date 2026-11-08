@@ -6,25 +6,19 @@ local function gh_release_url(self)
 end
 
 -- 排序顺序定义
+-- App Update 页会为这里的每一项生成「检查更新 / 强制更新」，只放需要在线升级的组件。
 _M.order = {
-	"chinadns-ng",
-	"hysteria"
+	"chinadns-ng"
 }
 
+-- 下面这个条目不在 order 里，因此不会有在线升级入口。
+-- 保留它是因为 api.get_app_path("hysteria") / api.finded_com("hysteria")
+-- 依赖它拿到默认路径：节点页、服务端和 app.sh 都靠这个找到二进制。
+-- Hysteria 由用户自行编译安装（见 build 目录），官方上游也不再需要跟。
 _M.hysteria = {
 	name = "Hysteria",
-	repo = "HyNetwork/hysteria",
-	get_url = gh_release_url,
 	cmd_version = "version | awk '/^Version:/ {print $2}'",
-	remote_version_str_replace = "app/",
-	zipped = false,
-	default_path = "/usr/bin/hysteria",
-	match_fmt_str = "linux%%-%s$",
-	file_tree = {
-		armv6 = "arm",
-		armv7 = "arm",
-		mipsel = "mipsle"
-	}
+	default_path = "/usr/bin/hysteria"
 }
 
 _M["chinadns-ng"] = {

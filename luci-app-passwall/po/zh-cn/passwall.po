@@ -1104,20 +1104,8 @@ msgstr "组件更新"
 msgid "Please confirm that your firmware supports FPU."
 msgstr "请确认你的固件支持 FPU。"
 
-msgid "if you want to run from memory, change the path, /tmp beginning then save the application and update it manually."
-msgstr "如果你希望从内存中运行，请更改路径，/tmp 开头，然后保存应用后，再手动更新。"
-
 msgid "Make sure there is enough space to install %s"
 msgstr "确保有足够的空间安装 %s"
-
-msgid "App Path"
-msgstr "程序路径"
-
-msgid "%s App Path"
-msgstr "%s 程序路径"
-
-msgid "%s Client App Path"
-msgstr "%s 客户端程序路径"
 
 msgid "alternate API URL for version checking"
 msgstr "用于版本检查的 API URL"

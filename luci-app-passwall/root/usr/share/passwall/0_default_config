@@ -60,5 +60,3 @@ config global_rules
 	list chnlist_url 'https://cdn.jsdelivr.net/gh/felixonmars/dnsmasq-china-list/accelerated-domains.china.conf'
 	list chnlist_url 'https://cdn.jsdelivr.net/gh/felixonmars/dnsmasq-china-list/apple.china.conf'
 
-config global_app
-	option hysteria_file '/usr/bin/hysteria'

@@ -872,13 +872,9 @@ table td, .table .td {
 		if (port != "") {
 			port_s = port;
 		} else {
-			port_s = o["hysteria_hop"] || o["hysteria2_hop"];
+			port_s = o["hysteria_hop"];
 		}
-		if ((o.type === "Hysteria2" || o.protocol === 'hysteria2') && o.hysteria2_realms) {
-			str += type + " Realm：" + remarks;
-		} else {
-			str += type + "：" + remarks;
-		}
+		str += type + "：" + remarks;
 		return str;
 	}
 
@@ -930,17 +926,12 @@ table td, .table .td {
 						} else {
 							innerHTML = innerHTML.split("{{tcping}}").join('<span class="tcping_value" cbiid="{{id}}"><a href="javascript:void(0)" style="color:inherit">---</a></span>');
 						}
-						let is_realm = (o.type === "Hysteria2" || o.protocol === 'hysteria2') && o.hysteria2_realms || false;
-						if (is_realm) {
-							innerHTML = innerHTML.split("{{url_test}}").join('<span class="ping" cbiid="{{id}}">---</span>');
-						} else {
-							innerHTML = innerHTML.split("{{url_test}}").join('<span class="ping"><a href="javascript:void(0)" onclick="javascript:urltest_node(\'{{id}}\', this)" title="<%:TLS handshake test, latency for reference only%>"><%:Test%></a></span>');
-						}
+						innerHTML = innerHTML.split("{{url_test}}").join('<span class="ping"><a href="javascript:void(0)" onclick="javascript:urltest_node(\'{{id}}\', this)" title="<%:TLS handshake test, latency for reference only%>"><%:Test%></a></span>');
 						innerHTML = innerHTML.split("{{id}}").join(o[".name"]);
 						innerHTML = innerHTML.split("{{group}}").join(o["group"] || "");
 						let node_remarks = get_remarks_name(o);
 						if (show_node_info == "1") {
-							let _port = o["port"] || o["hysteria_hop"] || o["hysteria2_hop"];
+							let _port = o["port"] || o["hysteria_hop"];
 							if (_port) _port = _port.replace(/:/g, '-');
 							if (o["address"] && _port) {
 								let _address = o["address"]

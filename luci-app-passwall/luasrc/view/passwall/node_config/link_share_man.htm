@@ -4,15 +4,10 @@ local api = require "luci.passwall.api"
 local appname = api.appname
 local map = self.map
 
-local has_hysteria2 = api.finded_com("hysteria")
-
-
 local current_node = map:get(section)
 -%>
 <script src="<%=resource%>/view/<%=appname%>/qrcode.min.js"></script>
 <script type="text/javascript">//<![CDATA[
-	let has_hysteria2 = "<%=has_hysteria2%>"
-
 	function padright(str, cnt, pad) {
 		return str + Array(cnt + 1).join(pad);
 	}
@@ -57,13 +52,6 @@ local current_node = map:get(section)
 		} catch (e) {
 			return orig;
 		}
-	}
-
-	function dictvalue(d, key) {
-		var v = d[key];
-		if (typeof (v) === 'undefined' || v === '')
-			return '';
-		return b64decsafe(v);
 	}
 
 	function parseNodeUrl(url) {
@@ -155,9 +143,6 @@ local current_node = map:get(section)
 		} else if (v_type === "Hysteria") {
 			dom_prefix = "hysteria_"
 			protocol = "hysteria"
-		} else if (v_type === "Hysteria2") {
-			dom_prefix = "hysteria2_"
-			protocol = "hysteria2"
 		}
 		var _address = ""
 		if (dom_prefix && dom_prefix != null) {
@@ -176,7 +161,7 @@ local current_node = map:get(section)
 		if (v_type === "SS") {
 			protocol = "ss"
 			var v_port = opt.get(dom_prefix + "port");
-			var v_method = opt.get(dom_prefix + "method") || opt.get(dom_prefix + "ss_method");
+			var v_method = opt.get(dom_prefix + "method");
 			var v_password = opt.get(dom_prefix + "password");
 
 			url = b64encsafe(v_method.value + ":" + v_password.value) + "@" +
@@ -191,34 +176,6 @@ local current_node = map:get(section)
 				params = params.substring(1);
 			}
 			url += params;
-		} else if (v_type === "Hysteria2") {
-			protocol = "hysteria2"
-			var v_port = opt.get(dom_prefix + "port");
-			var params = "";
-			params += opt.query("sni", dom_prefix + "tls_serverName");
-			params += opt.query("insecure", dom_prefix + "tls_allowInsecure");
-			params += opt.query("pinSHA256", dom_prefix + "tls_pinSHA256");
-			params += opt.query("pcs", dom_prefix + "tls_pinSHA256");
-			params += opt.query("vcn", dom_prefix + "tls_CertByName");
-			
-			var v_password = null;
-			
-			v_password = opt.get("hysteria2_auth_password");
-			var dom_obfs = opt.get("hysteria2_obfs_password");
-			if (dom_obfs && dom_obfs.value != "") {
-				params += opt.query("obfs", "hysteria2_obfs_type");
-				params += opt.query("obfs-password", "hysteria2_obfs_password");
-			}
-			params += opt.query("mport", "hysteria2_hop");
-			params = params.replace(/^&/, "");
-			url =
-				_address + ":" +
-				v_port.value + "?" +
-				params +
-				"#" + encodeURI(v_alias.value);
-			if (v_password) {
-				url = encodeURIComponent(v_password.value) + "@" + url
-			}
 		} else if (v_type === "Hysteria") {
 			var v_port = opt.get(dom_prefix + "port");
 			var params = "";
@@ -494,92 +451,9 @@ local current_node = map:get(section)
 			opt.set(dom_prefix + 'port', port);
 			opt.set(dom_prefix + 'password', password || "");
 			opt.set(dom_prefix + 'method', method || "");
-			opt.set(dom_prefix + 'ss_method', method || "");
 			opt.set(dom_prefix + 'tcp_fast_open', queryParam.tfo);
 			if (param !== undefined) {
 				opt.set('remarks', decodeURIComponent(param));
-			}
-
-			if (Object.keys(queryParam).length > 0) {
-				if (queryParam.security) {
-					if (queryParam.security == "tls") {
-						opt.set(dom_prefix + 'tls', true);
-						opt.set(dom_prefix + 'reality', false);
-						opt.set(dom_prefix + 'alpn', queryParam.alpn || 'default');
-						opt.set(dom_prefix + 'tls_serverName', queryParam.sni || '');
-						opt.set(
-							dom_prefix + 'tls_allowInsecure',
-							!((queryParam.allowinsecure ?? '0') === '0' && (queryParam.allowInsecure ?? '0') === '0' && (queryParam.insecure ?? '0') === '0')
-						);
-						if (queryParam.fp && queryParam.fp.trim() != "") {
-							opt.set(dom_prefix + 'utls', true);
-							opt.set(dom_prefix + 'fingerprint', queryParam.fp);
-						}
-						opt.set(dom_prefix + 'ech', !!queryParam.ech);
-						opt.set(dom_prefix + 'ech_config', queryParam.ech || '');
-						opt.set(dom_prefix + 'tls_pinSHA256', queryParam.pcs || '');
-						opt.set(dom_prefix + 'tls_CertByName', queryParam.vcn || '');
-					}
-
-					if (queryParam.security == "reality") {
-						opt.set(dom_prefix + 'tls', true);
-						opt.set(dom_prefix + 'reality', true);
-						opt.set(dom_prefix + 'alpn', queryParam.alpn || 'default');
-						opt.set(dom_prefix + 'tls_serverName', queryParam.sni || '');
-						if (queryParam.fp && queryParam.fp.trim() != "") {
-							opt.set(dom_prefix + 'utls', true);
-							opt.set(dom_prefix + 'fingerprint', queryParam.fp);
-						}
-						opt.set(dom_prefix + 'reality_publicKey', queryParam.pbk || '');
-						opt.set(dom_prefix + 'reality_shortId', queryParam.sid || '');
-						opt.set(dom_prefix + 'reality_spiderX', queryParam.spx || '');
-						opt.set(dom_prefix + 'use_mldsa65Verify', !!queryParam.pqv);
-						opt.set(dom_prefix + 'reality_mldsa65Verify', queryParam.pqv || '');
-					}
-				}
-
-				queryParam.type = queryParam.type?.toLowerCase();
-				if (queryParam.type === "kcp") {
-					queryParam.type = "mkcp";
-				}
-				if (queryParam.type === "h2") {
-					queryParam.type = "http";
-				}
-				opt.set(dom_prefix + 'transport', queryParam.type);
-				if (queryParam.type === "raw" || queryParam.type === "tcp") {
-					opt.set(dom_prefix + 'tcp_guise', queryParam.headerType || "none");
-					if (queryParam.headerType && queryParam.headerType != "none") {
-						opt.set(dom_prefix + 'tcp_guise_http_host', queryParam.host || "");
-						opt.set(dom_prefix + 'tcp_guise_http_path', queryParam.path || "");
-					}
-				} else if (queryParam.type === "ws") {
-					opt.set(dom_prefix + 'ws_host', queryParam.host || "");
-					opt.set(dom_prefix + 'ws_path', queryParam.path || "");
-				} else if (queryParam.type === "http") {
-					opt.set(dom_prefix + 'http_host', queryParam.host || "");
-					opt.set(dom_prefix + 'http_path', queryParam.path || "");
-				} else if (queryParam.type === "quic") {
-					opt.set(dom_prefix + 'quic_guise', queryParam.headerType || "none");
-					opt.set(dom_prefix + 'quic_security', queryParam.quicSecurity);
-					opt.set(dom_prefix + 'quic_key', queryParam.key);
-				} else if (queryParam.type === "mkcp") {
-					opt.set(dom_prefix + 'mkcp_guise', queryParam.headerType || "none");
-					opt.set(dom_prefix + 'mkcp_seed', queryParam.seed || "");
-				} else if (queryParam.type === "grpc") {
-					opt.set(dom_prefix + 'grpc_serviceName', (queryParam.serviceName || queryParam.path) || "");
-					opt.set(dom_prefix + 'grpc_mode', queryParam.mode || "gun");
-				} else if (queryParam.type === "xhttp") {
-					opt.set(dom_prefix + 'xhttp_host', queryParam.host || "");
-					opt.set(dom_prefix + 'xhttp_path', queryParam.path || "");
-					opt.set(dom_prefix + 'xhttp_mode', queryParam.mode || "auto");
-					opt.set(dom_prefix + 'use_xhttp_extra', !!queryParam.extra);
-					opt.set(dom_prefix + 'xhttp_extra', queryParam.extra || "");
-				}
-
-				opt.set(dom_prefix + 'uot', queryParam.udp);
-				opt.set(dom_prefix + 'use_finalmask', !!queryParam.fm);
-				opt.set(dom_prefix + 'finalmask', queryParam.fm || "");
-			
 			}
 		}
 		if (ssu[0] === "hysteria") {

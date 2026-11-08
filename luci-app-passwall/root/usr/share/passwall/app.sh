@@ -174,7 +174,7 @@ run_socks() {
 		error_msg="某种原因，此 Socks 服务的相关配置已失联，启动中止！"
 	fi
 
-	if [ -n "${error_msg}" ] && ([ -n "$(config_n_get $node hysteria_hop)" ] || [ -n "$(config_n_get $node hysteria2_hop)" ] || [ "$(config_n_get $node hysteria2_realms)" = "1" ]); then
+	if [ -n "${error_msg}" ] && [ -n "$(config_n_get $node hysteria_hop)" ]; then
 		unset error_msg
 	fi
 

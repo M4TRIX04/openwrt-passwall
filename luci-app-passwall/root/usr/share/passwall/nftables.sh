@@ -807,7 +807,7 @@ filter_node() {
 	[ -z "$node" ] && return 1
 	local address=$(config_n_get "$node" address)
 	local port=$(config_n_get "$node" port)
-	local hop=$(config_n_get "$node" hysteria2_hop)
+	local hop=$(config_n_get "$node" hysteria_hop)
 	[ -n "$hop" ] && port="${port:+$port,}$hop" 
 	[ -z "$address" -o -z "$port" ] && return 1
 	filter_server_port "$address" "$port" "$stream"

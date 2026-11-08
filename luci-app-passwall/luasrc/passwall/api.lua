@@ -486,19 +486,15 @@ function get_valid_nodes()
 		e.id = e[".name"]
 		if e.type and e.remarks then
 			local type_name = e.type
-			local port = e.port or e.hysteria_hop or e.hysteria2_hop
-			local is_realm = (e.type == "Hysteria2" or e.protocol == 'hysteria2') and e.hysteria2_realms or nil
-			if (port and e.address) or is_realm then
+			local port = e.port or e.hysteria_hop
+			if port and e.address then
 				local address = e.address
-				if is_ip(address) or datatypes.hostname(address) or is_realm then
+				if is_ip(address) or datatypes.hostname(address) then
 					if is_ipv6(address) then address = get_ipv6_full(address) end
-					type_name = is_realm and type_name .. " Realm" or type_name
 					e["remark"] = trim("%s：[%s]" % {type_name, e.remarks})
 					if show_node_info == "1" then
 						port = (port or ""):gsub(":", "-")
-						if not is_realm then
-							e["remark"] = trim("%s：[%s] %s:%s" % {type_name, e.remarks, address, port})
-						end
+						e["remark"] = trim("%s：[%s] %s:%s" % {type_name, e.remarks, address, port})
 					end
 					e.node_type = "normal"
 					if not e.group or e.group == "" then
@@ -515,53 +511,10 @@ function get_valid_nodes()
 	return nodes
 end
 
-function get_node_list()
-	local node_list = {
-		socks_list = {},
-		normal_list = {},
-	}
-	uci:foreach(appname, "socks", function(s)
-		if s.enabled == "1" and s.node then
-			node_list.socks_list[#node_list.socks_list + 1] = {
-				id = "Socks_" .. s[".name"],
-				remark = i18n.translate("Socks Config") .. " [" .. s.port .. i18n.translate("Port") .. "]",
-				group = "Socks"
-			}
-		end
-	end)
-	for k, e in ipairs(get_valid_nodes()) do
-		if e.node_type == "normal" then
-			node_list.normal_list[#node_list.normal_list + 1] = {
-				id = e[".name"],
-				remark = e["remark"],
-				type = e["type"],
-				group = e["group"]
-			}
-		end
-		if e.protocol and e.protocol:find("^_") then
-			local proto = e.protocol:sub(2)
-			if not node_list[proto .. "_list"] then
-				node_list[proto .. "_list"] = {}
-			end
-			node_list[proto .. "_list"][#node_list[proto .. "_list"] + 1] = {
-				id = e[".name"],
-				remark = e["remark"],
-				group = e["group"],
-				o = e,
-			}
-		end
-	end
-	return node_list
-end
-
 function get_node_remarks(n)
 	local remarks = ""
 	if n then
-		local type_name = n.type
-		if (n.type == "Hysteria2" or n.protocol == 'hysteria2') and n.hysteria2_realms then
-			type_name = type_name .. " Realm"
-		end
-		remarks = trim("%s：[%s]" % {type_name, n.remarks})
+		remarks = trim("%s：[%s]" % {n.type, n.remarks})
 	end
 	return remarks
 end
@@ -569,7 +522,7 @@ end
 function get_full_node_remarks(n)
 	local remarks = get_node_remarks(n)
 	if #remarks > 0 then
-		local port = n.port or n.hysteria_hop or n.hysteria2_hop
+		local port = n.port or n.hysteria_hop
 		if n.address and port then
 			port = port:gsub(":", "-")
 			remarks = remarks .. " " .. n.address .. ":" .. port

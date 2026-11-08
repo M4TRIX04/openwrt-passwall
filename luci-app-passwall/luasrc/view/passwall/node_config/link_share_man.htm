@@ -183,59 +183,9 @@ local current_node = map:get(section)
 				_address + ":" +
 				v_port.value + "/?";
 			
-			var shadow_tls;
-			//生成SS Shadow-TLS 插件参数
-			const generateShadowTLSBase64 = function(paramStr) {
-				try {
-					let obj = {};
-					let list = paramStr.split(";");
-					for (let i = 0; i < list.length; i++) {
-						let kv = list[i].split("=");
-						if (kv.length === 2) {
-							let k = kv[0].trim(), v = kv[1].trim();
-							let m = k.match(/^v(\d+)$/);
-							if (m && v === "1") obj.version = m[1];
-							else if (k === "passwd") obj.password = v;
-							else obj[k] = v;
-						}
-					}
-					return b64encsafe(JSON.stringify(obj));
-				} catch (e) {
-					return "";
-				}
-			}
-
 			var params = "";
-
 			opt.get(dom_prefix + "tcp_fast_open")?.checked && (params += "&tfo=1");
-
-			var v_plugin_dom = opt.get(dom_prefix + "plugin");
-			if (v_plugin_dom) {
-				var v_plugin = v_plugin_dom.value;
-				if (v_plugin && v_plugin != "none") {
-					if (v_plugin == "simple-obfs" || v_plugin == "obfs-local") {
-						v_plugin = "obfs-local";
-					}
-					var v_plugin_opts = opt.get(dom_prefix + "plugin_opts").value;
-					if (v_plugin_opts && v_plugin_opts != "") {
-						v_plugin += ";" + v_plugin_opts;
-					}
-					params += "&plugin=" + encodeURIComponent(v_plugin);
-
-					if (v_plugin_dom.value == "shadow-tls" && v_plugin_opts && v_plugin_opts != "") {
-						params = "shadow-tls=" + generateShadowTLSBase64(v_plugin_opts);
-						shadow_tls = 1;
-					}
-				}
-			}
-
-			if (shadow_tls) {
-				url = b64encsafe(v_method.value + ":" + v_password.value + "@" +
-					_address + ":" +
-					v_port.value) + "?";
-			} else {
-				params += "&group="
-			}
+			params += "&group="
 			params += "#" + encodeURIComponent(v_alias.value);
 			if (params[0] == "&") {
 				params = params.substring(1);
@@ -476,7 +426,7 @@ local current_node = map:get(section)
 			var queryParam = {};
 			queryParam = Object.fromEntries(new URLSearchParams(queryStr));
 
-			var server, port, method, password, plugin, pluginOpts;
+			var server, port, method, password;
 			var sipIndex = url0.indexOf("@");
 			if (sipIndex !== -1) {
 				// SIP002 base64(method:pass)@host:port
@@ -523,12 +473,6 @@ local current_node = map:get(section)
 			}
 			password = isURLEncodedPassword(password) ? decodeURIComponent(password) : password;
 
-			if (queryParam.plugin) {
-				var pluginParams = decodeURIComponent(queryParam.plugin).split(";");
-				plugin = pluginParams.shift();
-				pluginOpts = pluginParams.join(";");
-			}
-
 			dom_prefix = "ss_"
 			opt.set('type', "SS");
 
@@ -552,19 +496,11 @@ local current_node = map:get(section)
 			opt.set(dom_prefix + 'method', method || "");
 			opt.set(dom_prefix + 'ss_method', method || "");
 			opt.set(dom_prefix + 'tcp_fast_open', queryParam.tfo);
-			if (plugin && plugin != "none") {
-				plugin = (plugin === "simple-obfs") ? "obfs-local" : plugin;
-				opt.set(dom_prefix + 'plugin_enabled', true);
-				opt.set(dom_prefix + 'plugin', plugin || "none");
-				opt.set(dom_prefix + 'plugin_opts', pluginOpts || "");
-			} else {
-				opt.set(dom_prefix + 'plugin', "none");
-			}
 			if (param !== undefined) {
 				opt.set('remarks', decodeURIComponent(param));
 			}
 
-			if (Object.keys(queryParam).length > 0 && !queryParam.plugin) {
+			if (Object.keys(queryParam).length > 0) {
 				if (queryParam.security) {
 					if (queryParam.security == "tls") {
 						opt.set(dom_prefix + 'tls', true);
@@ -644,26 +580,6 @@ local current_node = map:get(section)
 				opt.set(dom_prefix + 'use_finalmask', !!queryParam.fm);
 				opt.set(dom_prefix + 'finalmask', queryParam.fm || "");
 			
-				if (queryParam["shadow-tls"]) {
-					//解析SS Shadow-TLS 插件参数
-					const parseShadowTLSParams = function(base64Str, outObj) {
-						try {
-							let obj = JSON.parse(b64decsafe(base64Str));
-							if (outObj && typeof outObj === "object") {
-								for (let k in obj) outObj[k] = obj[k];
-							}
-							let out = [];
-							if (obj.version) out.push("v" + obj.version + "=1");
-							if (obj.password) out.push("passwd=" + obj.password);
-							for (let k in obj)
-								if (k !== "version" && k !== "password")
-									out.push(k + "=" + obj[k]);
-							return out.join(";");
-						} catch (e) {
-							return "";
-						}
-					}
-				}
 			}
 		}
 		if (ssu[0] === "hysteria") {

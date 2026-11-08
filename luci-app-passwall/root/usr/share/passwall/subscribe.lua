@@ -224,19 +224,6 @@ local function processData(szType, content, add_mode, group)
 					params[v:sub(1, s - 1)] = UrlDecode(v:sub(s + 1))
 				end
 			end
-			if params.plugin then
-				local plugin_info = params.plugin
-				local idx_pn = plugin_info:find(";")
-				if idx_pn then
-					result.plugin = plugin_info:sub(1, idx_pn - 1)
-					result.plugin_opts = plugin_info:sub(idx_pn + 1, #plugin_info)
-				else
-					result.plugin = plugin_info
-				end
-			end
-			if result.plugin and result.plugin == "simple-obfs" then
-				result.plugin = "obfs-local"
-			end
 			info = info:sub(1, find_index - 1)
 		end
 
@@ -298,10 +285,6 @@ local function processData(szType, content, add_mode, group)
 			result.tcp_fast_open = params.tfo
 			result.use_finalmask = (params.fm and params.fm ~= "") and "1" or nil
 			result.finalmask = (params.fm and params.fm ~= "") and api.base64Encode(params.fm) or nil
-
-			if result.plugin then
-				result.plugin_enabled = "1"
-			end
 
 			if params.type then
 				params.type = string.lower(params.type)
@@ -382,10 +365,6 @@ local function processData(szType, content, add_mode, group)
 				result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
 				result.uot = params.udp
 			end
-
-			if params["shadow-tls"] then
-				result.error_msg = "Shadowsocks 不支持 shadow-tls 插件。"
-			end
 		end
 	elseif szType == "ssd" then
 		result = set_ss_implementation(result)
@@ -394,8 +373,6 @@ local function processData(szType, content, add_mode, group)
 		result.port = content.port
 		result.password = content.password
 		result.method = content.encryption
-		result.plugin = content.plugin
-		result.plugin_opts = content.plugin_options
 		result.group = content.airport
 		result.remarks = content.remarks
 	elseif szType == 'hysteria' then

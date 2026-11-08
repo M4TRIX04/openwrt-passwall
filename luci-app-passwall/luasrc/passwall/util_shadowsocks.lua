@@ -15,8 +15,6 @@ function gen_config_server(node)
 	return config
 end
 
-local plugin_sh, plugin_bin
-
 function gen_config(var)
 	local node_id = var["node"]
 	if not node_id then
@@ -47,13 +45,6 @@ function gen_config(var)
 	end
 	local server = server_host
 
-	local plugin_file
-	if node.plugin and node.plugin ~= "" and node.plugin ~= "none" then
-		plugin_sh = var["plugin_sh"] or ""
-		plugin_file = (plugin_sh ~="") and plugin_sh or node.plugin
-		plugin_bin = node.plugin
-	end
-
 	local config = {
 		server = server,
 		server_port = tonumber(server_port),
@@ -68,8 +59,6 @@ function gen_config(var)
 	}
 
 	if node.type == "SS" then
-		config.plugin = plugin_file or nil
-		config.plugin_opts = (plugin_file) and node.plugin_opts or nil
 		config.mode = mode
 	end
 
@@ -86,15 +75,5 @@ if arg[1] then
 			var = jsonc.parse(arg[2])
 		end
 		print(func(var))
-		if plugin_sh and plugin_sh ~="" and plugin_bin then
-			local f = io.open(plugin_sh, "w")
-			f:write("#!/bin/sh\n")
-			f:write("export PATH=/usr/sbin:/usr/bin:/sbin:/bin:/root/bin:$PATH\n")
-			f:write(plugin_bin .. " $@ &\n")
-			f:write("echo $! > " .. plugin_sh:gsub("%.sh$", ".pid") .. "\n")
-			f:write("wait\n")
-			f:close()
-			luci.sys.call("chmod +x " .. plugin_sh)
-		end
 	end
 end

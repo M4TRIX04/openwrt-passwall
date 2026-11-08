@@ -190,10 +190,6 @@ run_socks() {
 	json_add_string "server_port" "${server_port}"
 	case "$type" in
 	ss)
-		[ -n "$no_run" ] || {
-			local plugin_sh="${config_file%.json}_plugin.sh"
-			json_add_string "plugin_sh" "$plugin_sh"
-		}
 		json_add_string "local_addr" "$bind"
 		json_add_string "local_port" "$socks_port"
 		json_add_string "mode" "tcp_and_udp"
@@ -281,8 +277,6 @@ run_redir() {
 			run_ipt2socks flag=default proto=UDP local_port=${local_port} socks_address=${_socks_address} socks_port=${_socks_port} socks_username=${_socks_username} socks_password=${_socks_password} log_file=${log_file}
 		;;
 		ss)
-			local plugin_sh="${config_file%.json}_plugin.sh"
-			json_add_string "plugin_sh" "$plugin_sh"
 			json_add_string "local_addr" "0.0.0.0"
 			json_add_string "local_port" "$local_port"
 			json_add_string "mode" "udp_only"
@@ -349,8 +343,6 @@ run_redir() {
 			else
 				json_add_string "mode" "tcp_only"
 			fi
-			local plugin_sh="${config_file%.json}_plugin.sh"
-			json_add_string "plugin_sh" "$plugin_sh"
 			json_add_string "local_addr" "0.0.0.0"
 			json_add_string "local_port" "$local_port"
 			lua $UTIL_SS gen_config "$(json_dump)" > $config_file
@@ -476,13 +468,7 @@ socks_node_switch() {
 	local flag new_node
 	eval_set_val $@
 	[ -n "$flag" ] && [ -n "$new_node" ] && {
-		local prefix pf filename
-		# 结束 SS 插件进程
-		for prefix in "" "HTTP_"; do
-			pf="$TMP_PATH/${prefix}SOCKS_${flag}_plugin.pid"
-			[ -s "$pf" ] && kill -9 "$(head -n1 "$pf")" >/dev/null 2>&1
-		done
-
+		local prefix filename
 		busybox pgrep -af "$TMP_BIN_PATH" | awk -v P1="${flag}" 'BEGIN{IGNORECASE=1}$0~P1 && !/acl\/|acl_/{print $1}' | xargs kill -9 >/dev/null 2>&1
 		for prefix in "" "HTTP_" "HTTP2"; do
 			rm -rf "$TMP_PATH/${prefix}SOCKS_${flag}"*
@@ -1140,15 +1126,6 @@ stop() {
 	eval_cache_var
 	[ -n "$USE_TABLES" ] && source $APP_PATH/${USE_TABLES}.sh stop
 	delete_ip2route
-	# 结束 SS 插件进程
-	# kill_all v2ray-plugin obfs-local shadow-tls
-	local pid_file pid
-	find "$TMP_PATH" -type f -name '*_plugin.pid' 2>/dev/null | while read -r pid_file; do
-		read -r pid < "$pid_file"
-		if [ -n "$pid" ]; then
-			kill -9 "$pid" >/dev/null 2>&1
-		fi
-	done
 	busybox pgrep -f "sleep.*(6s|9s|58s)" | xargs kill -9 >/dev/null 2>&1
 	busybox pgrep -af "${CONFIG}/" | awk '! /app\.sh|subscribe\.lua|rule_update\.lua|tasks\.sh|server_app\.lua|ujail/{print $1}' | xargs kill -9 >/dev/null 2>&1
 	unset SS_SYSTEM_DNS_RESOLVER_FORCE_BUILTIN

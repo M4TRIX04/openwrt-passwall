@@ -26,15 +26,23 @@ opkg list-installed | grep luci-app-passwall
 
 ## 📌如何能编译到最新代码？
 
-
 在 `./scripts/feeds install -a` 操作完成后，执行以下命令：
 
 ```shell
-# 1) 只删真正撞名的 7 个和luci feed 自带一个 passwall
+# 1) 只删真正撞名的 7 个和 luci feed 自带一个 passwall
 rm -rf feeds/packages/net/{chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,tcping,shadowsocks-libev}
 rm -rf feeds/luci/applications/luci-app-passwall
 
-# 2) 放packages和luci
-git clone --depth 1 https://github.com/M4TRIX04/openwrt-passwall-packages package/passwall-packages
-git clone --depth 1 https://github.com/M4TRIX04/openwrt-passwall package/passwall-luci
+# 2) 放 packages 和 luci；已存在则只拉取更新，可重复执行
+if [ -d package/passwall-packages ]; then
+	git -C package/passwall-packages pull --ff-only
+else
+	git clone --depth 1 https://github.com/M4TRIX04/openwrt-passwall-packages package/passwall-packages
+fi
+
+if [ -d package/passwall-luci ]; then
+	git -C package/passwall-luci pull --ff-only
+else
+	git clone --depth 1 https://github.com/M4TRIX04/openwrt-passwall package/passwall-luci
+fi
 ```

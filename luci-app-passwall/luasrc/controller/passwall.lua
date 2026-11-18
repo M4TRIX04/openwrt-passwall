@@ -90,6 +90,7 @@ function index()
 
 	--[[Components update]]
 	entry({"admin", "services", appname, "check_passwall"}, call("app_check")).leaf = true
+	entry({"admin", "services", appname, "update_passwall"}, call("app_update")).leaf = true
 	local coms = require "luci.passwall.com"
 	local com
 	for _, com in ipairs(coms.order) do
@@ -659,6 +660,11 @@ end
 
 function app_check()
 	local json = api.to_check_self()
+	http_write_json(json)
+end
+
+function app_update()
+	local json = api.to_update_self()
 	http_write_json(json)
 end
 

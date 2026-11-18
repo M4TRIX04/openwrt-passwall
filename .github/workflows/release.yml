@@ -1,0 +1,131 @@
+name: Release IPK
+
+# 私人构建，只当「下载站」用：手动触发，构建出 ipk 后覆盖上传到同名的
+# latest release。不按版本号建 tag（日期制下 tag 会迅速膨胀），不生成
+# opkg feed，也不做签名 —— 这个包不进任何源。
+#
+# 产物：
+#   luci-app-passwall_<版本>_all.ipk   LUCI_PKGARCH:=all，架构无关
+#   latest.txt                         版本标记，LuCI 的手动更新读这个
+#
+# latest.txt 格式（api.lua 的 to_check_self 按 key=value 解析）：
+#   version=26.11.18-r1
+#   file=luci-app-passwall_26.11.18-r1_all.ipk
+#   sha256=...
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-ipk
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Generate .config
+        run: |
+          {
+            echo "CONFIG_ALL_NONSHARED=n"
+            echo "CONFIG_ALL_KMODS=n"
+            echo "CONFIG_ALL=n"
+            echo "CONFIG_AUTOREMOVE=n"
+            echo "CONFIG_PACKAGE_luci-app-passwall=m"
+          } > .config
+
+      - name: Compile With OpenWrt SDK
+        uses: openwrt/gh-action-sdk@v11
+        env:
+          ARCH: x86_64-24.10.5
+          PACKAGES: luci-app-passwall
+          # 依赖的二进制包来自自己的 packages fork，不用上游（上游还带着本项目
+          # 已删除的 xray / sing-box / hysteria2 等，引进来只会放大构建面）。
+          EXTRA_FEEDS: src-git|passwall_packages|https://github.com/M4TRIX04/openwrt-passwall-packages.git;main
+          BUILD_LOG: 1
+
+      - name: Collect IPK and write latest.txt
+        run: |
+          mkdir -p out
+          find bin/packages/ -type f -name 'luci-app-passwall_*.ipk' -exec cp {} out/ \;
+          n=$(find out -name '*.ipk' | wc -l)
+          if [ "$n" -ne 1 ]; then
+            echo "期望产出 1 个 ipk，实际 $n 个"
+            ls -l out
+            exit 1
+          fi
+
+          ipk=$(basename "$(ls out/*.ipk)")
+          case "$ipk" in
+            *_all.ipk) ;;
+            *) echo "::warning::$ipk 不是 _all 架构，与 LUCI_PKGARCH:=all 的预期不符" ;;
+          esac
+
+          ver=$(echo "$ipk" | cut -d_ -f2)
+          {
+            echo "version=$ver"
+            echo "file=$ipk"
+            echo "sha256=$(sha256sum "out/$ipk" | cut -d' ' -f1)"
+          } > out/latest.txt
+
+          echo "VERSION=$ver" >> "$GITHUB_ENV"
+          ls -l out
+          cat out/latest.txt
+
+      - name: Publish rolling release
+        run: |
+          if gh release view latest >/dev/null 2>&1; then
+            :
+          else
+            gh release create latest --title "Latest build" --notes "滚动构建，资产每次覆盖。"
+          fi
+
+          gh release upload latest out/* --clobber
+
+          cat > /tmp/notes.md <<EOF
+          ## luci-app-passwall ${VERSION}
+
+          构建于 $(date -u '+%Y-%m-%d %H:%M UTC')，提交 \`${GITHUB_SHA:0:7}\`。
+
+          ### 在 LuCI 里更新
+
+          组件更新 → Passwall 版本 → 「检查更新」，有新版会变成「点击更新」，
+          点一下即可下载安装并重启服务。
+
+          ### 手动安装
+
+          \`\`\`
+          opkg install --force-reinstall https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/$(basename $(ls out/*.ipk))
+          \`\`\`
+
+          装完清一下 LuCI 缓存并重启服务：
+
+          \`\`\`
+          rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache
+          /etc/init.d/passwall restart
+          \`\`\`
+          EOF
+
+          gh release edit latest \
+            --title "luci-app-passwall ${VERSION}" \
+            --notes-file /tmp/notes.md
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-logs-${{ github.run_id }}
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 7

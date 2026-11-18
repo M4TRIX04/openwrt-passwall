@@ -126,6 +126,21 @@ local version = {}
 
 		addPageNotice();
 
+		// 插件自身：后端一步做完下载、校验、安装，不走下面那套解包/搬运流程。
+		if (app === 'passwall') {
+			XHR.get('<%=api.url("update_passwall")%>', {
+				token: tokenStr
+			}, function (x, json) {
+				removePageNotice();
+				if (json.code) {
+					onRequestError(btn, json.error);
+				} else {
+					onUpdateSuccess(btn);
+				}
+			}, 300);
+			return;
+		}
+
 		var appUpdateUrl = '<%=api.url("update_")%>' + app;
 		var appInfo = appInfoList[app];
 		// Download file

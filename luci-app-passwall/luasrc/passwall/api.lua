@@ -1168,41 +1168,152 @@ function get_version()
 	if not version or #version == 0 then
 		version = sys.exec("apk list luci-app-passwall 2>/dev/null | awk '/installed/ {print $1}' | cut -d'-' -f4-")
 	end
-	return (version or ""):gsub("\n", ""):match("^([^-]+)")
+	-- 返回完整版本，含 -r 修订号。日期制下同一天可能改好几次，
+	-- 只比 PKG_VERSION 会把 r1→r2 当成「已是最新」。
+	return ((version or ""):gsub("[\r\n]", ""))
+end
+
+--[[ 自身更新 ]]
+-- 私人构建，不走 opkg feed，也不签名。数据源就是自己 fork 的滚动 latest
+-- release，里面的 latest.txt 由 .github/workflows/release.yml 生成：
+--     version=26.11.18-r1
+--     file=luci-app-passwall_26.11.18-r1_all.ipk
+--     sha256=...
+-- ipk 是 LUCI_PKGARCH:=all，架构无关。
+SELF_UPDATE_REPO = "M4TRIX04/openwrt-passwall"
+SELF_UPDATE_URL = "https://github.com/" .. SELF_UPDATE_REPO .. "/releases/download/latest/latest.txt"
+SELF_UPDATE_HTML = "https://github.com/" .. SELF_UPDATE_REPO .. "/releases/tag/latest"
+
+-- compare_versions 用 "[%.%-]" 切分，"-r1" 里的 r 会被切出来、tonumber 失败按 0 算，
+-- 于是 26.11.18-r1 和 26.11.18-r2 被判成相等。日期制下同一天可能改好几次，
+-- 自身更新必须连修订号一起比，所以这里单独拆成「日期段 + 修订号」。
+local function split_self_version(v)
+	v = (v or ""):gsub("^%s*", ""):gsub("%s*$", ""):gsub("^v", "")
+	local main, rev = v:match("^([%d%.]+)%-r(%d+)$")
+	if not main then
+		main = v:match("^([%d%.]+)") or "0"
+		rev = "0"
+	end
+	return main, tonumber(rev) or 0
+end
+
+local function self_version_gt(a, b)
+	local am, ar = split_self_version(a)
+	local bm, br = split_self_version(b)
+	if am ~= bm then
+		return compare_versions(am, ">", bm)
+	end
+	return ar > br
 end
 
 function to_check_self()
-	local url = "https://raw.githubusercontent.com/Openwrt-Passwall/openwrt-passwall/main/luci-app-passwall/Makefile"
-	local tmp_file = "/tmp/passwall_makefile"
-	local return_code, result = curl_auto(url, tmp_file, curl_args)
-	result = return_code == 0
-	if not result then
+	local local_version = get_version()
+	local tmp_file = "/tmp/passwall_self_version.txt"
+
+	local return_code = curl_auto(SELF_UPDATE_URL, tmp_file, curl_args)
+	if return_code ~= 0 then
 		exec("/bin/rm", {"-f", tmp_file})
 		return {
 			code = 1,
-			error = i18n.translatef("Failed")
+			local_version = local_version,
+			error = i18n.translate("Failed to fetch version info. Check the router's network or proxy.")
 		}
 	end
-	local local_version  = get_version()
-	local remote_version = sys.exec("echo -n $(grep '^PKG_VERSION' /tmp/passwall_makefile | head -n 1 | awk -F '=' '{print $2}')")
+
+	local info = {}
+	for k, v in (fs.readfile(tmp_file) or ""):gmatch("(%w+)%s*=%s*([^\r\n]+)") do
+		info[k] = trim(v)
+	end
 	exec("/bin/rm", {"-f", tmp_file})
 
-	local has_update = compare_versions(local_version, "<", remote_version)
-	if not has_update then
+	if not info.version or info.version == "" then
+		return {
+			code = 1,
+			local_version = local_version,
+			error = i18n.translate("Invalid version info.")
+		}
+	end
+
+	if not self_version_gt(info.version, local_version) then
 		return {
 			code = 0,
 			local_version = local_version,
-			remote_version = remote_version
+			remote_version = info.version
 		}
 	end
+
 	return {
-		code = 1,
+		code = 0,
 		has_update = true,
 		local_version = local_version,
-		remote_version = remote_version,
-		error = i18n.translatef("The latest version: %s, currently does not support automatic update, if you need to update, please compile or download the ipk and then manually install.", remote_version)
+		remote_version = info.version,
+		file = info.file,
+		sha256 = info.sha256,
+		html_url = SELF_UPDATE_HTML
 	}
 end
+
+function to_update_self()
+	local info = to_check_self()
+	if info.code ~= 0 then
+		return info
+	end
+	if not info.has_update then
+		return {code = 1, error = i18n.translate("It is the latest version.")}
+	end
+	if not info.file or info.file == "" then
+		return {code = 1, error = i18n.translate("Invalid version info.")}
+	end
+
+	local url = "https://github.com/" .. SELF_UPDATE_REPO .. "/releases/download/latest/" .. info.file
+	local tmp_file = "/tmp/passwall_self_update.ipk"
+	local log_file = "/tmp/passwall_self_update.log"
+	exec("/bin/rm", {"-f", tmp_file, log_file})
+
+	local _curl_args = clone(curl_args)
+	table.insert(_curl_args, "--speed-limit 1024 --speed-time 30 --max-time 300")
+	local return_code = curl_auto(url, tmp_file, _curl_args)
+	if return_code ~= 0 then
+		exec("/bin/rm", {"-f", tmp_file})
+		return {code = 1, error = i18n.translatef("File download failed or timed out: %s", url)}
+	end
+
+	-- 先校验再装。宁可更新失败，也不要把半个 ipk 装进去。
+	if info.sha256 and info.sha256 ~= "" then
+		local sum = trim(sys.exec("sha256sum %s 2>/dev/null | awk '{print $1}'" % tmp_file))
+		if sum ~= info.sha256 then
+			exec("/bin/rm", {"-f", tmp_file})
+			return {code = 1, error = i18n.translate("Checksum mismatch, update aborted.")}
+		end
+	end
+
+	local cmd
+	if fs.access("/bin/opkg") or fs.access("/usr/bin/opkg") then
+		cmd = "opkg install --force-reinstall %s" % tmp_file
+	elseif fs.access("/usr/bin/apk") or fs.access("/sbin/apk") then
+		cmd = "apk add --allow-untrusted --force-overwrite %s" % tmp_file
+	else
+		exec("/bin/rm", {"-f", tmp_file})
+		return {code = 1, error = i18n.translate("Neither opkg nor apk found.")}
+	end
+
+	local rc = sys.call(cmd .. " >" .. log_file .. " 2>&1")
+	exec("/bin/rm", {"-f", tmp_file})
+
+	if rc ~= 0 then
+		local log = trim(fs.readfile(log_file) or "")
+		return {code = 1, error = i18n.translate("Install failed: ") .. (log ~= "" and log or ("exit " .. tostring(rc)))}
+	end
+	exec("/bin/rm", {"-f", log_file})
+
+	-- LuCI 有编译缓存，不清掉页面还会显示旧版本号。
+	sys.call("rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache 2>/dev/null")
+	-- 后台重启，别把当前这个请求卡住。
+	sys.call("/etc/init.d/passwall restart >/dev/null 2>&1 &")
+
+	return {code = 0}
+end
+
 
 function luci_types(id, m, s, type_name, option_prefix)
 	local fv_type

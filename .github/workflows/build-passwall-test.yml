@@ -1,15 +1,65 @@
 name: Passwall test IPK
 
+# 只产出 ipk 当 artifact，不发布。用来验证某一版代码在指定 SDK 上编得出来。
+#
+# 触发时选编哪个 SDK：both / 24.10 / 21.02。
+#
+# 和 Release IPK 的区别：这里不设 optional，任何一腿编不过都要看见红叉——
+# 它本来就是拿来探路的。Release 那边才把 21.02 标成 optional，避免挡住主资产。
+
 on:
   workflow_dispatch:
+    inputs:
+      targets:
+        description: '编译哪个 SDK'
+        type: choice
+        options:
+          - both
+          - "24.10"
+          - "21.02"
+        default: both
 
 permissions:
   contents: read
 
 jobs:
+  prepare:
+    name: prepare matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - name: Build matrix from input
+        id: set
+        env:
+          TARGETS: ${{ inputs.targets }}
+        run: |
+          cat > /tmp/matrix.json <<'EOF'
+          [
+            {"arch":"x86_64-24.10.5","label":"24.10","feeds":"src-git|passwall_packages|https://github.com/M4TRIX04/openwrt-passwall-packages.git;main"},
+            {"arch":"x86_64-21.02.7","label":"21.02","feeds":""}
+          ]
+          EOF
+
+          case "$TARGETS" in
+            "24.10") filter='select(.label=="24.10")' ;;
+            "21.02") filter='select(.label=="21.02")' ;;
+            *)       filter='.' ;;
+          esac
+
+          matrix=$(jq -c "[.[] | $filter]" /tmp/matrix.json)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix"
+
   build:
+    name: build ${{ matrix.label }}
+    needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -29,14 +79,9 @@ jobs:
       - name: Compile With OpenWrt SDK
         uses: openwrt/gh-action-sdk@v11
         env:
-          ARCH: x86_64-24.10.5
+          ARCH: ${{ matrix.arch }}
           PACKAGES: luci-app-passwall
-          # luci-app-passwall 的 LUCI_DEPENDS 依赖 passwall-packages 提供的
-          # chinadns-ng / dns2socks / ipt2socks / microsocks / tcping /
-          # shadowsocks-c / hysteria，这些都不在 SDK 默认 feed 里，必须额外引入。
-          # 用自己的 fork，不用上游：上游还带着 xray / sing-box / hysteria2 等
-          # 本项目已经删掉的包，多引进来只会让构建面变大。
-          EXTRA_FEEDS: src-git|passwall_packages|https://github.com/M4TRIX04/openwrt-passwall-packages.git;main
+          EXTRA_FEEDS: ${{ matrix.feeds }}
           BUILD_LOG: 1
 
       - name: Collect LuCI IPKs
@@ -49,7 +94,7 @@ jobs:
       - name: Upload test IPKs
         uses: actions/upload-artifact@v6
         with:
-          name: passwall-24.10.5-x86_64-${{ github.run_id }}
+          name: passwall-${{ matrix.label }}-${{ github.run_id }}
           path: upload/*.ipk
           if-no-files-found: error
           retention-days: 14
@@ -58,7 +103,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: build-logs-${{ github.run_id }}
+          name: build-logs-${{ matrix.label }}-${{ github.run_id }}
           path: logs/
           if-no-files-found: ignore
           retention-days: 7

@@ -4,17 +4,30 @@ name: Release IPK
 # latest release。不按版本号建 tag（日期制下 tag 会迅速膨胀），不生成
 # opkg feed，也不做签名 —— 这个包不进任何源。
 #
-# 产物：
-#   luci-app-passwall_<版本>_all.ipk   LUCI_PKGARCH:=all，架构无关
-#   latest.txt                         版本标记，LuCI 的手动更新读这个
+# 触发时选编哪个 SDK：
+#   both   两个都编（默认）
+#   24.10  只编 24.10
+#   21.02  只编 21.02
 #
-# latest.txt 格式（api.lua 的 to_check_self 按 key=value 解析）：
-#   version=26.11.18-r1
-#   file=luci-app-passwall_26.11.18-r1_all.ipk
-#   sha256=...
+# 两个 SDK 出来的包都是 LUCI_PKGARCH:=all，文件名会撞车，所以 21.02 那份加
+# -21.02 后缀。21.02 已 EOL，容器镜像和代码兼容性都可能出问题，所以在和
+# 24.10 一起编时它标成 optional：编不过只报错，不挡主资产发布。
+#
+# latest.txt 只有一个 file 字段，固定指向 24.10 那份，21.02 不进自更新链路。
+# 因此「只编 21.02」这一档不会发布 release —— 没有主资产就没有 latest.txt，
+# 发了反而会破坏自更新。那一档只产出 artifact。
 
 on:
   workflow_dispatch:
+    inputs:
+      targets:
+        description: '编译哪个 SDK'
+        type: choice
+        options:
+          - both
+          - "24.10"
+          - "21.02"
+        default: both
 
 permissions:
   contents: write
@@ -24,11 +37,51 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  prepare:
+    name: prepare matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+      has_primary: ${{ steps.set.outputs.has_primary }}
+    steps:
+      - name: Build matrix from input
+        id: set
+        env:
+          TARGETS: ${{ inputs.targets }}
+        run: |
+          cat > /tmp/matrix.json <<'EOF'
+          [
+            {"arch":"x86_64-24.10.5","label":"24.10","suffix":"","optional":false,"feeds":"src-git|passwall_packages|https://github.com/M4TRIX04/openwrt-passwall-packages.git;main"},
+            {"arch":"x86_64-21.02.7","label":"21.02","suffix":"-21.02","optional":true,"feeds":""}
+          ]
+          EOF
+
+          case "$TARGETS" in
+            "24.10") filter='select(.label=="24.10")' ;;
+            "21.02") filter='select(.label=="21.02")' ;;
+            *)       filter='.' ;;
+          esac
+
+          matrix=$(jq -c "[.[] | $filter]" /tmp/matrix.json)
+
+          # 只剩 21.02 一条腿时没有主资产要保护，别把它的失败吞掉
+          matrix=$(printf '%s' "$matrix" | jq -c \
+            'if length == 1 and .[0].label == "21.02" then [.[0] | .optional = false] else . end')
+
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "has_primary=$(printf '%s' "$matrix" | jq -r 'any(.label == "24.10")')" >> "$GITHUB_OUTPUT"
+          echo "$matrix"
+
+  build:
+    name: build ${{ matrix.label }}
+    needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    continue-on-error: ${{ matrix.optional }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -48,14 +101,14 @@ jobs:
       - name: Compile With OpenWrt SDK
         uses: openwrt/gh-action-sdk@v11
         env:
-          ARCH: x86_64-24.10.5
+          ARCH: ${{ matrix.arch }}
           PACKAGES: luci-app-passwall
-          # 依赖的二进制包来自自己的 packages fork，不用上游（上游还带着本项目
-          # 已删除的 xray / sing-box / hysteria2 等，引进来只会放大构建面）。
-          EXTRA_FEEDS: src-git|passwall_packages|https://github.com/M4TRIX04/openwrt-passwall-packages.git;main
+          EXTRA_FEEDS: ${{ matrix.feeds }}
           BUILD_LOG: 1
 
-      - name: Collect IPK and write latest.txt
+      - name: Collect IPK
+        env:
+          SUFFIX: ${{ matrix.suffix }}
         run: |
           mkdir -p out
           find bin/packages/ -type f -name 'luci-app-passwall_*.ipk' -exec cp {} out/ \;
@@ -67,23 +120,65 @@ jobs:
           fi
 
           ipk=$(basename "$(ls out/*.ipk)")
-          case "$ipk" in
-            *_all.ipk) ;;
-            *) echo "::warning::$ipk 不是 _all 架构，与 LUCI_PKGARCH:=all 的预期不符" ;;
-          esac
-
           ver=$(echo "$ipk" | cut -d_ -f2)
-          {
-            echo "version=$ver"
-            echo "file=$ipk"
-            echo "sha256=$(sha256sum "out/$ipk" | cut -d' ' -f1)"
-          } > out/latest.txt
 
-          echo "VERSION=$ver" >> "$GITHUB_ENV"
+          # 非主资产加后缀，避免和 24.10 那份同名互相覆盖。
+          if [ -n "$SUFFIX" ]; then
+            mv "out/$ipk" "out/${ipk%.ipk}${SUFFIX}.ipk"
+            ipk="${ipk%.ipk}${SUFFIX}.ipk"
+          else
+            # latest.txt 只由主资产写，自更新链路只认这一个文件。
+            {
+              echo "version=$ver"
+              echo "file=$ipk"
+              echo "sha256=$(sha256sum "out/$ipk" | cut -d' ' -f1)"
+            } > out/latest.txt
+            cat out/latest.txt
+          fi
+
           ls -l out
-          cat out/latest.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ipk-${{ matrix.label }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-logs-${{ matrix.label }}-${{ github.run_id }}
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release:
+    needs: [prepare, build]
+    if: always() && needs.prepare.outputs.has_primary == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v6
+        with:
+          pattern: ipk-*
+          path: out
+          merge-multiple: true
+
+      - name: Check primary asset
+        run: |
+          ls -l out
+          if [ ! -f out/latest.txt ]; then
+            echo "主资产（24.10）没产出，latest.txt 缺失，放弃发布"
+            exit 1
+          fi
+          echo "VERSION=$(sed -n 's/^version=//p' out/latest.txt)" >> "$GITHUB_ENV"
 
       - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if gh release view latest >/dev/null 2>&1; then
             :
@@ -93,10 +188,19 @@ jobs:
 
           gh release upload latest out/* --clobber
 
+          files=$(ls out/*.ipk | xargs -r -n1 basename | sed 's/^/- `/; s/$/`/')
+
           cat > /tmp/notes.md <<EOF
           ## luci-app-passwall ${VERSION}
 
           构建于 $(date -u '+%Y-%m-%d %H:%M UTC')，提交 \`${GITHUB_SHA:0:7}\`。
+
+          ### 资产
+
+          ${files}
+
+          - 不带后缀的那份是 24.10 构建，LuCI 里的自更新用的就是它。
+          - 带 \`-21.02\` 后缀的那份是 21.02 构建，只能手动装。
 
           ### 在 LuCI 里更新
 
@@ -106,7 +210,7 @@ jobs:
           ### 手动安装
 
           \`\`\`
-          opkg install --force-reinstall https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/$(basename $(ls out/*.ipk))
+          opkg install --force-reinstall <上面任意一个文件的直链>
           \`\`\`
 
           装完清一下 LuCI 缓存并重启服务：
@@ -120,12 +224,3 @@ jobs:
           gh release edit latest \
             --title "luci-app-passwall ${VERSION}" \
             --notes-file /tmp/notes.md
-
-      - name: Upload build logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v6
-        with:
-          name: build-logs-${{ github.run_id }}
-          path: logs/
-          if-no-files-found: ignore
-          retention-days: 7

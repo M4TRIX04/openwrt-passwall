@@ -800,8 +800,8 @@ add_firewall_rule() {
 	ipset -! create $IPSET_WHITE6 nethash family inet6 maxelem 1048576 timeout 172800
 	ipset -! create $IPSET_BLOCK6 nethash family inet6 maxelem 1048576 timeout 172800
 
-	cat $RULES_PATH/chnroute | tr -s '\n' | grep -v "^#" | sed -e "/^$/d" | sed -e "s/^/add $IPSET_CHN &/g" -e "s/$/ timeout 0/g" | ipset -! -R
-	cat $RULES_PATH/chnroute6 | tr -s '\n' | grep -v "^#" | sed -e "/^$/d" | sed -e "s/^/add $IPSET_CHN6 &/g" -e "s/$/ timeout 0/g" | ipset -! -R
+	cat $RULES_PATH/chnroute | tr -s '\n' | sed 's/#.*//' | sed -e "/^$/d" | sed -e "s/^/add $IPSET_CHN &/g" -e "s/$/ timeout 0/g" | ipset -! -R
+	cat $RULES_PATH/chnroute6 | tr -s '\n' | sed 's/#.*//' | sed -e "/^$/d" | sed -e "s/^/add $IPSET_CHN6 &/g" -e "s/$/ timeout 0/g" | ipset -! -R
 
 	#导入规则列表、分流规则中的IP列表
 	local USE_PROXY_LIST_ALL=${USE_PROXY_LIST}
@@ -823,20 +823,20 @@ add_firewall_rule() {
 
 	#直连列表
 	[ "$USE_DIRECT_LIST_ALL" = "1" ] && {
-		cat $RULES_PATH/direct_ip | tr -s "\r\n" "\n" | grep -v "^#" | sed -e "/^$/d" | grep -E "(\.((2(5[0-5]|[0-4][0-9]))|[0-1]?[0-9]{1,2})){3}" | sed -e "s/^/add $IPSET_WHITE &/g" -e "s/$/ timeout 0/g" | ipset -! -R
-		cat $RULES_PATH/direct_ip | tr -s "\r\n" "\n" | grep -v "^#" | sed -e "/^$/d" | grep -E "([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4}" | sed -e "s/^/add $IPSET_WHITE6 &/g" -e "s/$/ timeout 0/g" | ipset -! -R
+		cat $RULES_PATH/direct_ip | tr -s "\r\n" "\n" | sed 's/#.*//' | sed -e "/^$/d" | grep -E "(\.((2(5[0-5]|[0-4][0-9]))|[0-1]?[0-9]{1,2})){3}" | sed -e "s/^/add $IPSET_WHITE &/g" -e "s/$/ timeout 0/g" | ipset -! -R
+		cat $RULES_PATH/direct_ip | tr -s "\r\n" "\n" | sed 's/#.*//' | sed -e "/^$/d" | grep -E "([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4}" | sed -e "s/^/add $IPSET_WHITE6 &/g" -e "s/$/ timeout 0/g" | ipset -! -R
 	}
 
 	#代理列表
 	[ "$USE_PROXY_LIST_ALL" = "1" ] && {
-		cat $RULES_PATH/proxy_ip | tr -s "\r\n" "\n" | grep -v "^#" | sed -e "/^$/d" | grep -E "(\.((2(5[0-5]|[0-4][0-9]))|[0-1]?[0-9]{1,2})){3}" | sed -e "s/^/add $IPSET_BLACK &/g" -e "s/$/ timeout 0/g" | ipset -! -R
-		cat $RULES_PATH/proxy_ip | tr -s "\r\n" "\n" | grep -v "^#" | sed -e "/^$/d" | grep -E "([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4}" | sed -e "s/^/add $IPSET_BLACK6 &/g" -e "s/$/ timeout 0/g" | ipset -! -R
+		cat $RULES_PATH/proxy_ip | tr -s "\r\n" "\n" | sed 's/#.*//' | sed -e "/^$/d" | grep -E "(\.((2(5[0-5]|[0-4][0-9]))|[0-1]?[0-9]{1,2})){3}" | sed -e "s/^/add $IPSET_BLACK &/g" -e "s/$/ timeout 0/g" | ipset -! -R
+		cat $RULES_PATH/proxy_ip | tr -s "\r\n" "\n" | sed 's/#.*//' | sed -e "/^$/d" | grep -E "([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4}" | sed -e "s/^/add $IPSET_BLACK6 &/g" -e "s/$/ timeout 0/g" | ipset -! -R
 	}
 
 	#屏蔽列表
 	[ "$USE_BLOCK_LIST_ALL" = "1" ] && {
-		cat $RULES_PATH/block_ip | tr -s "\r\n" "\n" | grep -v "^#" | sed -e "/^$/d" | grep -E "(\.((2(5[0-5]|[0-4][0-9]))|[0-1]?[0-9]{1,2})){3}" | sed -e "s/^/add $IPSET_BLOCK &/g" -e "s/$/ timeout 0/g" | ipset -! -R
-		cat $RULES_PATH/block_ip | tr -s "\r\n" "\n" | grep -v "^#" | sed -e "/^$/d" | grep -E "([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4}" | sed -e "s/^/add $IPSET_BLOCK6 &/g" -e "s/$/ timeout 0/g" | ipset -! -R
+		cat $RULES_PATH/block_ip | tr -s "\r\n" "\n" | sed 's/#.*//' | sed -e "/^$/d" | grep -E "(\.((2(5[0-5]|[0-4][0-9]))|[0-1]?[0-9]{1,2})){3}" | sed -e "s/^/add $IPSET_BLOCK &/g" -e "s/$/ timeout 0/g" | ipset -! -R
+		cat $RULES_PATH/block_ip | tr -s "\r\n" "\n" | sed 's/#.*//' | sed -e "/^$/d" | grep -E "([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4}" | sed -e "s/^/add $IPSET_BLOCK6 &/g" -e "s/$/ timeout 0/g" | ipset -! -R
 	}
 
 	#分流列表

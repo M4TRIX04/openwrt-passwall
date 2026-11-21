@@ -305,12 +305,12 @@ table td, .table .td {
 		section = cbi_id;
 		document.getElementById("set_node_div").style.display="block";
 		var node_name = document.getElementById("cbid.<%=appname%>." + cbi_id + ".remarks").value;
-		document.getElementById("set_node_name").innerHTML = node_name;
+		document.getElementById("set_node_name").textContent = node_name;
 	}
 
 	function close_set_node_div() {
 		document.getElementById("set_node_div").style.display="none";
-		document.getElementById("set_node_name").innerHTML = "";
+		document.getElementById("set_node_name").textContent = "";
 	}
 
 	function row_top(btn, group) {

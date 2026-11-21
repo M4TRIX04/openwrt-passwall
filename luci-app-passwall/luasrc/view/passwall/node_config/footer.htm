@@ -38,7 +38,7 @@ local api = self.api
 							protocol: getOption(name).value
 						});
 					} else {
-						window.location.href = node_config_url + "?select_proto=" + el.value;
+						window.location.href = node_config_url + "?select_proto=" + encodeURIComponent(el.value);
 					}
 				}
 			});

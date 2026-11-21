@@ -896,6 +896,7 @@ add_firewall_rule() {
 		#echolog "使用缓存加载chnroute..."
 		nft -f $RULES_PATH/chnroute.nft
 	else
+		gen_nftset $NFTSET_CHN ipv4_addr "2d" 0
 		cat $RULES_PATH/chnroute | tr -s '\n' | sed 's/#.*//' | insert_nftset $NFTSET_CHN "0"
 	fi
 	gen_nftset $NFTSET_BLACK ipv4_addr "2d" 0
@@ -911,6 +912,7 @@ add_firewall_rule() {
 		#echolog "使用缓存加载chnroute6..."
 		nft -f $RULES_PATH/chnroute6.nft
 	else
+		gen_nftset $NFTSET_CHN6 ipv6_addr "2d" 0
 		cat $RULES_PATH/chnroute6 | tr -s '\n' | sed 's/#.*//' | insert_nftset $NFTSET_CHN6 "0"
 	fi
 	gen_nftset $NFTSET_BLACK6 ipv6_addr "2d" 0

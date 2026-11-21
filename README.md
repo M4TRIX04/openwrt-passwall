@@ -1,13 +1,3 @@
-## :mega: Note
-
-This repository is a personal trimmed fork of PassWall, heavily reduced from upstream `26.6.2`. Its feature set is **not** the same as upstream, so do not apply the upstream documentation directly:
-
-- **Only Shadowsocks and Hysteria (v1) are supported as client nodes.** Sing-box, Xray, NaiveProxy, ShadowsocksR and Shadowsocks-Rust support have all been removed, so vmess / vless / trojan / hysteria2 / tuic / anytls / naiveproxy / wireguard nodes cannot be used, and such nodes in a subscription are skipped.
-- **Shunt nodes (`_shunt`), URLTest groups (`_urltest`), custom interface nodes (`_iface`) and chain proxy have been removed** — they are Sing-box only features. Per-device and per-domain routing is still available through ACL and global settings, using a node plus a DNS shunt.
-- **Only the `udp` / `tcp` / `dns2socks` DNS modes remain** (the Sing-box / Xray DNS modes are gone). The DNS shunt still supports Dnsmasq / ChinaDNS-NG / SmartDNS.
-- **The rules page only keeps the URL list updater** (gfwlist / chnroute / chnroute6 / chnlist). `geo2rule`, Geoview and everything around geoip.dat / geosite.dat have been removed, so the `v2ray-geodata` and `geoview` packages are no longer needed.
-- The server side supports Shadowsocks / Socks / Hysteria.
-
 ## Versioning
 
 This follows the upstream date-based scheme, so that every package installed on a device can be traced back to the build it came from:

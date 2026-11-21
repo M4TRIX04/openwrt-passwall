@@ -236,7 +236,9 @@ gen_nftset() {
 			nft "add set $NFTABLE_NAME $nftset_name { type $ip_type; flags interval, timeout; timeout $timeout_argument_set; gc-interval $gc_interval_time; auto-merge; }"
 		fi
 	fi
-	[ $# -gt 0 ] || [ ! -t 0 ] && insert_nftset "$nftset_name" "$timeout_argument_element" "$@"
+	if [ $# -gt 0 ]; then
+		insert_nftset "$nftset_name" "$timeout_argument_element" "$@"
+	fi
 }
 
 get_jump_nft() {
@@ -894,7 +896,7 @@ add_firewall_rule() {
 		#echolog "使用缓存加载chnroute..."
 		nft -f $RULES_PATH/chnroute.nft
 	else
-		cat $RULES_PATH/chnroute | tr -s '\n' | sed 's/#.*//' | gen_nftset $NFTSET_CHN ipv4_addr "2d" 0 
+		cat $RULES_PATH/chnroute | tr -s '\n' | sed 's/#.*//' | insert_nftset $NFTSET_CHN "0"
 	fi
 	gen_nftset $NFTSET_BLACK ipv4_addr "2d" 0
 	gen_nftset $NFTSET_WHITE ipv4_addr "2d" 0
@@ -909,7 +911,7 @@ add_firewall_rule() {
 		#echolog "使用缓存加载chnroute6..."
 		nft -f $RULES_PATH/chnroute6.nft
 	else
-		cat $RULES_PATH/chnroute6 | tr -s '\n' | sed 's/#.*//' | gen_nftset $NFTSET_CHN6 ipv6_addr "2d" 0
+		cat $RULES_PATH/chnroute6 | tr -s '\n' | sed 's/#.*//' | insert_nftset $NFTSET_CHN6 "0"
 	fi
 	gen_nftset $NFTSET_BLACK6 ipv6_addr "2d" 0
 	gen_nftset $NFTSET_WHITE6 ipv6_addr "2d" 0

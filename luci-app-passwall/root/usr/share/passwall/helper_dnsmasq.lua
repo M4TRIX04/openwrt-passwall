@@ -149,9 +149,11 @@ function copy_instance(var)
 	if #conf_lines > 0 then
 		local DNSMASQ_CONF = var["-DNSMASQ_CONF"]
 		local conf_out = io.open(DNSMASQ_CONF, "a")
-		conf_out:write(table.concat(conf_lines, "\n"))
-		conf_out:write("\n")
-		conf_out:close()
+		if conf_out then
+			conf_out:write(table.concat(conf_lines, "\n"))
+			conf_out:write("\n")
+			conf_out:close()
+		end
 	end
 end
 
@@ -619,9 +621,11 @@ function add_rule(var)
 		end
 		if #conf_lines > 0 then
 			local conf_out = io.open(DNSMASQ_CONF_FILE, "a")
-			conf_out:write(table.concat(conf_lines, "\n"))
-			conf_out:write("\n")
-			conf_out:close()
+			if conf_out then
+				conf_out:write(table.concat(conf_lines, "\n"))
+				conf_out:write("\n")
+				conf_out:close()
+			end
 		end
 	end
 

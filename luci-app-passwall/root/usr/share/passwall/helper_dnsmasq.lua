@@ -149,11 +149,9 @@ function copy_instance(var)
 	if #conf_lines > 0 then
 		local DNSMASQ_CONF = var["-DNSMASQ_CONF"]
 		local conf_out = io.open(DNSMASQ_CONF, "a")
-		if conf_out then
-			conf_out:write(table.concat(conf_lines, "\n"))
-			conf_out:write("\n")
-			conf_out:close()
-		end
+		conf_out:write(table.concat(conf_lines, "\n"))
+		conf_out:write("\n")
+		conf_out:close()
 	end
 end
 

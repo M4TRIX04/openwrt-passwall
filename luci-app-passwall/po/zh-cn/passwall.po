@@ -68,11 +68,11 @@ msgstr "节点配置"
 msgid "Running Status"
 msgstr "运行状态"
 
-msgid "AliCloud Conn."
-msgstr "阿里连接"
+msgid "AliCloud"
+msgstr "阿里云"
 
-msgid "Google Conn."
-msgstr "谷歌连接"
+msgid "Google"
+msgstr "谷歌"
 
 msgid "GitHub Conn."
 msgstr "GitHub 连接"

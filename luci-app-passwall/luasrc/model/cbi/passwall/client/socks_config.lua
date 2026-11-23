@@ -110,7 +110,7 @@ for i, v in pairs(nodes_table) do
 	socks_node.group[#socks_node.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 end
 
-o = s:option(Flag, "autoswitch_restore_switch", translate("Restore Switch"), translate("When detects main node is available, switch back to the main node."))
+o = s:option(Flag, "autoswitch_restore_switch", translate("Restore Switch"), translate("Immediately switch back to the main node when it becomes available."))
 o:depends("enable_autoswitch", true)
 
 o = s:option(Value, "autoswitch_probe_url", translate("Probe URL"), translate("The URL used to detect the connection status."))

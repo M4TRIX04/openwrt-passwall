@@ -10,8 +10,8 @@ PKG_NAME:=luci-app-passwall
 # 版本号沿用上游规则：PKG_VERSION 取改动当天的日期（YY.M.D），
 # PKG_RELEASE 是当天的修订号——当天第一次改动为 1，之后再改就 +1，
 # 跨天则换成新日期并回到 1。包内呈现为 <版本>-r<修订>，如 26.11.21-r1。
-PKG_VERSION:=26.11.22
-PKG_RELEASE:=2
+PKG_VERSION:=26.11.23
+PKG_RELEASE:=1
 PKG_PO_VERSION:=$(PKG_VERSION)
 
 PKG_CONFIG_DEPENDS:= \

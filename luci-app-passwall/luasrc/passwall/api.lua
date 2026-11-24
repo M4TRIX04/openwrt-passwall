@@ -1174,15 +1174,17 @@ function get_version()
 end
 
 --[[ 自身更新 ]]
--- 私人构建，不走 opkg feed，也不签名。数据源就是自己 fork 的滚动 latest
--- release，里面的 latest.txt 由 .github/workflows/release.yml 生成：
+-- 私人构建，不走 opkg feed，也不签名。每次构建发一个独立 release（tag 为
+-- <版本>-<修订>），里面的 latest.txt 由 .github/workflows/release.yml 生成：
 --     version=26.11.18-r1
 --     file=luci-app-passwall_26.11.18-r1_all.ipk
 --     sha256=...
 -- ipk 是 LUCI_PKGARCH:=all，架构无关。
+-- 统一走 /releases/latest/download/：指向 GitHub 标为 Latest 的那个 release，
+-- 不依赖固定 tag 名，也不需要 API 调用（不消耗配额）。
 SELF_UPDATE_REPO = "M4TRIX04/openwrt-passwall"
-SELF_UPDATE_URL = "https://github.com/" .. SELF_UPDATE_REPO .. "/releases/download/latest/latest.txt"
-SELF_UPDATE_HTML = "https://github.com/" .. SELF_UPDATE_REPO .. "/releases/tag/latest"
+SELF_UPDATE_URL = "https://github.com/" .. SELF_UPDATE_REPO .. "/releases/latest/download/latest.txt"
+SELF_UPDATE_HTML = "https://github.com/" .. SELF_UPDATE_REPO .. "/releases/latest"
 
 -- compare_versions 用 "[%.%-]" 切分，"-r1" 里的 r 会被切出来、tonumber 失败按 0 算，
 -- 于是 26.11.18-r1 和 26.11.18-r2 被判成相等。日期制下同一天可能改好几次，
@@ -1265,7 +1267,7 @@ function to_update_self()
 		return {code = 1, error = i18n.translate("Invalid version info.")}
 	end
 
-	local url = "https://github.com/" .. SELF_UPDATE_REPO .. "/releases/download/latest/" .. info.file
+	local url = "https://github.com/" .. SELF_UPDATE_REPO .. "/releases/latest/download/" .. info.file
 	local tmp_file = "/tmp/passwall_self_update.ipk"
 	local log_file = "/tmp/passwall_self_update.log"
 	exec("/bin/rm", {"-f", tmp_file, log_file})

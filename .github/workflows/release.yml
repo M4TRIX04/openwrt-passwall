@@ -8,6 +8,10 @@ name: Release IPK
 #   version=26.11.18-r1
 #   file=luci-app-passwall_26.11.18-r1_all.ipk
 #   sha256=...
+#
+# 每次构建发一个独立 release（tag 为 <版本>-<修订>），不覆盖旧版本。
+# 客户端走 /releases/latest/download/<资产名>，指向 GitHub 标记为 Latest 的
+# 那个 release，所以不需要固定 tag 名；回滚只需在页面上把旧版本标成 Latest。
 
 on:
   workflow_dispatch:
@@ -79,15 +83,10 @@ jobs:
           ls -l out
           cat out/latest.txt
 
-      - name: Publish rolling release
+      - name: Publish release
         run: |
-          if gh release view latest >/dev/null 2>&1; then
-            :
-          else
-            gh release create latest --title "Latest build" --notes "滚动构建，资产每次覆盖。"
-          fi
-
-          gh release upload latest out/* --clobber
+          # tag 用 <版本>-<修订>，ipk 名字里是 <版本>-r<修订>，去掉那个 r。
+          tag="${VERSION/-r/-}"
 
           cat > /tmp/notes.md <<EOF
           ## luci-app-passwall ${VERSION}
@@ -102,7 +101,7 @@ jobs:
           ### 手动安装
 
           \`\`\`
-          opkg install --force-reinstall https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/$(basename $(ls out/*.ipk))
+          opkg install --force-reinstall https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/$(basename $(ls out/*.ipk))
           \`\`\`
 
           装完清一下 LuCI 缓存并重启服务：
@@ -113,9 +112,16 @@ jobs:
           \`\`\`
           EOF
 
-          gh release edit latest \
+          # 先建草稿再传资产，全部成功后一次性发布。草稿不会被 /releases/latest
+          # 指到，所以传到一半失败只会留下一份没人看得见的草稿，不会出现
+          # 「latest.txt 已是新版、ipk 却没传上去」的半成品。
+          # 发布后它就是最新的非草稿 release，GitHub 会自动把它标成 Latest。
+          gh release create "$tag" --draft \
             --title "luci-app-passwall ${VERSION}" \
-            --notes-file /tmp/notes.md
+            --notes-file /tmp/notes.md \
+            out/*
+
+          gh release edit "$tag" --draft=false
 
       - name: Upload build logs on failure
         if: failure()
